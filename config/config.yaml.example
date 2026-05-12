@@ -1,5 +1,7 @@
 # Passwall-Sub-Panel main config example.
-# Copy to config.yaml and fill in jwt_secret + mysql.dsn (or set them via env).
+# Copy to config.yaml and fill in jwt_secret (or set PSP_JWT_SECRET).
+# Database is zero-config by default: if mysql.dsn is omitted or empty, the
+# panel uses SQLite at <data_dir>/panel.db.
 
 listen: ":8787"
 
@@ -17,13 +19,16 @@ config_dir: "./config"
 # Runtime data dir (currently unused; reserved for future).
 data_dir: "./data"
 
-mysql:
-  # Database connection. Three accepted shapes:
-  #   - leave empty / unset           → SQLite at <data_dir>/panel.db (zero-config)
-  #   - "sqlite:./data/panel.db"      → SQLite at the given path
-  #   - "user:pw@tcp(host:3306)/db?…" → MySQL via go-sql-driver DSN
-  # Can also be set via env PSP_MYSQL_DSN (takes precedence).
-  dsn: ""
+# Optional database connection. Leave this whole block commented to use
+# SQLite at <data_dir>/panel.db.
+#
+# mysql:
+#   # Accepted shapes:
+#   #   - ""                           -> SQLite at <data_dir>/panel.db
+#   #   - "sqlite:./data/panel.db"      -> SQLite at the given path
+#   #   - "user:pw@tcp(host:3306)/db?…" -> MySQL via go-sql-driver DSN
+#   # Can also be set via env PSP_MYSQL_DSN (takes precedence).
+#   dsn: ""
 
 # Reconciliation / traffic poll cadence (layered design — see ARCHITECTURE.md §9.4).
 cron:

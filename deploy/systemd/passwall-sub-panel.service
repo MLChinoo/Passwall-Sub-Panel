@@ -1,7 +1,7 @@
 [Unit]
 Description=Passwall-Sub-Panel
 Documentation=https://github.com/KazuhaHub/Passwall-Sub-Panel
-After=network-online.target mysql.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

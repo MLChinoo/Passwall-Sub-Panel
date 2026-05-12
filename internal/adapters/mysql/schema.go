@@ -19,15 +19,15 @@ import (
 // adapter-internal concern, converted via to/from helpers.
 
 type userRow struct {
-	ID                 int64  `gorm:"primaryKey;autoIncrement"`
-	Username           string `gorm:"size:64;uniqueIndex;not null"`
-	UPN                string `gorm:"size:255;uniqueIndex"`
-	Source             string `gorm:"size:16;not null"`
-	PasswordHash       string `gorm:"size:255"`
-	Role               string `gorm:"size:16;not null;default:user"`
-	SubToken           string `gorm:"size:64;uniqueIndex;not null"`
-	UUID               string `gorm:"size:36;not null"`
-	GroupID            int64  `gorm:"index;not null"`
+	ID                 int64   `gorm:"primaryKey;autoIncrement"`
+	Username           string  `gorm:"size:64;uniqueIndex;not null"`
+	UPN                *string `gorm:"size:255;uniqueIndex"`
+	Source             string  `gorm:"size:16;not null"`
+	PasswordHash       string  `gorm:"size:255"`
+	Role               string  `gorm:"size:16;not null;default:user"`
+	SubToken           string  `gorm:"size:64;uniqueIndex;not null"`
+	UUID               string  `gorm:"size:36;not null"`
+	GroupID            int64   `gorm:"index;not null"`
 	EnabledRuleSets    jsonStrings
 	PersonalRules      string `gorm:"type:text"`
 	ExpireAt           *time.Time
@@ -44,10 +44,14 @@ type userRow struct {
 func (userRow) TableName() string { return "users" }
 
 func (r *userRow) toDomain() *domain.User {
+	upn := ""
+	if r.UPN != nil {
+		upn = *r.UPN
+	}
 	return &domain.User{
 		ID:                 r.ID,
 		Username:           r.Username,
-		UPN:                r.UPN,
+		UPN:                upn,
 		Source:             domain.UserSource(r.Source),
 		PasswordHash:       r.PasswordHash,
 		Role:               domain.Role(r.Role),
@@ -69,10 +73,14 @@ func (r *userRow) toDomain() *domain.User {
 }
 
 func userFromDomain(u *domain.User) *userRow {
+	var upn *string
+	if u.UPN != "" {
+		upn = &u.UPN
+	}
 	return &userRow{
 		ID:                 u.ID,
 		Username:           u.Username,
-		UPN:                u.UPN,
+		UPN:                upn,
 		Source:             string(u.Source),
 		PasswordHash:       u.PasswordHash,
 		Role:               string(u.Role),
@@ -364,7 +372,7 @@ func (j *jsonLayout) Scan(value any) error {
 
 // Migrate creates or updates all panel tables.
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&userRow{},
 		&groupRow{},
 		&nodeRow{},
@@ -372,7 +380,14 @@ func Migrate(db *gorm.DB) error {
 		&trafficRow{},
 		&auditRow{},
 		&subLogRow{},
-	)
+	); err != nil {
+		return err
+	}
+	return normalizeBlankUPNs(db)
+}
+
+func normalizeBlankUPNs(db *gorm.DB) error {
+	return db.Model(&userRow{}).Where("upn = ?", "").Update("upn", nil).Error
 }
 
 // wrapNotFound maps GORM's ErrRecordNotFound to domain.ErrNotFound so that

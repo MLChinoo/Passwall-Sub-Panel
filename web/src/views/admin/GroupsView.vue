@@ -42,7 +42,7 @@ function openEdit(g: Group) {
   form.slug = g.slug
   form.name = g.name
   form.all = g.tag_filter.all
-  form.tags_text = g.tag_filter.tags.join(', ')
+  form.tags_text = (g.tag_filter.tags || []).join(', ')
   form.remark = g.remark || ''
   dialog.value = true
 }

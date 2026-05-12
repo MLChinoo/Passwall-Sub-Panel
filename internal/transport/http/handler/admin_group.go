@@ -212,11 +212,15 @@ func (h *AdminGroupHandler) Delete(c *gin.Context) {
 // ---- helpers ----
 
 func toGroupDTO(g *domain.Group) groupDTO {
+	tags := g.TagFilter.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	return groupDTO{
 		ID:        g.ID,
 		Slug:      g.Slug,
 		Name:      g.Name,
-		TagFilter: tagFilterDTO{All: g.TagFilter.All, Tags: g.TagFilter.Tags},
+		TagFilter: tagFilterDTO{All: g.TagFilter.All, Tags: tags},
 		Layout:    g.Layout,
 		Remark:    g.Remark,
 	}
