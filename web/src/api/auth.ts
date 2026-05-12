@@ -9,6 +9,6 @@ export async function localLogin(username: string, password: string) {
   return data
 }
 
-export function ssoLoginURL(returnTo: string = '/admin'): string {
+export function ssoLoginURL(returnTo: string = '/user/me'): string {
   return `/api/auth/saml/login?return_to=${encodeURIComponent(returnTo)}`
 }

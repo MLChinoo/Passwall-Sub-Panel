@@ -1,3 +1,11 @@
+# Clash Meta subscription template example.
+#
+# Copy to:
+#   ./config/templates/default-clash-meta.yaml
+#
+# The `content` block below is a complete working template. You usually only
+# need to edit proxy-groups and rules.
+
 slug: default-clash-meta
 name: Default Clash Meta
 client_type: clash-meta

@@ -3,9 +3,11 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import LoginView from '@/views/LoginView.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import UserLayout from '@/layouts/UserLayout.vue'
+import { useAuthStore } from '@/stores/auth'
+import { homeForRole, isAdminPath } from '@/router/home'
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: '/admin/dashboard' },
+  { path: '/', redirect: () => homeForRole(useAuthStore().role) },
   { path: '/login', component: LoginView, meta: { public: true } },
   {
     path: '/admin',
@@ -41,6 +43,10 @@ router.beforeEach((to) => {
   const token = sessionStorage.getItem('psp_access')
   if (!token) {
     return { path: '/login', query: { return_to: to.fullPath } }
+  }
+  const auth = useAuthStore()
+  if (isAdminPath(to.path) && !auth.isAdmin) {
+    return { path: '/user/me' }
   }
   return true
 })

@@ -40,7 +40,7 @@ func (h *AuthSAMLHandler) Login(c *gin.Context) {
 	}
 	relayState := c.Query("return_to")
 	if relayState == "" {
-		relayState = "/admin"
+		relayState = "/user/me"
 	}
 	redirectURL, err := h.saml.BuildAuthnURL(relayState)
 	if err != nil {
@@ -52,7 +52,7 @@ func (h *AuthSAMLHandler) Login(c *gin.Context) {
 
 // ACS handles the SAML Response POSTed back by the IdP. Validates the
 // assertion, upserts the user, issues JWT tokens, and redirects the
-// browser to RelayState (or /admin by default) with HttpOnly cookies set.
+// browser to RelayState (or /user/me by default) with HttpOnly cookies set.
 func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 	if !h.saml.Enabled() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
@@ -98,7 +98,7 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 
 	relayState := c.Request.FormValue("RelayState")
 	if relayState == "" {
-		relayState = "/admin"
+		relayState = "/user/me"
 	}
 	c.Redirect(http.StatusFound, relayState)
 }

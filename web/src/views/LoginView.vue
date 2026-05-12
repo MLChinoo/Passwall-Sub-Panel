@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { ssoLoginURL } from '@/api/auth'
+import { homeForRole, isAdminPath } from '@/router/home'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -19,7 +20,9 @@ async function submit() {
   loading.value = true
   try {
     await auth.login(form.username, form.password)
-    const returnTo = (router.currentRoute.value.query.return_to as string) || '/admin'
+    const fallback = homeForRole(auth.role)
+    const requested = (router.currentRoute.value.query.return_to as string) || fallback
+    const returnTo = isAdminPath(requested) && !auth.isAdmin ? fallback : requested
     router.push(returnTo)
   } catch {
     // error toast handled by axios interceptor
@@ -29,7 +32,7 @@ async function submit() {
 }
 
 function ssoLogin() {
-  const returnTo = (router.currentRoute.value.query.return_to as string) || '/admin'
+  const returnTo = (router.currentRoute.value.query.return_to as string) || '/user/me'
   location.href = ssoLoginURL(returnTo)
 }
 </script>

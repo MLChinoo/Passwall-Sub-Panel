@@ -28,24 +28,32 @@ func (r *trafficRepo) Insert(ctx context.Context, s *domain.TrafficSnapshot) err
 
 func (r *trafficRepo) LatestForUser(ctx context.Context, userID int64) (*domain.TrafficSnapshot, error) {
 	var row trafficRow
-	err := r.db.WithContext(ctx).
+	tx := r.db.WithContext(ctx).
 		Where("user_id = ?", userID).
 		Order("id DESC").
-		First(&row).Error
-	if err != nil {
-		return nil, wrapNotFound(err)
+		Limit(1).
+		Find(&row)
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return nil, domain.ErrNotFound
 	}
 	return row.toDomain(), nil
 }
 
 func (r *trafficRepo) LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error) {
 	var row trafficRow
-	err := r.db.WithContext(ctx).
+	tx := r.db.WithContext(ctx).
 		Where("user_id = ? AND captured_at < ?", userID, before).
 		Order("captured_at DESC").
-		First(&row).Error
-	if err != nil {
-		return nil, wrapNotFound(err)
+		Limit(1).
+		Find(&row)
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return nil, domain.ErrNotFound
 	}
 	return row.toDomain(), nil
 }
