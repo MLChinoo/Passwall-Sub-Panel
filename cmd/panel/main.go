@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -16,8 +17,10 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 )
 
+const defaultConfigPath = "config.yaml"
+
 func main() {
-	cfgPath := envOr("PSP_CONFIG", "config/config.yaml")
+	cfgPath := configPath()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("load config %s: %v", cfgPath, err)
@@ -55,9 +58,14 @@ func main() {
 	}
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
+func configPath() string {
+	cfgPath := flag.String("config", "", "main config path")
+	flag.Parse()
+	if *cfgPath != "" {
+		return *cfgPath
+	}
+	if v := os.Getenv("PSP_CONFIG"); v != "" {
 		return v
 	}
-	return def
+	return defaultConfigPath
 }

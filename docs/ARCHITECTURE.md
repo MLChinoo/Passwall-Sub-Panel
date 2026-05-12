@@ -393,7 +393,7 @@ CREATE TABLE audit_log (
 
 | 文件 | 用途 |
 |---|---|
-| `config/config.yaml` | 监听端口、JWT 密钥、MySQL DSN、订阅基地址、cron 间隔 |
+| `config.yaml` | 监听端口、JWT 密钥、MySQL DSN、订阅基地址、cron 间隔 |
 | `config/xui_panels.yaml` | 3X-UI 面板凭证（`api_token` 优先，`password` 兜底；敏感字段 AES-GCM 加密）|
 | `config/saml.yaml` | IdP metadata URL、SP entity ID、admin group ID 列表、attribute 映射 |
 | `config/rule_sets/*.yaml` | 规则集分片，每文件含 slug/name/sort/content |

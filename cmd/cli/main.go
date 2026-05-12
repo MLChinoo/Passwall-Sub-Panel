@@ -19,6 +19,8 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/idgen"
 )
 
+const defaultConfigPath = "config.yaml"
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -52,7 +54,7 @@ func printUsage() {
 
 func initAdmin(args []string) {
 	fs := flag.NewFlagSet("init-admin", flag.ExitOnError)
-	cfgPath := fs.String("config", "config/config.yaml", "main config path")
+	cfgPath := fs.String("config", defaultConfigPath, "main config path")
 	username := fs.String("username", "", "admin username (required)")
 	password := fs.String("password", "", "initial password (auto-generated if empty)")
 	_ = fs.Parse(args)
