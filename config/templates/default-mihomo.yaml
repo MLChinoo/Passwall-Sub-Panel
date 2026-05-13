@@ -1,5 +1,5 @@
 slug: default-mihomo
-name: 默认 mihomo
+name: Default mihomo
 client_type: mihomo
 is_default: true
 rule_sets:

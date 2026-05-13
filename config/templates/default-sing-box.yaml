@@ -1,5 +1,5 @@
 slug: default-sing-box
-name: 默认 sing-box
+name: Default sing-box
 client_type: sing-box
 is_default: true
 rule_sets:
@@ -25,12 +25,12 @@ content: |
         {
           "tag": "cloudflare-gateway",
           "address": "https://v5brh3pn84.cloudflare-gateway.com/dns-query",
-          "detour": "🚀 节点选择"
+          "detour": "proxy"
         },
         {
           "tag": "cloudflare",
           "address": "https://cloudflare-dns.com/dns-query",
-          "detour": "🚀 节点选择"
+          "detour": "proxy"
         }
       ],
       "rules": [
