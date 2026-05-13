@@ -45,3 +45,11 @@ func (h *AdminAuditHandler) List(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total})
 }
+
+func (h *AdminAuditHandler) Clear(c *gin.Context) {
+	if err := h.repo.Clear(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}

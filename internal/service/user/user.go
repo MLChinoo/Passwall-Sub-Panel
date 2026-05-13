@@ -28,35 +28,54 @@ type NodeSelector interface {
 // ClientSyncer is the subset of sync.Service this package needs.
 // Defined here (not imported) so the user package never imports sync.
 type ClientSyncer interface {
-	AddClientToInbound(ctx context.Context, userID int64, panel string, inboundID int,
-		protocol domain.Protocol, userUUID, email, flow string) error
-	DelOwnedClient(ctx context.Context, panel string, inboundID int, email string) error
-	SetOwnedClientEnable(ctx context.Context, panel string, inboundID int, email string,
-		protocol domain.Protocol, userUUID string, enable bool) error
+	AddClientToInbound(ctx context.Context, userID int64, panelID int64, inboundID int,
+		protocol domain.Protocol, userUUID, email, flow string, expireTime int64) error
+	DelOwnedClient(ctx context.Context, panelID int64, inboundID int, email string) error
+	SetOwnedClientEnable(ctx context.Context, panelID int64, inboundID int, email string,
+		protocol domain.Protocol, userUUID string, enable bool, expireTime int64) error
 	DelAllOwnedForUser(ctx context.Context, userID int64) error
-	RotateClientUUID(ctx context.Context, panel string, inboundID int, email string,
-		protocol domain.Protocol, oldUUID, newUUID string, enable bool) error
+	RotateClientUUID(ctx context.Context, panelID int64, inboundID int, email string,
+		protocol domain.Protocol, oldUUID, newUUID string, enable bool, expireTime int64) error
 }
 
 type Service struct {
 	users     ports.UserRepo
 	groups    ports.GroupRepo
 	ownership ports.OwnershipRepo
+	tasks     ports.SyncTaskRepo
 	selector  NodeSelector
 	syncer    ClientSyncer
 	pool      ports.XUIPool
+	settings  ports.SettingsRepo
 }
 
 func New(users ports.UserRepo, groups ports.GroupRepo, ownership ports.OwnershipRepo,
-	selector NodeSelector, syncer ClientSyncer, pool ports.XUIPool) *Service {
+	tasks ports.SyncTaskRepo, selector NodeSelector, syncer ClientSyncer, pool ports.XUIPool, settings ports.SettingsRepo) *Service {
 	return &Service{
 		users:     users,
 		groups:    groups,
 		ownership: ownership,
+		tasks:     tasks,
 		selector:  selector,
 		syncer:    syncer,
 		pool:      pool,
+		settings:  settings,
 	}
+}
+
+// emailRules loads the runtime-configurable email domain. Falls back to
+// "psp.local" if Settings is unreachable so 3X-UI sync never blocks on a
+// missing config row.
+func (s *Service) emailRules(ctx context.Context) domain.EmailRules {
+	defaults := ports.UISettings{EmailDomain: "psp.local"}
+	st, err := s.settings.Load(ctx, defaults)
+	if err != nil {
+		st = defaults
+	}
+	if st.EmailDomain == "" {
+		st.EmailDomain = "psp.local"
+	}
+	return domain.EmailRules{Domain: st.EmailDomain}
 }
 
 // ---- Plain CRUD (no 3X-UI side effects) ----
@@ -64,6 +83,7 @@ func New(users ports.UserRepo, groups ports.GroupRepo, ownership ports.Ownership
 // CreateLocalInput captures the admin form fields for creating a local user.
 type CreateLocalInput struct {
 	Username           string
+	DisplayName        string // friendly name shown in panel UI (optional)
 	InitialPassword    string // if empty, a random one is generated
 	GroupID            int64
 	ExpireAt           *time.Time
@@ -77,6 +97,41 @@ type CreateLocalInput struct {
 type CreateLocalResult struct {
 	User            *domain.User
 	InitialPassword string
+}
+
+// dropOrphanUser deletes a stale panel user along with any 3X-UI clients
+// recorded under their ownership. Used when EnsureSSO needs to reclaim a
+// username or clean up a "pending approval" stub from earlier policies —
+// the panel row alone would leave orphan ownership rows + ghost 3X-UI
+// clients. Best-effort: every step is allowed to fail without aborting
+// caller flow (the SSO login path is more important than the cleanup).
+func (s *Service) dropOrphanUser(ctx context.Context, userID int64) {
+	if s.syncer != nil {
+		_ = s.syncer.DelAllOwnedForUser(ctx, userID)
+	}
+	_ = s.users.Delete(ctx, userID)
+}
+
+// HasPendingSync reports whether any 3X-UI sync task is currently queued
+// for this user. Handlers call this immediately after a "sync first, async
+// fallback" service operation so the response carries a flag the SPA can
+// surface as a toast ("partial — 3X-UI sync queued for retry"). It's
+// allowed to be slightly imprecise (a task queued by an earlier action
+// counts too) — the spirit of the indicator is "there's still 3X-UI work
+// pending behind the scenes", which is the truth either way.
+func (s *Service) HasPendingSync(ctx context.Context, userID int64) bool {
+	if s.tasks == nil {
+		return false
+	}
+	pending, err := s.tasks.HasActiveByTargetAny(ctx, []domain.SyncTaskType{
+		domain.SyncTaskUserDelete,
+		domain.SyncTaskUserResync,
+		domain.SyncTaskUserPushConfig,
+	}, "user", userID)
+	if err != nil {
+		return false
+	}
+	return pending
 }
 
 // CreateLocal persists a new local-source user in the DB. It does NOT touch
@@ -119,6 +174,7 @@ func (s *Service) CreateLocal(ctx context.Context, in CreateLocalInput) (*Create
 	now := time.Now()
 	u := &domain.User{
 		Username:           in.Username,
+		DisplayName:        in.DisplayName,
 		Source:             domain.UserSourceLocal,
 		PasswordHash:       string(hash),
 		Role:               domain.RoleUser,
@@ -170,7 +226,17 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 	}
 
 	u, err := s.users.GetByUPN(ctx, in.UPN)
-	if err == nil {
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+	// Stale auto-creations from the previous "pending approval" policy are
+	// treated as if no account exists: drop their 3X-UI clients and the
+	// panel row so the caller falls through to the fresh-login path.
+	if u != nil && u.AutoDisabledReason == domain.DisabledPendingApproval {
+		s.dropOrphanUser(ctx, u.ID)
+		u = nil
+	}
+	if u != nil {
 		// Existing SSO user. Reconcile role + display name in case they
 		// changed in the IdP.
 		dirty := false
@@ -178,12 +244,33 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 			u.Role = desiredRole
 			dirty = true
 		}
-		if in.DisplayName != "" && u.Remark != in.DisplayName {
-			u.Remark = in.DisplayName
+		if in.DisplayName != "" && u.DisplayName != in.DisplayName {
+			u.DisplayName = in.DisplayName
 			dirty = true
 		}
-		if !u.Enabled && u.AutoDisabledReason == domain.DisabledManual {
-			// Don't auto-re-enable manually disabled accounts.
+		// Fix garbled usernames from earlier versions that stored the opaque
+		// UPN/NameID. Prefer email, then display name, then keep current.
+		// If the target name is held by a stale SSO orphan (different user,
+		// also SSO source), delete the orphan so the rename can proceed.
+		// Local accounts are NEVER auto-deleted — admin-created identities
+		// stay sacred.
+		betterName := ssoDisplayName(in)
+		if betterName != "" && betterName != in.UPN && u.Username == in.UPN {
+			existing, nameErr := s.users.GetByUsername(ctx, betterName)
+			switch {
+			case nameErr != nil:
+				// Name is free.
+				u.Username = betterName
+				dirty = true
+			case existing.ID != u.ID && existing.Source == domain.UserSourceSSO:
+				// Stale SSO record from an earlier login cycle blocking the
+				// rename. Drop it (and any 3X-UI clients it still owns) so
+				// the rename can proceed.
+				s.dropOrphanUser(ctx, existing.ID)
+				u.Username = betterName
+				dirty = true
+			}
+			// Otherwise: a local user owns this name — leave both alone.
 		}
 		if dirty {
 			if err := s.users.Update(ctx, u); err != nil {
@@ -192,15 +279,54 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 		}
 		return u, nil
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
+
+	// No UPN match. Try to link to a pre-created account whose username equals
+	// the SSO email — supports the "admin batch-creates local users who then
+	// log in via SSO" workflow. Strictly limited to accounts that have NOT
+	// already claimed an SSO identity (UPN == ""); otherwise this would
+	// silently rebind a stranger's login to someone else's account.
+	if in.Email != "" {
+		if linked, lerr := s.users.GetByUsername(ctx, in.Email); lerr == nil {
+			switch {
+			case linked.AutoDisabledReason == domain.DisabledPendingApproval:
+				// Stale stub from the old auto-creation policy — drop both
+				// the panel row and any 3X-UI clients it still owns.
+				s.dropOrphanUser(ctx, linked.ID)
+			case linked.UPN == "":
+				// Genuine pre-created local account → claim it for this SSO id.
+				linked.UPN = in.UPN
+				if linked.Role != desiredRole {
+					linked.Role = desiredRole
+				}
+				if in.DisplayName != "" && linked.DisplayName != in.DisplayName {
+					linked.DisplayName = in.DisplayName
+				}
+				if err := s.users.Update(ctx, linked); err != nil {
+					return nil, fmt.Errorf("link sso upn: %w", err)
+				}
+				return linked, nil
+			}
+			// Otherwise the email collides with someone else's SSO-bound
+			// account — fall through to ErrSSONoAccount instead of hijacking.
+		}
 	}
 
-	g, err := s.groups.GetBySlug(ctx, in.DefaultGroupSlug)
-	if err != nil {
-		return nil, fmt.Errorf("default group %q: %w", in.DefaultGroupSlug, err)
+	// No account, no email match. Regular users are NOT auto-provisioned —
+	// the caller redirects them to a "contact your administrator" page.
+	// Admins are auto-provisioned so the IdP-side admin group is enough to
+	// bootstrap a fresh panel.
+	if !in.IsAdmin {
+		return nil, domain.ErrSSONoAccount
 	}
 
+	var groupID int64
+	if in.DefaultGroupSlug != "" {
+		g, err := s.groups.GetBySlug(ctx, in.DefaultGroupSlug)
+		if err != nil {
+			return nil, fmt.Errorf("default group %q: %w", in.DefaultGroupSlug, err)
+		}
+		groupID = g.ID
+	}
 	subToken, err := idgen.NewSubToken()
 	if err != nil {
 		return nil, err
@@ -214,32 +340,44 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 	if resetPeriod == "" {
 		resetPeriod = domain.ResetMonthly
 	}
+	desiredUsername := ssoDisplayName(in)
+	if desiredUsername != in.UPN {
+		if _, nameErr := s.users.GetByUsername(ctx, desiredUsername); nameErr == nil {
+			desiredUsername = in.UPN
+		}
+	}
 	now := time.Now()
 	u = &domain.User{
-		Username:           in.UPN, // SSO users use UPN in both fields; unique constraint covers either lookup
+		Username:           desiredUsername,
 		UPN:                in.UPN,
 		Source:             domain.UserSourceSSO,
-		Role:               desiredRole,
+		Role:               domain.RoleAdmin,
 		SubToken:           subToken,
 		UUID:               idgen.NewUUID(),
-		GroupID:            g.ID,
+		GroupID:            groupID,
 		ExpireAt:           expire,
 		TrafficLimitBytes:  in.DefaultLimitBytes,
 		TrafficResetPeriod: resetPeriod,
 		TrafficPeriodStart: &now,
-		Remark:             in.DisplayName,
+		DisplayName:        in.DisplayName,
 		Enabled:            true,
 	}
 	if err := s.users.Create(ctx, u); err != nil {
-		return nil, fmt.Errorf("create sso user: %w", err)
-	}
-	// Push clients to every authorised inbound. Errors here are not fatal
-	// for login — reconcile will heal them.
-	if err := s.ResyncMembership(ctx, u.ID); err != nil {
-		// log only; user can still authenticate
-		_ = err
+		return nil, fmt.Errorf("create sso admin: %w", err)
 	}
 	return u, nil
+}
+
+// ssoDisplayName picks the most human-readable name available from an SSO
+// login: email → display name → UPN (which may be an opaque identifier).
+func ssoDisplayName(in EnsureSSOInput) string {
+	if in.Email != "" {
+		return in.Email
+	}
+	if in.DisplayName != "" {
+		return in.DisplayName
+	}
+	return in.UPN
 }
 
 // VerifyLocalPassword returns the user if username/password match a local account.
@@ -275,6 +413,60 @@ func (s *Service) ResetSubToken(ctx context.Context, userID int64) (string, erro
 		return "", err
 	}
 	return token, nil
+}
+
+type ResetCredentialsResult struct {
+	SubToken string
+	UUID     string
+}
+
+// ResetCredentialsAndSync rotates both credential layers at once:
+// subscription token for /sub access, and UUID for actual proxy clients.
+func (s *Service) ResetCredentialsAndSync(ctx context.Context, userID int64) (*ResetCredentialsResult, error) {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.ownership.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	token, err := idgen.NewSubToken()
+	if err != nil {
+		return nil, err
+	}
+	oldUUID := u.UUID
+	newUUID := idgen.NewUUID()
+	u.SubToken = token
+	u.UUID = newUUID
+	if err := s.users.Update(ctx, u); err != nil {
+		return nil, err
+	}
+	var expireTime int64
+	if u.ExpireAt != nil {
+		expireTime = u.ExpireAt.UnixMilli()
+	}
+	needsRetry := false
+	for _, e := range entries {
+		info, err := s.inspectInboundByPanel(ctx, e.PanelID, e.InboundID)
+		if err != nil {
+			needsRetry = true
+			continue
+		}
+		if info.protocol == "" {
+			continue
+		}
+		if err := s.syncer.RotateClientUUID(ctx, e.PanelID, e.InboundID, e.ClientEmail,
+			info.protocol, oldUUID, newUUID, u.Enabled, expireTime); err != nil {
+			needsRetry = true
+		}
+	}
+	if needsRetry {
+		if err := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.Username)); err != nil {
+			return nil, err
+		}
+	}
+	return &ResetCredentialsResult{SubToken: token, UUID: newUUID}, nil
 }
 
 // SetPassword updates a local account's password (admin-side reset).
@@ -319,14 +511,15 @@ type CreateLocalSyncedResult struct {
 }
 
 // CreateLocalAndSync is the canonical "admin creates a new friend" use case.
-// It performs four steps and rolls back on partial failure:
+// It performs four steps:
 //
 //  1. Persist the user (CreateLocal).
 //  2. Resolve the group's tag_filter into a node list.
 //  3. For every node, inspect the underlying inbound to detect protocol
 //     and push the new client through SyncSvc (which applies the write guard
 //     and records ownership).
-//  4. On any error, delete already-pushed clients and the user row.
+//  4. If any 3X-UI write fails, leave the user row in place and enqueue a
+//     durable resync task instead of rolling back panel-side state.
 func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (*CreateLocalSyncedResult, error) {
 	base, err := s.CreateLocal(ctx, in)
 	if err != nil {
@@ -334,8 +527,8 @@ func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (
 	}
 	u := base.User
 
-	// Use a background context for rollbacks so cancellation of the
-	// originating request doesn't leak inconsistent state.
+	// Keep non-3X-UI setup errors transactional: the user row is only useful
+	// once their group can be resolved.
 	rollback := func() {
 		_ = s.syncer.DelAllOwnedForUser(context.Background(), u.ID)
 		_ = s.users.Delete(context.Background(), u.ID)
@@ -352,23 +545,34 @@ func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (
 		return nil, fmt.Errorf("resolve nodes: %w", err)
 	}
 
-	email := u.EmailForXUI()
+	rules := s.emailRules(ctx)
 	synced := 0
+	needsRetry := false
 	for _, n := range nodes {
 		info, err := s.inspectInbound(ctx, n)
 		if err != nil {
-			rollback()
-			return nil, fmt.Errorf("inspect inbound %s/%d: %w", n.PanelName, n.InboundID, err)
+			needsRetry = true
+			continue
 		}
 		if info.protocol == "" {
 			continue // unrecognised protocol — skip rather than fail the whole create
 		}
-		if err := s.syncer.AddClientToInbound(ctx, u.ID, n.PanelName, n.InboundID,
-			info.protocol, u.UUID, email, info.flow); err != nil {
-			rollback()
-			return nil, fmt.Errorf("sync client to %s/%d: %w", n.PanelName, n.InboundID, err)
+		email := u.ClientEmail(rules)
+		var expireTime int64
+		if u.ExpireAt != nil {
+			expireTime = u.ExpireAt.UnixMilli()
+		}
+		if err := s.syncer.AddClientToInbound(ctx, u.ID, n.PanelID, n.InboundID,
+			info.protocol, u.UUID, email, info.flow, expireTime); err != nil {
+			needsRetry = true
+			continue
 		}
 		synced++
+	}
+	if needsRetry {
+		if err := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, u.ID, fmt.Sprintf("sync node membership for user %s", u.Username)); err != nil {
+			return nil, err
+		}
 	}
 
 	return &CreateLocalSyncedResult{
@@ -378,17 +582,121 @@ func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (
 	}, nil
 }
 
-// DeleteAndSync removes every 3X-UI client owned by the user, then deletes
-// the user row. Errors during sync are best-effort: a failed client delete
-// leaves the row in the ownership table for the next reconciliation pass.
+// DeleteAndSync disables the user immediately, then tries to clean up 3X-UI
+// inline. If every owned client comes off cleanly the panel row is removed
+// before this function returns — the common online case finishes in well
+// under a second. If any 3X-UI call fails (panel offline, network blip), a
+// durable task is queued so the background worker can retry with backoff.
 func (s *Service) DeleteAndSync(ctx context.Context, userID int64) error {
-	if _, err := s.users.GetByID(ctx, userID); err != nil {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
 		return err
 	}
-	if err := s.syncer.DelAllOwnedForUser(ctx, userID); err != nil {
-		return fmt.Errorf("sync delete: %w", err)
+	u.Enabled = false
+	u.AutoDisabledReason = domain.DisabledPendingDelete
+	if err := s.users.Update(ctx, u); err != nil {
+		return err
 	}
-	return s.users.Delete(ctx, userID)
+
+	// Synchronous fast path: when 3X-UI is reachable, delete every owned
+	// client and the panel row right here. This is the SetEnabledAndSync
+	// pattern applied to deletion.
+	if err := s.syncer.DelAllOwnedForUser(ctx, u.ID); err == nil {
+		if err := s.users.Delete(ctx, u.ID); err == nil {
+			return nil
+		}
+	}
+
+	// Fallback: at least one 3X-UI call failed, or the final row delete
+	// failed. Queue a durable task — the background worker iterates the
+	// ownership table (which already reflects successful deletes from the
+	// loop above) and retries just what's left, on exponential backoff.
+	if s.tasks == nil {
+		return fmt.Errorf("sync task repo not configured")
+	}
+	if _, err := s.tasks.GetActiveByTarget(ctx, domain.SyncTaskUserDelete, "user", userID); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	return s.tasks.Create(ctx, &domain.SyncTask{
+		Type:       domain.SyncTaskUserDelete,
+		Status:     domain.SyncTaskPending,
+		TargetType: "user",
+		TargetID:   userID,
+		Summary:    fmt.Sprintf("delete user %s", u.Username),
+		NextRunAt:  time.Now(),
+	})
+}
+
+// UpdateInput is the patch applied by UpdateProfile. Each pointer field is
+// nil → no change; non-nil → set to the dereferenced value. ClearExpire is
+// a separate bool because *time.Time cannot distinguish "no change" from
+// "explicit clear to permanent".
+type UpdateInput struct {
+	GroupID            *int64
+	ExpireAt           *time.Time
+	ClearExpire        bool
+	TrafficLimitBytes  *int64
+	TrafficResetPeriod *domain.ResetPeriod
+	Remark             *string
+	DisplayName        *string
+}
+
+// UpdateProfile applies a partial update to one user. If the group
+// changed, 3X-UI client memberships are reconciled afterwards via
+// ResyncMembership. Other field changes are panel-side only: expire and
+// traffic limit are enforced by the panel (TrafficSvc / sub handler), not
+// pushed into 3X-UI's client.expiryTime / totalGB.
+func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInput) error {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	groupChanged := false
+	expireChanged := false
+	if in.GroupID != nil && *in.GroupID != u.GroupID {
+		if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
+			return fmt.Errorf("group: %w", err)
+		}
+		u.GroupID = *in.GroupID
+		groupChanged = true
+	}
+	if in.ClearExpire && u.ExpireAt != nil {
+		u.ExpireAt = nil
+		expireChanged = true
+	} else if in.ExpireAt != nil && (u.ExpireAt == nil || !in.ExpireAt.Equal(*u.ExpireAt)) {
+		u.ExpireAt = in.ExpireAt
+		expireChanged = true
+	}
+	if in.TrafficLimitBytes != nil {
+		u.TrafficLimitBytes = *in.TrafficLimitBytes
+	}
+	if in.TrafficResetPeriod != nil {
+		u.TrafficResetPeriod = *in.TrafficResetPeriod
+	}
+	if in.Remark != nil {
+		u.Remark = *in.Remark
+	}
+	if in.DisplayName != nil {
+		u.DisplayName = *in.DisplayName
+	}
+	if err := s.users.Update(ctx, u); err != nil {
+		return err
+	}
+	if groupChanged {
+		if err := s.ResyncMembership(ctx, userID); err != nil {
+			return s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.Username))
+		}
+	}
+	// Note: ResyncMembership skips updating existing clients, so if expireChanged we
+	// must explicitly push it. We do this by calling a sync loop similar to SetEnabledAndSync.
+	if expireChanged {
+		if err := s.pushClientConfigToAll(ctx, u); err != nil {
+			return s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.Username))
+		}
+	}
+	return nil
 }
 
 // ChangeGroupAndSync moves a user to a different group and reconciles their
@@ -410,7 +718,10 @@ func (s *Service) ChangeGroupAndSync(ctx context.Context, userID, newGroupID int
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
-	return s.ResyncMembership(ctx, userID)
+	if err := s.ResyncMembership(ctx, userID); err != nil {
+		return s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.Username))
+	}
+	return nil
 }
 
 // ResyncMembership recomputes a user's 3X-UI client memberships against
@@ -431,6 +742,9 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	if err != nil {
 		return err
 	}
+	if u.AutoDisabledReason == domain.DisabledPendingDelete {
+		return nil
+	}
 	g, err := s.groups.GetByID(ctx, u.GroupID)
 	if err != nil {
 		return err
@@ -445,19 +759,19 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	}
 
 	type key struct {
-		panel     string
+		panelID   int64
 		inboundID int
 	}
 	desired := make(map[key]*domain.Node, len(desiredNodes))
 	for _, n := range desiredNodes {
-		desired[key{n.PanelName, n.InboundID}] = n
+		desired[key{n.PanelID, n.InboundID}] = n
 	}
 	have := make(map[key]*domain.XUIClientEntry, len(current))
 	for _, e := range current {
-		have[key{e.PanelName, e.InboundID}] = e
+		have[key{e.PanelID, e.InboundID}] = e
 	}
 
-	email := u.EmailForXUI()
+	rules := s.emailRules(ctx)
 	var firstErr error
 
 	// ADD: desired but not currently owned
@@ -468,17 +782,22 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		info, err := s.inspectInbound(ctx, n)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("inspect %s/%d: %w", k.panel, k.inboundID, err)
+				firstErr = fmt.Errorf("inspect %d/%d: %w", k.panelID, k.inboundID, err)
 			}
 			continue
 		}
 		if info.protocol == "" {
 			continue
 		}
-		if err := s.syncer.AddClientToInbound(ctx, u.ID, k.panel, k.inboundID,
-			info.protocol, u.UUID, email, info.flow); err != nil {
+		email := u.ClientEmail(rules)
+		var expireTime int64
+		if u.ExpireAt != nil {
+			expireTime = u.ExpireAt.UnixMilli()
+		}
+		if err := s.syncer.AddClientToInbound(ctx, u.ID, k.panelID, k.inboundID,
+			info.protocol, u.UUID, email, info.flow, expireTime); err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("add to %s/%d: %w", k.panel, k.inboundID, err)
+				firstErr = fmt.Errorf("add to %d/%d: %w", k.panelID, k.inboundID, err)
 			}
 		}
 	}
@@ -488,9 +807,9 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		if _, ok := desired[k]; ok {
 			continue
 		}
-		if err := s.syncer.DelOwnedClient(ctx, e.PanelName, e.InboundID, e.ClientEmail); err != nil {
+		if err := s.syncer.DelOwnedClient(ctx, e.PanelID, e.InboundID, e.ClientEmail); err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("del from %s/%d: %w", k.panel, k.inboundID, err)
+				firstErr = fmt.Errorf("del from %d/%d: %w", k.panelID, k.inboundID, err)
 			}
 		}
 	}
@@ -500,6 +819,10 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 
 // SetEnabledAndSync flips the enabled flag and propagates it to every owned
 // 3X-UI client. Used both by the admin UI and by traffic-limit enforcement.
+//
+// Iterates over the ownership table (rather than re-deriving from the
+// user's group) so imported clients with their recorded email are still
+// updated correctly.
 func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled bool, reason domain.AutoDisabledReason) error {
 	u, err := s.users.GetByID(ctx, userID)
 	if err != nil {
@@ -510,25 +833,141 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
-	// Re-derive the protocol per inbound so the spec matches what's there.
-	g, err := s.groups.GetByID(ctx, u.GroupID)
-	if err != nil {
-		return err
-	}
-	nodes, err := s.selector.NodesFor(ctx, g)
-	if err != nil {
-		return err
-	}
-	email := u.EmailForXUI()
-	for _, n := range nodes {
-		info, err := s.inspectInbound(ctx, n)
-		if err != nil || info.protocol == "" {
-			continue
-		}
-		_ = s.syncer.SetOwnedClientEnable(ctx, n.PanelName, n.InboundID, email,
-			info.protocol, u.UUID, enabled)
+	if err := s.pushClientConfigToAll(ctx, u); err != nil {
+		return s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.Username))
 	}
 	return nil
+}
+
+// pushClientConfigToAll iterates through all owned clients of the user and pushes
+// their Enable flag and ExpireAt to 3X-UI.
+func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) error {
+	entries, err := s.ownership.ListByUser(ctx, u.ID)
+	if err != nil {
+		return err
+	}
+	var expireTime int64
+	if u.ExpireAt != nil {
+		expireTime = u.ExpireAt.UnixMilli()
+	}
+	var firstErr error
+	for _, e := range entries {
+		info, err := s.inspectInboundByPanel(ctx, e.PanelID, e.InboundID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if info.protocol == "" {
+			continue
+		}
+		if err := s.syncer.SetOwnedClientEnable(ctx, e.PanelID, e.InboundID, e.ClientEmail,
+			info.protocol, u.UUID, u.Enabled, expireTime); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// ProcessDueTasks runs pending user-scoped sync tasks. It is safe to call
+// from a periodic background loop; every failed remote write is persisted
+// with a backoff and retried later.
+func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
+	if s.tasks == nil {
+		return nil
+	}
+	tasks, err := s.tasks.ListDue(ctx, time.Now(), limit)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Type != domain.SyncTaskUserDelete &&
+			task.Type != domain.SyncTaskUserResync &&
+			task.Type != domain.SyncTaskUserPushConfig {
+			continue
+		}
+		if err := s.tasks.MarkRunning(ctx, task.ID); err != nil {
+			return err
+		}
+		if err := s.runUserTask(ctx, task); err != nil {
+			next := time.Now().Add(deleteTaskBackoff(task.Attempts + 1))
+			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
+				return markErr
+			}
+			continue
+		}
+		if err := s.tasks.MarkSucceeded(ctx, task.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) runUserTask(ctx context.Context, task *domain.SyncTask) error {
+	switch task.Type {
+	case domain.SyncTaskUserDelete:
+		return s.runUserDeleteTask(ctx, task)
+	case domain.SyncTaskUserResync:
+		return s.ResyncMembership(ctx, task.TargetID)
+	case domain.SyncTaskUserPushConfig:
+		u, err := s.users.GetByID(ctx, task.TargetID)
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return s.pushClientConfigToAll(ctx, u)
+	default:
+		return nil
+	}
+}
+
+func (s *Service) runUserDeleteTask(ctx context.Context, task *domain.SyncTask) error {
+	u, err := s.users.GetByID(ctx, task.TargetID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	u.Enabled = false
+	u.AutoDisabledReason = domain.DisabledPendingDelete
+	if err := s.users.Update(ctx, u); err != nil {
+		return err
+	}
+	if err := s.syncer.DelAllOwnedForUser(ctx, u.ID); err != nil {
+		return fmt.Errorf("sync delete: %w", err)
+	}
+	return s.users.Delete(ctx, u.ID)
+}
+
+// deleteTaskBackoff returns a flat 1-minute retry interval. The sync-first
+// design means tasks only reach the queue when 3X-UI was unreachable; in
+// that case we want a steady polling cadence rather than exponentially
+// pushing the recovery further out.
+func deleteTaskBackoff(_ int) time.Duration {
+	return time.Minute
+}
+
+func (s *Service) enqueueUserTask(ctx context.Context, typ domain.SyncTaskType, userID int64, summary string) error {
+	if s.tasks == nil {
+		return nil
+	}
+	if _, err := s.tasks.GetActiveByTarget(ctx, typ, "user", userID); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	return s.tasks.Create(ctx, &domain.SyncTask{
+		Type:       typ,
+		Status:     domain.SyncTaskPending,
+		TargetType: "user",
+		TargetID:   userID,
+		Summary:    summary,
+		NextRunAt:  time.Now(),
+	})
 }
 
 // ResetUUIDAndSync rotates the user UUID and pushes the change to every
@@ -552,22 +991,36 @@ func (s *Service) ResetUUIDAndSync(ctx context.Context, userID int64) (string, e
 	if err != nil {
 		return newUUID, err
 	}
+	var expireTime int64
+	if u.ExpireAt != nil {
+		expireTime = u.ExpireAt.UnixMilli()
+	}
+	needsRetry := false
 	for _, e := range entries {
-		info, err := s.inspectInboundByPanel(ctx, e.PanelName, e.InboundID)
-		if err != nil || info.protocol == "" {
+		info, err := s.inspectInboundByPanel(ctx, e.PanelID, e.InboundID)
+		if err != nil {
+			needsRetry = true
 			continue
 		}
-		_ = s.syncer.RotateClientUUID(ctx, e.PanelName, e.InboundID, e.ClientEmail,
-			info.protocol, oldUUID, newUUID, u.Enabled)
+		if info.protocol == "" {
+			continue
+		}
+		if err := s.syncer.RotateClientUUID(ctx, e.PanelID, e.InboundID, e.ClientEmail,
+			info.protocol, oldUUID, newUUID, u.Enabled, expireTime); err != nil {
+			needsRetry = true
+		}
+	}
+	if needsRetry {
+		_ = s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.Username))
 	}
 	return newUUID, nil
 }
 
-// inspectInboundByPanel is the address-by-(panel, inbound) version of
+// inspectInboundByPanel is the address-by-(panel_id, inbound) version of
 // inspectInbound, used when the caller has an ownership entry rather than
 // a Node row.
-func (s *Service) inspectInboundByPanel(ctx context.Context, panel string, inboundID int) (*inboundInfo, error) {
-	c, err := s.pool.Get(panel)
+func (s *Service) inspectInboundByPanel(ctx context.Context, panelID int64, inboundID int) (*inboundInfo, error) {
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return nil, err
 	}
@@ -595,7 +1048,7 @@ type inboundInfo struct {
 // need to construct a ClientSpec: protocol (with SS / SS-2022 distinguished
 // via the cipher method) and the default xtls flow.
 func (s *Service) inspectInbound(ctx context.Context, n *domain.Node) (*inboundInfo, error) {
-	c, err := s.pool.Get(n.PanelName)
+	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return nil, err
 	}

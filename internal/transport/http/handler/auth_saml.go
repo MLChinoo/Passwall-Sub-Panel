@@ -1,11 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
@@ -24,25 +25,25 @@ type AuthSAMLHandler struct {
 	saml *auth.SAMLService
 	auth *auth.Service
 	user *user.Service
-	cfg  *config.Config
 }
 
-func NewAuthSAMLHandler(samlSvc *auth.SAMLService, authSvc *auth.Service,
-	userSvc *user.Service, cfg *config.Config) *AuthSAMLHandler {
-	return &AuthSAMLHandler{saml: samlSvc, auth: authSvc, user: userSvc, cfg: cfg}
+func NewAuthSAMLHandler(samlSvc *auth.SAMLService, authSvc *auth.Service, userSvc *user.Service) *AuthSAMLHandler {
+	return &AuthSAMLHandler{saml: samlSvc, auth: authSvc, user: userSvc}
 }
 
 // Login initiates SP-initiated SSO by redirecting the browser to the IdP.
+// The AuthnRequest ID is embedded in RelayState ("id|returnURL") — cookies
+// won't work here because the ACS POST is cross-site and SameSite=Lax blocks them.
 func (h *AuthSAMLHandler) Login(c *gin.Context) {
 	if !h.saml.Enabled() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
 		return
 	}
-	relayState := c.Query("return_to")
-	if relayState == "" {
-		relayState = "/user/me"
+	returnTo := c.Query("return_to")
+	if returnTo == "" {
+		returnTo = "/user/me"
 	}
-	redirectURL, err := h.saml.BuildAuthnURL(relayState)
+	redirectURL, err := h.saml.BuildAuthnURL(returnTo)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -52,37 +53,55 @@ func (h *AuthSAMLHandler) Login(c *gin.Context) {
 
 // ACS handles the SAML Response POSTed back by the IdP. Validates the
 // assertion, upserts the user, issues JWT tokens, and redirects the
-// browser to RelayState (or /user/me by default) with HttpOnly cookies set.
+// browser to the return URL embedded in RelayState.
 func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 	if !h.saml.Enabled() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
 		return
 	}
-	assertion, err := h.saml.ParseACSResponse(c.Request)
+
+	// RelayState format: "reqID|returnURL" (set by Login via BuildAuthnURL).
+	rawRelay := c.Request.FormValue("RelayState")
+	var reqID, returnTo string
+	if idx := strings.IndexByte(rawRelay, '|'); idx > 0 {
+		reqID = rawRelay[:idx]
+		returnTo = rawRelay[idx+1:]
+	} else {
+		returnTo = rawRelay
+	}
+	var possibleIDs []string
+	if reqID != "" {
+		possibleIDs = []string{reqID}
+	}
+
+	assertion, err := h.saml.ParseACSResponse(c.Request, possibleIDs)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
-	samlCfg := h.saml.Config()
 	isAdmin := h.saml.IsAdmin(assertion.Groups)
 	u, err := h.user.EnsureSSO(c.Request.Context(), user.EnsureSSOInput{
-		UPN:                assertion.UPN,
-		Email:              assertion.Email,
-		DisplayName:        assertion.DisplayName,
-		Groups:             assertion.Groups,
-		IsAdmin:            isAdmin,
-		DefaultGroupSlug:   samlCfg.DefaultGroupSlug,
-		DefaultExpireDays:  samlCfg.NewUserDefaults.ExpireDays,
-		DefaultLimitBytes:  samlCfg.NewUserDefaults.TrafficLimitBytes,
-		DefaultResetPeriod: domain.ResetPeriod(samlCfg.NewUserDefaults.TrafficResetPeriod),
+		UPN:         assertion.UPN,
+		Email:       assertion.Email,
+		DisplayName: assertion.DisplayName,
+		Groups:      assertion.Groups,
+		IsAdmin:     isAdmin,
 	})
+	if errors.Is(err, domain.ErrSSONoAccount) {
+		c.Redirect(http.StatusFound, "/sso-no-account")
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if !u.Enabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "account disabled"})
+		msg := "account disabled"
+		if u.AutoDisabledReason == domain.DisabledPendingApproval {
+			msg = "account pending admin approval"
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
 		return
 	}
 	access, refresh, err := h.auth.IssueTokens(u)
@@ -91,16 +110,15 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 		return
 	}
 
-	secure := false // upgrade to true once HTTPS is terminated by the reverse proxy and forwarded headers indicate it
+	secure := false
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(CookieAccessToken, access, int(h.cfg.AccessTTL().Seconds()), "/", "", secure, true)
-	c.SetCookie(CookieRefreshToken, refresh, int(h.cfg.RefreshTTL().Seconds()), "/", "", secure, true)
+	c.SetCookie(CookieAccessToken, access, int(h.auth.AccessTTL().Seconds()), "/", "", secure, true)
+	c.SetCookie(CookieRefreshToken, refresh, int(h.auth.RefreshTTL().Seconds()), "/", "", secure, true)
 
-	relayState := c.Request.FormValue("RelayState")
-	if relayState == "" {
-		relayState = "/user/me"
+	if returnTo == "" {
+		returnTo = "/user/me"
 	}
-	c.Redirect(http.StatusFound, relayState)
+	c.Redirect(http.StatusFound, "/sso-callback?next="+returnTo)
 }
 
 // Metadata serves the SP metadata XML for IdP-side onboarding.

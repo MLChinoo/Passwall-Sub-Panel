@@ -1,0 +1,270 @@
+package handler
+
+import (
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/samlkey"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
+)
+
+// AdminSAMLHandler exposes /api/admin/settings/saml — GET returns the
+// stored SAML/SSO configuration, PUT replaces it and reloads the live
+// ServiceProvider so the edit takes effect immediately.
+//
+// Sensitive fields (SP private key PEM) are NEVER returned in plaintext.
+// The GET response carries a "has_sp_key" boolean instead; the admin
+// re-pastes the key only when actually changing it.
+//
+// Mutual exclusion: enabling SAML disables OIDC (and vice versa) because
+// SSO providers can only run one at a time. The handler enforces this on
+// save by toggling the other provider's stored "enabled" flag and
+// reloading its live service.
+type AdminSAMLHandler struct {
+	repo     ports.SAMLConfigRepo
+	saml     *auth.SAMLService
+	oidcRepo ports.OIDCConfigRepo
+	oidc     *auth.OIDCService
+	settings ports.SettingsRepo
+}
+
+func NewAdminSAMLHandler(repo ports.SAMLConfigRepo, samlSvc *auth.SAMLService,
+	oidcRepo ports.OIDCConfigRepo, oidcSvc *auth.OIDCService,
+	settings ports.SettingsRepo) *AdminSAMLHandler {
+	return &AdminSAMLHandler{
+		repo:     repo,
+		saml:     samlSvc,
+		oidcRepo: oidcRepo,
+		oidc:     oidcSvc,
+		settings: settings,
+	}
+}
+
+type samlSPDTO struct {
+	EntityID  string `json:"entity_id"`
+	ACSURL    string `json:"acs_url"`
+	CertPEM   string `json:"cert_pem"`
+	HasKeyPEM bool   `json:"has_key_pem"`
+}
+
+type samlIDPDTO struct {
+	MetadataURL          string `json:"metadata_url"`
+	MetadataRefreshHours int    `json:"metadata_refresh_hours"`
+}
+
+type samlAttrDTO struct {
+	UPN         string `json:"upn"`
+	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
+	Groups      string `json:"groups"`
+}
+
+type samlNewUserDTO struct {
+	ExpireDays         int    `json:"expire_days"`
+	TrafficLimitBytes  int64  `json:"traffic_limit_bytes"`
+	TrafficResetPeriod string `json:"traffic_reset_period"`
+}
+
+type samlConfigDTO struct {
+	Enabled          bool           `json:"enabled"`
+	Mode             string         `json:"mode"`
+	SP               samlSPDTO      `json:"sp"`
+	IDP              samlIDPDTO     `json:"idp"`
+	AttributeMapping samlAttrDTO    `json:"attribute_mapping"`
+	AdminGroupIDs    []string       `json:"admin_group_ids"`
+	DefaultGroupSlug string         `json:"default_group_slug"`
+	NewUserDefaults  samlNewUserDTO `json:"new_user_defaults"`
+}
+
+// samlUpdateRequest is the same shape as samlConfigDTO but SP.KeyPEM is an
+// explicit field that, when empty, preserves the existing stored key.
+type samlUpdateRequest struct {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"`
+	SP      struct {
+		EntityID string `json:"entity_id"`
+		ACSURL   string `json:"acs_url"`
+		CertPEM  string `json:"cert_pem"`
+		KeyPEM   string `json:"key_pem"`
+	} `json:"sp"`
+	IDP struct {
+		MetadataURL          string `json:"metadata_url"`
+		MetadataRefreshHours int    `json:"metadata_refresh_hours"`
+	} `json:"idp"`
+	AttributeMapping samlAttrDTO    `json:"attribute_mapping"`
+	AdminGroupIDs    []string       `json:"admin_group_ids"`
+	DefaultGroupSlug string         `json:"default_group_slug"`
+	NewUserDefaults  samlNewUserDTO `json:"new_user_defaults"`
+}
+
+func (h *AdminSAMLHandler) Get(c *gin.Context) {
+	cfg, err := h.repo.Load(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, toSAMLDTO(cfg))
+}
+
+func (h *AdminSAMLHandler) Put(c *gin.Context) {
+	var req samlUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	existing, err := h.repo.Load(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	mode := req.Mode
+	if mode != "auto" && mode != "manual" {
+		mode = "auto"
+	}
+
+	refreshHours := req.IDP.MetadataRefreshHours
+	if refreshHours <= 0 {
+		refreshHours = 24
+	}
+
+	cfg := &config.SAMLConfig{
+		Enabled: req.Enabled,
+		Mode:    mode,
+		SP: config.SPConf{
+			EntityID: req.SP.EntityID,
+			ACSURL:   req.SP.ACSURL,
+			CertPEM:  req.SP.CertPEM,
+			KeyPEM:   firstNonEmpty(req.SP.KeyPEM, existing.SP.KeyPEM),
+		},
+		IDP: config.IDPConf{
+			MetadataURL:             req.IDP.MetadataURL,
+			MetadataRefreshInterval: time.Duration(refreshHours) * time.Hour,
+		},
+		AttributeMapping: config.SAMLAttributeMap{
+			UPN:         req.AttributeMapping.UPN,
+			Email:       req.AttributeMapping.Email,
+			DisplayName: req.AttributeMapping.DisplayName,
+			Groups:      req.AttributeMapping.Groups,
+		},
+		AdminGroupIDs:    req.AdminGroupIDs,
+		DefaultGroupSlug: req.DefaultGroupSlug,
+		NewUserDefaults: config.SAMLNewUserDefaults{
+			ExpireDays:         req.NewUserDefaults.ExpireDays,
+			TrafficLimitBytes:  req.NewUserDefaults.TrafficLimitBytes,
+			TrafficResetPeriod: req.NewUserDefaults.TrafficResetPeriod,
+		},
+	}
+
+	// In auto mode, derive SP entity_id / ACS URL from the panel's public
+	// base URL (sub_base_url) and auto-generate a self-signed SP keypair
+	// the first time SAML is enabled — admin should not have to fill those
+	// fields by hand.
+	if cfg.Mode == "auto" {
+		base := strings.TrimRight(resolveSubBase(c.Request.Context(), h.settings), "/")
+		if base == "" {
+			// Fall back to the request's own host so admins without a
+			// configured sub_base_url still get valid SP URLs generated.
+			scheme := "https"
+			if c.Request.TLS == nil && c.GetHeader("X-Forwarded-Proto") != "https" {
+				scheme = "http"
+			}
+			base = scheme + "://" + c.Request.Host
+		}
+		cfg.SP.EntityID = base + "/api/auth/saml/metadata"
+		cfg.SP.ACSURL = base + "/api/auth/saml/acs"
+		// Reset attribute mapping to documented defaults (ApplySAMLDefaults
+		// fills them in when blank).
+		cfg.AttributeMapping = config.SAMLAttributeMap{}
+		if cfg.SP.CertPEM == "" || cfg.SP.KeyPEM == "" {
+			cert, key, err := samlkey.GenerateSelfSigned(cfg.SP.EntityID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "generate SP keypair: " + err.Error()})
+				return
+			}
+			cfg.SP.CertPEM = cert
+			cfg.SP.KeyPEM = key
+		}
+	}
+
+	config.ApplySAMLDefaults(cfg)
+
+	if err := h.repo.Save(c.Request.Context(), cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Mutual exclusion — if we just enabled SAML, disable OIDC.
+	if cfg.Enabled && h.oidcRepo != nil {
+		if oidcCfg, err := h.oidcRepo.Load(c.Request.Context()); err == nil && oidcCfg.Enabled {
+			oidcCfg.Enabled = false
+			_ = h.oidcRepo.Save(c.Request.Context(), oidcCfg)
+			if h.oidc != nil {
+				_ = h.oidc.Reload(c.Request.Context(), oidcCfg)
+			}
+		}
+	}
+
+	// Best-effort live reload: persistence already succeeded, so a bad SP
+	// build (eg. malformed cert) is reported but does not fail the request.
+	if err := h.saml.Reload(c.Request.Context(), cfg); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"saved":        true,
+			"reload_error": err.Error(),
+			"config":       toSAMLDTO(cfg),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"saved": true, "config": toSAMLDTO(cfg)})
+}
+
+func toSAMLDTO(c *config.SAMLConfig) samlConfigDTO {
+	hours := int(c.IDP.MetadataRefreshInterval / time.Hour)
+	if hours <= 0 {
+		hours = 24
+	}
+	mode := c.Mode
+	if mode != "auto" && mode != "manual" {
+		mode = "auto"
+	}
+	return samlConfigDTO{
+		Enabled: c.Enabled,
+		Mode:    mode,
+		SP: samlSPDTO{
+			EntityID:  c.SP.EntityID,
+			ACSURL:    c.SP.ACSURL,
+			CertPEM:   c.SP.CertPEM,
+			HasKeyPEM: c.SP.KeyPEM != "",
+		},
+		IDP: samlIDPDTO{
+			MetadataURL:          c.IDP.MetadataURL,
+			MetadataRefreshHours: hours,
+		},
+		AttributeMapping: samlAttrDTO{
+			UPN:         c.AttributeMapping.UPN,
+			Email:       c.AttributeMapping.Email,
+			DisplayName: c.AttributeMapping.DisplayName,
+			Groups:      c.AttributeMapping.Groups,
+		},
+		AdminGroupIDs:    c.AdminGroupIDs,
+		DefaultGroupSlug: c.DefaultGroupSlug,
+		NewUserDefaults: samlNewUserDTO{
+			ExpireDays:         c.NewUserDefaults.ExpireDays,
+			TrafficLimitBytes:  c.NewUserDefaults.TrafficLimitBytes,
+			TrafficResetPeriod: c.NewUserDefaults.TrafficResetPeriod,
+		},
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}

@@ -10,6 +10,21 @@ const routes: RouteRecordRaw[] = [
   { path: '/', redirect: () => homeForRole(useAuthStore().role) },
   { path: '/login', component: LoginView, meta: { public: true } },
   {
+    path: '/sso-callback',
+    component: () => import('@/views/SsoCallbackView.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/sso-no-account',
+    component: () => import('@/views/SsoNoAccountView.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/login/local',
+    component: () => import('@/views/LoginLocalView.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/admin',
     component: AdminLayout,
     redirect: '/admin/dashboard',
@@ -23,6 +38,10 @@ const routes: RouteRecordRaw[] = [
       { path: 'templates', component: () => import('@/views/admin/TemplatesView.vue') },
       { path: 'traffic', component: () => import('@/views/admin/TrafficView.vue') },
       { path: 'audit', component: () => import('@/views/admin/AuditView.vue') },
+      { path: 'sync-tasks', component: () => import('@/views/admin/SyncTasksView.vue') },
+      { path: 'servers', component: () => import('@/views/admin/ServersView.vue') },
+      { path: 'sso', redirect: '/admin/settings' },
+      { path: 'settings', component: () => import('@/views/admin/SettingsView.vue') },
     ],
   },
   {

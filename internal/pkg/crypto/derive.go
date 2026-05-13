@@ -17,7 +17,7 @@ import (
 //
 //	VLESS / VMess: uuid as-is (becomes the "uuid" / "id" field)
 //	Trojan:        uuid as-is (uuid string used as the password)
-//	SS (legacy):   uuid as-is
+//	SS:            uuid as-is
 //	SS-2022:       base64(SHA-256(uuid)) — a 32-byte PSK
 func DeriveProxyPassword(userUUID string, protocol domain.Protocol) string {
 	switch protocol {
@@ -35,7 +35,7 @@ func DeriveProxyPassword(userUUID string, protocol domain.Protocol) string {
 }
 
 // DetectProtocol classifies a 3X-UI inbound protocol string into the
-// internal Protocol enum. ssMethod is required to disambiguate legacy SS from
+// internal Protocol enum. ssMethod is required to disambiguate SS from
 // SS-2022 (both report protocol="shadowsocks").
 func DetectProtocol(inboundProtocol, ssMethod string) domain.Protocol {
 	switch strings.ToLower(inboundProtocol) {

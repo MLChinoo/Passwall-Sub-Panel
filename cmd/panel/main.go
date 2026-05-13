@@ -17,14 +17,23 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 )
 
+func ensureDirs(cfg *config.Config) {
+	for _, d := range []string{cfg.ConfigDir, cfg.DataDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			log.Fatalf("create directory %s: %v", d, err)
+		}
+	}
+}
+
 const defaultConfigPath = "config.yaml"
 
 func main() {
 	cfgPath := configPath()
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.LoadOrGenerate(cfgPath)
 	if err != nil {
 		log.Fatalf("load config %s: %v", cfgPath, err)
 	}
+	ensureDirs(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

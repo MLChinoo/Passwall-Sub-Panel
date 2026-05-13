@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 
 // Dev server proxies /api and /sub to the Go panel so the SPA can run
-// hot-reloaded on :5173 while talking to the real backend on :8787.
+// hot-reloaded on :5173 while talking to the real backend on :8788.
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -14,8 +14,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8787', changeOrigin: true },
-      '/sub': { target: 'http://localhost:8787', changeOrigin: true },
+      '/api': { target: 'http://localhost:8788', changeOrigin: true },
+      '/sub': { target: 'http://localhost:8788', changeOrigin: true },
     },
   },
   build: {

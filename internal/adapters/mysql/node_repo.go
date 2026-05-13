@@ -24,6 +24,13 @@ func (r *nodeRepo) Update(ctx context.Context, n *domain.Node) error {
 	return r.db.WithContext(ctx).Save(nodeFromDomain(n)).Error
 }
 
+func (r *nodeRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
+	return r.db.WithContext(ctx).
+		Model(&nodeRow{}).
+		Where("panel_id = ?", panelID).
+		Update("panel_name", panelName).Error
+}
+
 func (r *nodeRepo) Delete(ctx context.Context, id int64) error {
 	return r.db.WithContext(ctx).Delete(&nodeRow{}, id).Error
 }
@@ -36,10 +43,10 @@ func (r *nodeRepo) GetByID(ctx context.Context, id int64) (*domain.Node, error) 
 	return row.toDomain(), nil
 }
 
-func (r *nodeRepo) GetByPanelInbound(ctx context.Context, panel string, inboundID int) (*domain.Node, error) {
+func (r *nodeRepo) GetByPanelInbound(ctx context.Context, panelID int64, inboundID int) (*domain.Node, error) {
 	var row nodeRow
 	err := r.db.WithContext(ctx).
-		Where("panel_name = ? AND inbound_id = ?", panel, inboundID).
+		Where("panel_id = ? AND inbound_id = ?", panelID, inboundID).
 		First(&row).Error
 	if err != nil {
 		return nil, wrapNotFound(err)

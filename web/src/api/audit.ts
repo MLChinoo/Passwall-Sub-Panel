@@ -27,3 +27,7 @@ export async function listAudit(params: AuditFilter = {}) {
   )
   return data
 }
+
+export async function clearAudit() {
+  await client.delete('/admin/audit')
+}

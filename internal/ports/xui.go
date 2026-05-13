@@ -1,10 +1,14 @@
 package ports
 
-import "context"
+import (
+	"context"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+)
 
 // XUIClient is the abstract HTTP client for a single 3X-UI panel. The service
 // layer never instantiates this directly — it routes through XUIPool by
-// panel name.
+// panel id.
 type XUIClient interface {
 	// Inbound CRUD
 	ListInbounds(ctx context.Context) ([]Inbound, error)
@@ -117,10 +121,16 @@ type ClientTraffic struct {
 	Reset      int
 }
 
-// XUIPool routes write/read calls to the appropriate 3X-UI client by panel
-// name. Multi-panel deployments require all service code to go through Pool.Get
+// XUIPool routes write/read calls to the appropriate 3X-UI client by stable
+// panel id. Multi-panel deployments require all service code to go through Pool.Get
 // rather than holding a XUIClient reference directly.
+//
+// Add / Remove are used by AdminServersHandler so the pool stays in lockstep
+// with the persisted server list — adding a server immediately becomes
+// usable without a panel restart.
 type XUIPool interface {
-	Get(panelName string) (XUIClient, error)
-	List() []string
+	Get(panelID int64) (XUIClient, error)
+	List() []*domain.XUIPanel
+	Add(panel *domain.XUIPanel) error
+	Remove(panelID int64) error
 }

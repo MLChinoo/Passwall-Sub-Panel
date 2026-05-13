@@ -13,6 +13,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
@@ -24,18 +25,27 @@ import (
 // Deps bundles every dependency the HTTP layer needs. App-startup wiring
 // populates this and passes it to NewRouter.
 type Deps struct {
-	Cfg     *config.Config
-	Repos   ports.Repos
-	Pool    ports.XUIPool
-	Auth    *auth.Service
-	SAML    *auth.SAMLService
-	User    *user.Service
-	Group   *group.Service
-	Node    *node.Service
-	Render  *render.Service
-	Audit   *audit.Service
-	Sync    *syncsvc.Service
-	Traffic *traffic.Service
+	Cfg       *config.Config
+	Repos     ports.Repos
+	Pool      ports.XUIPool
+	Auth      *auth.Service
+	SAML      *auth.SAMLService
+	OIDC      *auth.OIDCService
+	User      *user.Service
+	Group     *group.Service
+	Node      *node.Service
+	Render    *render.Service
+	Audit     *audit.Service
+	Sync      *syncsvc.Service
+	Traffic   *traffic.Service
+	Reconcile *reconcile.Service
+
+	// Rate-limit caps resolved from the DB settings table at startup. The
+	// middleware uses fixed buckets so admin edits require a restart for
+	// these to refresh. JWT TTLs are NOT here — the issuer reads them
+	// live via auth.Service.AccessTTL/RefreshTTL.
+	SubPerIPPerMin   int
+	LoginPerIPPerMin int
 }
 
 // NewRouter returns a configured *gin.Engine ready to be served.
@@ -46,54 +56,64 @@ func NewRouter(d Deps) *gin.Engine {
 	// Public endpoints
 	g.GET("/health", handler.Health)
 
-	subLimiter := middleware.NewPerIPLimiter(d.Cfg.RateLimit.SubPerIPPerMin, time.Minute)
+	subLimiter := middleware.NewPerIPLimiter(d.SubPerIPPerMin, time.Minute)
 	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog)
 	g.GET("/sub/:token", subLimiter.Handler(), subHandler.Get)
 
 	// Auth endpoints
-	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User)
-	loginLimiter := middleware.NewPerIPLimiter(d.Cfg.RateLimit.LoginPerIPPerMin, time.Minute)
+	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings)
+	loginLimiter := middleware.NewPerIPLimiter(d.LoginPerIPPerMin, time.Minute)
 	authGroup := g.Group("/api/auth")
 	{
+		authGroup.GET("/methods", authLocal.Methods)
 		authGroup.POST("/local/login", loginLimiter.Handler(), authLocal.Login)
-		if d.SAML != nil && d.SAML.Enabled() {
-			samlHandler := handler.NewAuthSAMLHandler(d.SAML, d.Auth, d.User, d.Cfg)
-			authGroup.GET("/saml/login", samlHandler.Login)
-			authGroup.POST("/saml/acs", samlHandler.ACS)
-			authGroup.GET("/saml/metadata", samlHandler.Metadata)
-		}
+		// SAML endpoints stay registered even when SSO is currently
+		// disabled — the underlying service rejects calls until admin
+		// re-enables it. That way an admin who flips SSO on in the panel
+		// doesn't need a restart for the routes to appear.
+		samlHandler := handler.NewAuthSAMLHandler(d.SAML, d.Auth, d.User)
+		authGroup.GET("/saml/login", samlHandler.Login)
+		authGroup.POST("/saml/acs", samlHandler.ACS)
+		authGroup.GET("/saml/metadata", samlHandler.Metadata)
+
+		oidcHandler := handler.NewAuthOIDCHandler(d.OIDC, d.Auth, d.User)
+		authGroup.GET("/oidc/login", oidcHandler.Login)
+		authGroup.GET("/oidc/callback", oidcHandler.Callback)
+
+		ssoComplete := handler.NewAuthSSOCompleteHandler(d.Auth, d.User)
+		authGroup.GET("/sso-complete", ssoComplete.Complete)
 	}
 
 	// Authenticated user self-service
-	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Cfg)
+	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.Settings)
 	userGroup := g.Group("/api/user/me",
-		middleware.RequireAuth(d.Auth),
+		middleware.RequireAuth(d.Auth, d.User),
 		middleware.RequireRole(domain.RoleUser, domain.RoleAdmin),
 	)
 	{
 		userGroup.GET("", userMe.Profile)
 		userGroup.GET("/traffic", userMe.Traffic)
-		userGroup.POST("/reset-sub-token", userMe.ResetSubToken)
+		userGroup.POST("/reset-credentials", userMe.ResetCredentials)
 		userGroup.POST("/change-password", userMe.ChangePassword)
 	}
 
 	// Admin API
 	adminGroup := g.Group("/api/admin",
-		middleware.RequireAuth(d.Auth),
+		middleware.RequireAuth(d.Auth, d.User),
 		middleware.RequireRole(domain.RoleAdmin),
 	)
+	adminGroup.Use(middleware.AdminAudit(d.Audit))
 	{
-		users := handler.NewAdminUserHandler(d.User, d.Cfg)
+		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings)
 		adminGroup.GET("/users", users.List)
 		adminGroup.POST("/users", users.Create)
 		adminGroup.GET("/users/:id", users.Get)
 		adminGroup.PUT("/users/:id", users.Update)
 		adminGroup.DELETE("/users/:id", users.Delete)
-		adminGroup.POST("/users/:id/reset-sub-token", users.ResetSubToken)
-		adminGroup.POST("/users/:id/reset-uuid", users.ResetUUID)
+		adminGroup.POST("/users/:id/reset-credentials", users.ResetCredentials)
 		adminGroup.POST("/users/:id/set-enabled", users.SetEnabled)
 
-		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership)
+		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.XUIPanel)
 		adminGroup.GET("/nodes", nodes.List)
 		adminGroup.GET("/nodes/:id", nodes.Get)
 		adminGroup.POST("/nodes/import", nodes.ImportExisting)
@@ -104,6 +124,7 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.DELETE("/nodes/:id", nodes.Delete)
 		adminGroup.GET("/nodes/unmanaged", nodes.ListUnmanaged)
 		adminGroup.POST("/nodes/:id/claim", nodes.ClaimClient)
+		adminGroup.POST("/nodes/generate-reality-keypair", nodes.GenerateRealityKeypair)
 
 		groups := handler.NewAdminGroupHandler(d.Group, d.User, d.Repos.User)
 		adminGroup.GET("/groups", groups.List)
@@ -125,12 +146,41 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.PUT("/templates/:slug", templates.Save)
 		adminGroup.DELETE("/templates/:slug", templates.Delete)
 
-		audit := handler.NewAdminAuditHandler(d.Repos.Audit)
-		adminGroup.GET("/audit", audit.List)
+		auditH := handler.NewAdminAuditHandler(d.Repos.Audit)
+		adminGroup.GET("/audit", auditH.List)
+		adminGroup.DELETE("/audit", auditH.Clear)
 
 		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Traffic)
 		adminGroup.GET("/traffic/top", trafficH.Top)
 		adminGroup.GET("/traffic/user/:id", trafficH.UserReport)
+
+		servers := handler.NewAdminServersHandler(d.Repos.XUIPanel, d.Pool, d.Repos.Node, d.Repos.Ownership)
+		adminGroup.GET("/servers", servers.List)
+		adminGroup.POST("/servers", servers.Create)
+		adminGroup.PUT("/servers/:id", servers.Update)
+		adminGroup.DELETE("/servers/:id", servers.Delete)
+		adminGroup.POST("/servers/probe", servers.Test)
+
+		settings := handler.NewAdminSettingsHandler(d.Repos.Settings)
+		adminGroup.GET("/settings/ui", settings.Get)
+		adminGroup.PUT("/settings/ui", settings.Put)
+
+		samlAdmin := handler.NewAdminSAMLHandler(d.Repos.SAMLConfig, d.SAML, d.Repos.OIDCConfig, d.OIDC, d.Repos.Settings)
+		adminGroup.GET("/settings/saml", samlAdmin.Get)
+		adminGroup.PUT("/settings/saml", samlAdmin.Put)
+
+		oidcAdmin := handler.NewAdminOIDCHandler(d.Repos.OIDCConfig, d.OIDC, d.Repos.SAMLConfig, d.SAML)
+		adminGroup.GET("/settings/oidc", oidcAdmin.Get)
+		adminGroup.PUT("/settings/oidc", oidcAdmin.Put)
+
+		recon := handler.NewAdminReconcileHandler(d.Reconcile)
+		adminGroup.POST("/reconcile/run", recon.Run)
+
+		tasks := handler.NewAdminSyncTasksHandler(d.Repos.SyncTask)
+		adminGroup.GET("/sync-tasks", tasks.List)
+		adminGroup.POST("/sync-tasks/:id/retry", tasks.Retry)
+		adminGroup.POST("/sync-tasks/:id/cancel", tasks.Cancel)
+		adminGroup.POST("/sync-tasks/purge", tasks.PurgeFinished)
 	}
 
 	// Static SPA bundle (embedded). Must be registered last so /api and

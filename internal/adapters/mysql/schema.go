@@ -34,8 +34,9 @@ type userRow struct {
 	TrafficLimitBytes  int64
 	TrafficResetPeriod string `gorm:"size:16;default:never"`
 	TrafficPeriodStart *time.Time
+	DisplayName        string `gorm:"size:128"`
 	Remark             string `gorm:"size:255"`
-	Enabled            bool   `gorm:"default:true"`
+	Enabled            bool   `gorm:"not null"`
 	AutoDisabledReason string `gorm:"size:32"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -64,6 +65,7 @@ func (r *userRow) toDomain() *domain.User {
 		TrafficLimitBytes:  r.TrafficLimitBytes,
 		TrafficResetPeriod: domain.ResetPeriod(r.TrafficResetPeriod),
 		TrafficPeriodStart: r.TrafficPeriodStart,
+		DisplayName:        r.DisplayName,
 		Remark:             r.Remark,
 		Enabled:            r.Enabled,
 		AutoDisabledReason: domain.AutoDisabledReason(r.AutoDisabledReason),
@@ -93,6 +95,7 @@ func userFromDomain(u *domain.User) *userRow {
 		TrafficLimitBytes:  u.TrafficLimitBytes,
 		TrafficResetPeriod: string(u.TrafficResetPeriod),
 		TrafficPeriodStart: u.TrafficPeriodStart,
+		DisplayName:        u.DisplayName,
 		Remark:             u.Remark,
 		Enabled:            u.Enabled,
 		AutoDisabledReason: string(u.AutoDisabledReason),
@@ -140,7 +143,8 @@ func groupFromDomain(g *domain.Group) *groupRow {
 
 type nodeRow struct {
 	ID            int64  `gorm:"primaryKey;autoIncrement"`
-	PanelName     string `gorm:"size:64;not null;uniqueIndex:uk_panel_inbound,priority:1"`
+	PanelID       int64  `gorm:"not null;index;uniqueIndex:uk_panel_inbound,priority:1"`
+	PanelName     string `gorm:"size:64;index"`
 	InboundID     int    `gorm:"not null;uniqueIndex:uk_panel_inbound,priority:2"`
 	DisplayName   string `gorm:"size:255;not null"`
 	ServerAddress string `gorm:"size:255"`
@@ -156,6 +160,7 @@ func (nodeRow) TableName() string { return "nodes" }
 func (r *nodeRow) toDomain() *domain.Node {
 	return &domain.Node{
 		ID:            r.ID,
+		PanelID:       r.PanelID,
 		PanelName:     r.PanelName,
 		InboundID:     r.InboundID,
 		DisplayName:   r.DisplayName,
@@ -171,6 +176,7 @@ func (r *nodeRow) toDomain() *domain.Node {
 func nodeFromDomain(n *domain.Node) *nodeRow {
 	return &nodeRow{
 		ID:            n.ID,
+		PanelID:       n.PanelID,
 		PanelName:     n.PanelName,
 		InboundID:     n.InboundID,
 		DisplayName:   n.DisplayName,
@@ -186,7 +192,8 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 type ownershipRow struct {
 	ID          int64  `gorm:"primaryKey;autoIncrement"`
 	UserID      int64  `gorm:"index;not null"`
-	PanelName   string `gorm:"size:64;not null;uniqueIndex:uk_owner_match,priority:1"`
+	PanelID     int64  `gorm:"not null;index;uniqueIndex:uk_owner_match,priority:1"`
+	PanelName   string `gorm:"size:64;index"`
 	InboundID   int    `gorm:"not null;uniqueIndex:uk_owner_match,priority:2"`
 	ClientEmail string `gorm:"size:255;not null;uniqueIndex:uk_owner_match,priority:3"`
 	ClientUUID  string `gorm:"size:36;not null"`
@@ -199,6 +206,7 @@ func (r *ownershipRow) toDomain() *domain.XUIClientEntry {
 	return &domain.XUIClientEntry{
 		ID:          r.ID,
 		UserID:      r.UserID,
+		PanelID:     r.PanelID,
 		PanelName:   r.PanelName,
 		InboundID:   r.InboundID,
 		ClientEmail: r.ClientEmail,
@@ -211,6 +219,7 @@ func ownershipFromDomain(e *domain.XUIClientEntry) *ownershipRow {
 	return &ownershipRow{
 		ID:          e.ID,
 		UserID:      e.UserID,
+		PanelID:     e.PanelID,
 		PanelName:   e.PanelName,
 		InboundID:   e.InboundID,
 		ClientEmail: e.ClientEmail,
@@ -274,6 +283,134 @@ type subLogRow struct {
 	UA         string    `gorm:"size:255"`
 	ClientType string    `gorm:"size:32"`
 	AccessedAt time.Time `gorm:"index"`
+}
+
+type syncTaskRow struct {
+	ID         int64  `gorm:"primaryKey;autoIncrement"`
+	Type       string `gorm:"size:64;not null;index:idx_task_due,priority:1"`
+	Status     string `gorm:"size:32;not null;index:idx_task_due,priority:2"`
+	TargetType string `gorm:"size:64;not null;index:idx_task_target,priority:1"`
+	TargetID   int64  `gorm:"not null;index:idx_task_target,priority:2"`
+	Summary    string `gorm:"size:255"`
+	Payload    string `gorm:"type:text"`
+	LastError  string `gorm:"type:text"`
+	Attempts   int
+	NextRunAt  time.Time `gorm:"index:idx_task_due,priority:3"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
+}
+
+func (syncTaskRow) TableName() string { return "sync_tasks" }
+
+func (r *syncTaskRow) toDomain() *domain.SyncTask {
+	return &domain.SyncTask{
+		ID:         r.ID,
+		Type:       domain.SyncTaskType(r.Type),
+		Status:     domain.SyncTaskStatus(r.Status),
+		TargetType: r.TargetType,
+		TargetID:   r.TargetID,
+		Summary:    r.Summary,
+		Payload:    r.Payload,
+		LastError:  r.LastError,
+		Attempts:   r.Attempts,
+		NextRunAt:  r.NextRunAt,
+		CreatedAt:  r.CreatedAt,
+		UpdatedAt:  r.UpdatedAt,
+		FinishedAt: r.FinishedAt,
+	}
+}
+
+func syncTaskFromDomain(t *domain.SyncTask) *syncTaskRow {
+	return &syncTaskRow{
+		ID:         t.ID,
+		Type:       string(t.Type),
+		Status:     string(t.Status),
+		TargetType: t.TargetType,
+		TargetID:   t.TargetID,
+		Summary:    t.Summary,
+		Payload:    t.Payload,
+		LastError:  t.LastError,
+		Attempts:   t.Attempts,
+		NextRunAt:  t.NextRunAt,
+		CreatedAt:  t.CreatedAt,
+		UpdatedAt:  t.UpdatedAt,
+		FinishedAt: t.FinishedAt,
+	}
+}
+
+type xuiPanelRow struct {
+	ID        int64  `gorm:"primaryKey;autoIncrement"`
+	Name      string `gorm:"size:128;uniqueIndex;not null"`
+	URL       string `gorm:"size:512;not null"`
+	APIToken  string `gorm:"type:text"`
+	Username  string `gorm:"size:255"`
+	Password  string `gorm:"type:text"`
+	Remark    string `gorm:"size:255"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type uiSettingsRow struct {
+	ID                 int64  `gorm:"primaryKey"`
+	LoginMode          string `gorm:"size:32"`
+	SiteTitle          string `gorm:"size:128"`
+	LogoURL            string `gorm:"size:1024"`
+	LogoURLDark        string `gorm:"size:1024"`
+	EmailDomain        string `gorm:"size:255"`
+	AuditRetentionDays int
+	SubBaseURL         string `gorm:"size:512"`
+	// Runtime tuning (restart required to take effect).
+	CronTrafficPullMinutes int
+	CronReconcileMinutes   int
+	JWTAccessTTLMinutes    int
+	JWTRefreshTTLMinutes   int
+	JWTIssuer              string `gorm:"size:128"`
+	SubPerIPPerMin         int
+	LoginPerIPPerMin       int
+	SyncTaskRetentionDays  int
+	UpdatedAt              time.Time
+}
+
+func (uiSettingsRow) TableName() string { return "ui_settings" }
+
+type ruleSetRow struct {
+	ID        int64  `gorm:"primaryKey;autoIncrement"`
+	Slug      string `gorm:"size:128;uniqueIndex;not null"`
+	Name      string `gorm:"size:255"`
+	Sort      int
+	Enabled   bool   `gorm:"default:true"`
+	Content   string `gorm:"type:text"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (ruleSetRow) TableName() string { return "rule_sets" }
+
+func (xuiPanelRow) TableName() string { return "xui_panels" }
+
+func (r *xuiPanelRow) toDomain() *domain.XUIPanel {
+	return &domain.XUIPanel{
+		ID:       r.ID,
+		Name:     r.Name,
+		URL:      r.URL,
+		APIToken: r.APIToken,
+		Username: r.Username,
+		Password: r.Password,
+		Remark:   r.Remark,
+	}
+}
+
+func xuiPanelFromDomain(p *domain.XUIPanel) *xuiPanelRow {
+	return &xuiPanelRow{
+		ID:       p.ID,
+		Name:     p.Name,
+		URL:      p.URL,
+		APIToken: p.APIToken,
+		Username: p.Username,
+		Password: p.Password,
+		Remark:   p.Remark,
+	}
 }
 
 func (subLogRow) TableName() string { return "sub_logs" }
@@ -368,11 +505,11 @@ func (j *jsonLayout) Scan(value any) error {
 	return json.Unmarshal(b, (*domain.Layout)(j))
 }
 
-// ---- Migrate ----
+// ---- Schema ----
 
-// Migrate creates or updates all panel tables.
-func Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(
+// EnsureSchema creates the tables the panel needs.
+func EnsureSchema(db *gorm.DB) error {
+	return db.AutoMigrate(
 		&userRow{},
 		&groupRow{},
 		&nodeRow{},
@@ -380,14 +517,13 @@ func Migrate(db *gorm.DB) error {
 		&trafficRow{},
 		&auditRow{},
 		&subLogRow{},
-	); err != nil {
-		return err
-	}
-	return normalizeBlankUPNs(db)
-}
-
-func normalizeBlankUPNs(db *gorm.DB) error {
-	return db.Model(&userRow{}).Where("upn = ?", "").Update("upn", nil).Error
+		&syncTaskRow{},
+		&xuiPanelRow{},
+		&uiSettingsRow{},
+		&ruleSetRow{},
+		&samlConfigRow{},
+		&oidcConfigRow{},
+	)
 }
 
 // wrapNotFound maps GORM's ErrRecordNotFound to domain.ErrNotFound so that

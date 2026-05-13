@@ -8,6 +8,7 @@ export type ResetPeriod = 'never' | 'monthly' | 'quarterly'
 export interface User {
   id: number
   username: string
+  display_name?: string
   upn?: string
   source: UserSource
   role: Role
@@ -25,6 +26,7 @@ export interface User {
 
 export interface CreateUserRequest {
   username: string
+  display_name?: string
   password?: string
   group_id: number
   expire_at?: string
@@ -67,6 +69,7 @@ export interface Group {
 
 export interface Node {
   id: number
+  panel_id: number
   panel_name: string
   inbound_id: number
   display_name: string
@@ -78,6 +81,7 @@ export interface Node {
 }
 
 export interface UnmanagedInbound {
+  PanelID: number
   PanelName: string
   InboundID: number
   Protocol: string
@@ -93,7 +97,46 @@ export interface AuthLoginResponse {
   user: {
     id: number
     username: string
+    display_name?: string
     role: Role
-    source: UserSource
   }
+}
+
+export type SyncTaskStatus = 'pending' | 'running' | 'succeeded' | 'canceled'
+export type SyncTaskType =
+  | 'user_delete'
+  | 'user_resync'
+  | 'user_push_config'
+  | 'node_create'
+  | 'node_delete'
+  | 'node_set_enabled'
+  | 'node_update'
+
+export interface SyncTask {
+  ID?: number
+  id?: number
+  Type?: SyncTaskType
+  type?: SyncTaskType
+  Status?: SyncTaskStatus
+  status?: SyncTaskStatus
+  TargetType?: string
+  target_type?: string
+  TargetID?: number
+  target_id?: number
+  Summary?: string
+  summary?: string
+  Payload?: string
+  payload?: string
+  LastError?: string
+  last_error?: string
+  Attempts?: number
+  attempts?: number
+  NextRunAt?: string
+  next_run_at?: string
+  CreatedAt?: string
+  created_at?: string
+  UpdatedAt?: string
+  updated_at?: string
+  FinishedAt?: string | null
+  finished_at?: string | null
 }

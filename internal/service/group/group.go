@@ -81,6 +81,17 @@ func (s *Service) NodesFor(ctx context.Context, g *domain.Group) ([]*domain.Node
 	return out, nil
 }
 
+// Matches reports whether a node satisfies a group's tag_filter. Exported so
+// callers (e.g. node.Service when syncing clients onto a freshly-created
+// inbound) can ask "which groups would now include this node?" without
+// duplicating the filter semantics.
+func Matches(n *domain.Node, filter domain.TagFilter) bool {
+	if filter.All {
+		return true
+	}
+	return matchAll(n, filter.Tags)
+}
+
 // matchAll returns true when every condition matches. Conditions have the
 // form "region:XX", "tag:yy", "server:zz" or any "key:value" — the implementation
 // treats "region" specially and falls back to a literal tag match.

@@ -2,6 +2,8 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -23,9 +25,21 @@ const (
 // to keep middleware free of upstream package dependencies.
 const CookieAccessToken = "psp_access"
 
+// UserLookup is the narrow user-store surface RequireAuth needs to
+// re-validate that the JWT subject still exists and is allowed in.
+// *user.Service satisfies it.
+type UserLookup interface {
+	Get(ctx context.Context, id int64) (*domain.User, error)
+}
+
 // RequireAuth verifies a token (Authorization Bearer header OR HttpOnly
 // cookie set by SAML ACS) and stores the parsed Claims in the context.
-func RequireAuth(svc *auth.Service) gin.HandlerFunc {
+//
+// On every authenticated request it also re-reads the user from the store
+// so deletes/disables/role-changes take effect immediately — without this,
+// a previously-issued JWT keeps working until natural expiry, which means a
+// deleted admin can still use the console.
+func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := bearerToken(c.GetHeader("Authorization"))
 		if raw == "" {
@@ -42,6 +56,23 @@ func RequireAuth(svc *auth.Service) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
+		u, err := users.Get(c.Request.Context(), claims.UserID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account no longer exists"})
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "auth lookup failed"})
+			return
+		}
+		if !u.Enabled {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account disabled"})
+			return
+		}
+		// Re-bind claims to the live DB role so demotions take effect for
+		// RequireRole checks downstream.
+		claims.Role = u.Role
+		claims.Username = u.Username
 		c.Set(CtxClaims, claims)
 		c.Set(CtxUserID, claims.UserID)
 		c.Next()

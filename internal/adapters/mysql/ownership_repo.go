@@ -24,16 +24,16 @@ func (r *ownershipRepo) Remove(ctx context.Context, id int64) error {
 	return r.db.WithContext(ctx).Delete(&ownershipRow{}, id).Error
 }
 
-func (r *ownershipRepo) RemoveByMatch(ctx context.Context, panel string, inboundID int, email string) error {
+func (r *ownershipRepo) RemoveByMatch(ctx context.Context, panelID int64, inboundID int, email string) error {
 	return r.db.WithContext(ctx).
-		Where("panel_name = ? AND inbound_id = ? AND client_email = ?", panel, inboundID, email).
+		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		Delete(&ownershipRow{}).Error
 }
 
-func (r *ownershipRepo) GetByMatch(ctx context.Context, panel string, inboundID int, email string) (*domain.XUIClientEntry, error) {
+func (r *ownershipRepo) GetByMatch(ctx context.Context, panelID int64, inboundID int, email string) (*domain.XUIClientEntry, error) {
 	var row ownershipRow
 	err := r.db.WithContext(ctx).
-		Where("panel_name = ? AND inbound_id = ? AND client_email = ?", panel, inboundID, email).
+		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		First(&row).Error
 	if err != nil {
 		return nil, wrapNotFound(err)
@@ -53,10 +53,10 @@ func (r *ownershipRepo) ListByUser(ctx context.Context, userID int64) ([]*domain
 	return out, nil
 }
 
-func (r *ownershipRepo) ListByInbound(ctx context.Context, panel string, inboundID int) ([]*domain.XUIClientEntry, error) {
+func (r *ownershipRepo) ListByInbound(ctx context.Context, panelID int64, inboundID int) ([]*domain.XUIClientEntry, error) {
 	var rows []ownershipRow
 	err := r.db.WithContext(ctx).
-		Where("panel_name = ? AND inbound_id = ?", panel, inboundID).
+		Where("panel_id = ? AND inbound_id = ?", panelID, inboundID).
 		Find(&rows).Error
 	if err != nil {
 		return nil, err
@@ -68,16 +68,23 @@ func (r *ownershipRepo) ListByInbound(ctx context.Context, panel string, inbound
 	return out, nil
 }
 
-func (r *ownershipRepo) UpdateUUID(ctx context.Context, panel string, inboundID int, email, newUUID string) error {
+func (r *ownershipRepo) UpdateUUID(ctx context.Context, panelID int64, inboundID int, email, newUUID string) error {
 	return r.db.WithContext(ctx).Model(&ownershipRow{}).
-		Where("panel_name = ? AND inbound_id = ? AND client_email = ?", panel, inboundID, email).
+		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		Update("client_uuid", newUUID).Error
 }
 
-func (r *ownershipRepo) Exists(ctx context.Context, panel string, inboundID int, email string) (bool, error) {
+func (r *ownershipRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
+	return r.db.WithContext(ctx).
+		Model(&ownershipRow{}).
+		Where("panel_id = ?", panelID).
+		Update("panel_name", panelName).Error
+}
+
+func (r *ownershipRepo) Exists(ctx context.Context, panelID int64, inboundID int, email string) (bool, error) {
 	var n int64
 	err := r.db.WithContext(ctx).Model(&ownershipRow{}).
-		Where("panel_name = ? AND inbound_id = ? AND client_email = ?", panel, inboundID, email).
+		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		Count(&n).Error
 	return n > 0, err
 }

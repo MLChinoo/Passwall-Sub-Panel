@@ -43,7 +43,7 @@ onMounted(load)
         <el-option label="Top 50" :value="50" />
       </el-select>
       <el-button @click="load">刷新</el-button>
-      <span style="color: #909399; font-size: 12px">
+      <span style="color: var(--text-muted); font-size: 12px">
         采集间隔来自 config.cron.traffic_pull_minutes（默认 5 min）
       </span>
     </div>

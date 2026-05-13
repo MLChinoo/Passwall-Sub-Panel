@@ -3,7 +3,7 @@
 # Database is zero-config by default: if mysql.dsn is omitted or empty, the
 # panel uses SQLite at <data_dir>/panel.db.
 
-listen: ":8787"
+listen: ":8788"
 
 # Generate (PowerShell):
 #   -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 48 | % {[char]$_})
@@ -14,10 +14,10 @@ jwt_secret: "CHANGE-ME-TO-RANDOM-48-CHAR-STRING"
 # Example:
 #   sub_base_url: "https://sub.example.com"
 # Local testing example:
-#   sub_base_url: "http://127.0.0.1:8787"
+#   sub_base_url: "http://127.0.0.1:8788"
 sub_base_url: "https://sub.example.com"
 
-# YAML config directory (rule_sets, templates, xui_panels.yaml, saml.yaml).
+# YAML config directory (templates).
 config_dir: "./config"
 
 # Runtime data dir. With the default SQLite setup, the DB file is:
@@ -58,14 +58,21 @@ rate_limit:
   sub_per_ip_per_min: 60       # /sub/:token rate per client IP
   login_per_ip_per_min: 5      # /api/auth/local/login per client IP
 
+# Login page mode bootstrap default. Runtime edits are stored in the DB.
+# Frontend GET /api/auth/methods reads the current value and renders
+# accordingly. If no SSO provider is enabled, the panel forces local_only.
+#
+#   sso_first  → big SSO button on the main /login page; small "本地账号登录"
+#                link sends users to /login/local for the username/password form.
+#   dual       → both SSO button and local username/password form rendered
+#                on /login at the same time (current behavior).
+#   local_only → only the local form; users navigating to /login are
+#                redirected to /login/local.
+auth:
+  login_mode: "dual"
+
 # Defaults applied when admin creates a new user without overriding.
 new_user_defaults:
   expire_days: 30              # 0 = never expire
   traffic_limit_gb: 0          # 0 = unlimited
   traffic_reset_period: "monthly"  # never | monthly | quarterly
-
-# Optional explicit paths for side-configs. Default values shown.
-#
-# Example: keep these files under ./config:
-# xui_panels_file: "./config/xui_panels.yaml"
-# saml_file: "./config/saml.yaml"

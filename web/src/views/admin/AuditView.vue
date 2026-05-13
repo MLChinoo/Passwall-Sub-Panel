@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { listAudit, type AuditEntry } from '@/api/audit'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { clearAudit, listAudit, type AuditEntry } from '@/api/audit'
 
 const items = ref<AuditEntry[]>([])
 const total = ref(0)
@@ -9,6 +10,7 @@ const pageSize = ref(50)
 const loading = ref(false)
 const actorFilter = ref('')
 const actionFilter = ref('')
+const clearing = ref(false)
 
 const detailDialog = ref(false)
 const detailRow = ref<AuditEntry | null>(null)
@@ -43,6 +45,28 @@ function formatJSON(s: string): string {
   }
 }
 
+function formatDate(value?: string) {
+  if (!value) return '-'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString()
+}
+
+async function clearAll() {
+  await ElMessageBox.confirm('确定清空所有审计日志？此操作不可恢复。', '清空审计日志', {
+    type: 'warning',
+    confirmButtonText: '清空',
+    cancelButtonText: '取消',
+  })
+  clearing.value = true
+  try {
+    await clearAudit()
+    ElMessage.success('已清空')
+    await load()
+  } finally {
+    clearing.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -50,6 +74,7 @@ onMounted(load)
   <div class="psp-page">
     <div class="psp-page-header">
       <div class="psp-page-title">审计日志</div>
+      <el-button type="danger" plain :loading="clearing" @click="clearAll">清空所有</el-button>
     </div>
 
     <div class="psp-toolbar">
@@ -62,7 +87,7 @@ onMounted(load)
       />
       <el-input
         v-model="actionFilter"
-        placeholder="按 action 筛选 (create_user 等)"
+        placeholder="按动作筛选"
         style="width: 240px"
         clearable
         @change="load"
@@ -72,13 +97,13 @@ onMounted(load)
 
     <el-table v-loading="loading" :data="items" stripe>
       <el-table-column label="时间" min-width="180">
-        <template #default="{ row }">{{ new Date(row.at).toLocaleString() }}</template>
+        <template #default="{ row }">{{ formatDate(row.at) }}</template>
       </el-table-column>
       <el-table-column prop="actor" label="操作者" min-width="160" />
       <el-table-column prop="action" label="动作" min-width="180" />
       <el-table-column prop="target" label="对象" min-width="200" />
       <el-table-column prop="ip" label="IP" width="140" />
-      <el-table-column label="详情" width="80" fixed="right">
+      <el-table-column label="详情" width="80">
         <template #default="{ row }">
           <el-button size="small" @click="showDetail(row)">查看</el-button>
         </template>
@@ -98,7 +123,7 @@ onMounted(load)
 
     <el-dialog v-model="detailDialog" title="审计详情" width="720px" top="6vh">
       <div v-if="detailRow">
-        <p><strong>时间：</strong>{{ new Date(detailRow.at).toLocaleString() }}</p>
+        <p><strong>时间：</strong>{{ formatDate(detailRow.at) }}</p>
         <p><strong>操作者：</strong>{{ detailRow.actor }}</p>
         <p><strong>动作：</strong>{{ detailRow.action }}</p>
         <p><strong>对象：</strong>{{ detailRow.target }}</p>
@@ -106,11 +131,11 @@ onMounted(load)
         <el-divider />
         <el-row :gutter="16">
           <el-col :span="12">
-            <div style="font-weight: 600; margin-bottom: 8px">before</div>
+            <div style="font-weight: 600; margin-bottom: 8px">请求</div>
             <pre class="psp-json">{{ formatJSON(detailRow.before_json) }}</pre>
           </el-col>
           <el-col :span="12">
-            <div style="font-weight: 600; margin-bottom: 8px">after</div>
+            <div style="font-weight: 600; margin-bottom: 8px">结果</div>
             <pre class="psp-json">{{ formatJSON(detailRow.after_json) }}</pre>
           </el-col>
         </el-row>

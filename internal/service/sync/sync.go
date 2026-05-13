@@ -31,16 +31,16 @@ func New(pool ports.XUIPool, ownership ports.OwnershipRepo) *Service {
 	return &Service{pool: pool, ownership: ownership}
 }
 
-// ensureClientOwned returns nil only when (panel, inboundID, email) is
+// ensureClientOwned returns nil only when (panelID, inboundID, email) is
 // recorded in the ownership table.
-func (s *Service) ensureClientOwned(ctx context.Context, panel string, inboundID int, email string) error {
-	exists, err := s.ownership.Exists(ctx, panel, inboundID, email)
+func (s *Service) ensureClientOwned(ctx context.Context, panelID int64, inboundID int, email string) error {
+	exists, err := s.ownership.Exists(ctx, panelID, inboundID, email)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("%w: panel=%s inbound=%d email=%s",
-			domain.ErrClientNotOwnedByPanel, panel, inboundID, email)
+		return fmt.Errorf("%w: panel_id=%d inbound=%d email=%s",
+			domain.ErrClientNotOwnedByPanel, panelID, inboundID, email)
 	}
 	return nil
 }
@@ -48,8 +48,8 @@ func (s *Service) ensureClientOwned(ctx context.Context, panel string, inboundID
 // ensureInboundDeletable verifies that every client inside the inbound is
 // owned by the panel. Used by inbound deletion to avoid orphaning the
 // operator's personal clients.
-func (s *Service) ensureInboundDeletable(ctx context.Context, panel string, inboundID int) error {
-	c, err := s.pool.Get(panel)
+func (s *Service) ensureInboundDeletable(ctx context.Context, panelID int64, inboundID int) error {
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
@@ -58,13 +58,13 @@ func (s *Service) ensureInboundDeletable(ctx context.Context, panel string, inbo
 		return err
 	}
 	for _, cs := range in.ClientStats {
-		ok, err := s.ownership.Exists(ctx, panel, inboundID, cs.Email)
+		ok, err := s.ownership.Exists(ctx, panelID, inboundID, cs.Email)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("%w: panel=%s inbound=%d unmanaged_client=%s",
-				domain.ErrInboundHasUnmanagedClients, panel, inboundID, cs.Email)
+			return fmt.Errorf("%w: panel_id=%d inbound=%d unmanaged_client=%s",
+				domain.ErrInboundHasUnmanagedClients, panelID, inboundID, cs.Email)
 		}
 	}
 	return nil
@@ -72,20 +72,41 @@ func (s *Service) ensureInboundDeletable(ctx context.Context, panel string, inbo
 
 // AddClientToInbound creates a new client in 3X-UI and records ownership.
 // The caller is responsible for choosing a unique email per user.
-func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panel string,
-	inboundID int, protocol domain.Protocol, userUUID, email, flow string) error {
+//
+// Idempotent: if the ownership row already exists for (panel, inbound,
+// email), the function refreshes its UUID instead of inserting a duplicate.
+// This is the "missing client recovery" path — reconcile finds the client
+// missing in 3X-UI but ownership still claims it, and re-creates the
+// 3X-UI side while leaving the panel-side bookkeeping in place.
+func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panelID int64,
+	inboundID int, protocol domain.Protocol, userUUID, email, flow string, expireTime int64) error {
 
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
-	spec := buildClientSpec(protocol, userUUID, email, flow)
+	spec := buildClientSpec(protocol, userUUID, email, flow, expireTime)
 	if err := c.AddClient(ctx, inboundID, spec); err != nil {
 		return fmt.Errorf("xui addClient: %w", err)
 	}
+
+	exists, err := s.ownership.Exists(ctx, panelID, inboundID, email)
+	if err != nil {
+		return fmt.Errorf("ownership exists check: %w", err)
+	}
+	if exists {
+		// Recovery: row was already there. Keep it but refresh the UUID
+		// in case a credential reset happened while 3X-UI was missing.
+		if err := s.ownership.UpdateUUID(ctx, panelID, inboundID, email, userUUID); err != nil {
+			return fmt.Errorf("ownership update uuid: %w", err)
+		}
+		return nil
+	}
+
 	entry := &domain.XUIClientEntry{
 		UserID:      userID,
-		PanelName:   panel,
+		PanelID:     panelID,
+		PanelName:   s.panelName(panelID),
 		InboundID:   inboundID,
 		ClientEmail: email,
 		ClientUUID:  userUUID,
@@ -100,35 +121,75 @@ func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panel st
 
 // UpdateOwnedClient updates fields of a client that the panel already owns.
 // Returns ErrClientNotOwnedByPanel if the guard rejects the call.
-func (s *Service) UpdateOwnedClient(ctx context.Context, panel string, inboundID int,
-	email string, protocol domain.Protocol, userUUID, flow string, enable bool) error {
+func (s *Service) UpdateOwnedClient(ctx context.Context, panelID int64, inboundID int,
+	email string, protocol domain.Protocol, userUUID, flow string, enable bool, expireTime int64) error {
 
-	if err := s.ensureClientOwned(ctx, panel, inboundID, email); err != nil {
+	if err := s.ensureClientOwned(ctx, panelID, inboundID, email); err != nil {
 		return err
 	}
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
-	spec := buildClientSpec(protocol, userUUID, email, flow)
+	spec := buildClientSpec(protocol, userUUID, email, flow, expireTime)
 	spec.Enable = enable
 	return c.UpdateClient(ctx, inboundID, userUUID, spec)
 }
 
 // DelOwnedClient removes a panel-owned client from 3X-UI and the ownership
 // table. Refuses if not in the ownership table.
-func (s *Service) DelOwnedClient(ctx context.Context, panel string, inboundID int, email string) error {
-	if err := s.ensureClientOwned(ctx, panel, inboundID, email); err != nil {
-		return err
+//
+// The 3X-UI canonical delete endpoint is /delClient/{uuid}; the ownership
+// row carries the uuid, so we look it up first. /delClientByEmail/{email}
+// is a fork-specific variant that some panels don't ship — using it caused
+// silent delete failures that left orphaned clients (and orphaned
+// ownership rows since the loop in DelAllOwnedForUser swallows errors).
+func (s *Service) DelOwnedClient(ctx context.Context, panelID int64, inboundID int, email string) error {
+	entry, err := s.ownership.GetByMatch(ctx, panelID, inboundID, email)
+	if err != nil {
+		// No ownership row → nothing for us to manage. Treat as success;
+		// caller's desired end-state ("this client is gone") is satisfied.
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		// Anything else is a real DB error; surface it as-is so the caller
+		// doesn't mistake it for a legitimate ownership-guard refusal.
+		return fmt.Errorf("ownership lookup: %w", err)
 	}
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
-	if err := c.DelClientByEmail(ctx, inboundID, email); err != nil {
+	if err := c.DelClient(ctx, inboundID, entry.ClientUUID); err != nil {
+		// 3X-UI rejected. If the client isn't actually there (out-of-sync
+		// after a partial earlier run, manual cleanup in 3X-UI, etc.) the
+		// desired end-state is already achieved — clean our ownership row
+		// and return success. Only genuine "panel unreachable / inbound
+		// errored" cases bubble up to trigger async retry.
+		if missing, vErr := s.clientMissing(ctx, c, inboundID, entry.ClientUUID); vErr == nil && missing {
+			return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+		}
 		return fmt.Errorf("xui delClient: %w", err)
 	}
-	return s.ownership.RemoveByMatch(ctx, panel, inboundID, email)
+	return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+}
+
+// clientMissing returns (true, nil) when the inbound exists and does NOT
+// contain a client with the given UUID. (false, nil) means the client is
+// still there. A non-nil error means we couldn't verify (panel unreachable,
+// inbound gone) — the caller should treat as "can't tell" and bubble the
+// original delete error.
+func (s *Service) clientMissing(ctx context.Context, c ports.XUIClient, inboundID int, uuid string) (bool, error) {
+	clients, err := c.GetInboundClients(ctx, inboundID)
+	if err != nil {
+		return false, err
+	}
+	for _, cl := range clients {
+		if cl.ID == uuid {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // RotateClientUUID rewrites a panel-owned client's UUID. 3X-UI's
@@ -137,22 +198,22 @@ func (s *Service) DelOwnedClient(ctx context.Context, panel string, inboundID in
 //
 // On success the ownership table is updated so subsequent operations use
 // the new uuid as the path key.
-func (s *Service) RotateClientUUID(ctx context.Context, panel string, inboundID int,
-	email string, protocol domain.Protocol, oldUUID, newUUID string, enable bool) error {
+func (s *Service) RotateClientUUID(ctx context.Context, panelID int64, inboundID int,
+	email string, protocol domain.Protocol, oldUUID, newUUID string, enable bool, expireTime int64) error {
 
-	if err := s.ensureClientOwned(ctx, panel, inboundID, email); err != nil {
+	if err := s.ensureClientOwned(ctx, panelID, inboundID, email); err != nil {
 		return err
 	}
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
-	spec := buildClientSpec(protocol, newUUID, email, "")
+	spec := buildClientSpec(protocol, newUUID, email, "", expireTime)
 	spec.Enable = enable
 	if err := c.UpdateClient(ctx, inboundID, oldUUID, spec); err != nil {
 		return fmt.Errorf("xui rotate uuid: %w", err)
 	}
-	return s.ownership.UpdateUUID(ctx, panel, inboundID, email, newUUID)
+	return s.ownership.UpdateUUID(ctx, panelID, inboundID, email, newUUID)
 }
 
 // SetOwnedClientEnable pushes a client's full panel-derived spec (uuid +
@@ -161,45 +222,51 @@ func (s *Service) RotateClientUUID(ctx context.Context, panel string, inboundID 
 // uuid/password/enable/extra-field categories — as long as the path uuid
 // still matches what 3X-UI has. Uuid mismatch is handled by
 // RotateClientUUID, which takes both old and new uuids.
-func (s *Service) SetOwnedClientEnable(ctx context.Context, panel string, inboundID int,
-	email string, protocol domain.Protocol, userUUID string, enable bool) error {
+func (s *Service) SetOwnedClientEnable(ctx context.Context, panelID int64, inboundID int,
+	email string, protocol domain.Protocol, userUUID string, enable bool, expireTime int64) error {
 
-	if err := s.ensureClientOwned(ctx, panel, inboundID, email); err != nil {
+	if err := s.ensureClientOwned(ctx, panelID, inboundID, email); err != nil {
 		return err
 	}
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
-	spec := buildClientSpec(protocol, userUUID, email, "")
+	spec := buildClientSpec(protocol, userUUID, email, "", expireTime)
 	spec.Enable = enable
 	return c.UpdateClient(ctx, inboundID, userUUID, spec)
 }
 
 // DelAllOwnedForUser removes every 3X-UI client recorded under userID.
-// Errors per inbound are logged but do not abort the loop — leftover rows
-// in the ownership table get retried on the next reconciliation pass.
+// Returns the first per-client error so the caller (admin user-delete)
+// can surface it rather than orphaning 3X-UI clients. Successful deletes
+// up to the failure point are real — the ownership table reflects that.
 func (s *Service) DelAllOwnedForUser(ctx context.Context, userID int64) error {
 	entries, err := s.ownership.ListByUser(ctx, userID)
 	if err != nil {
 		return err
 	}
+	var firstErr error
 	for _, e := range entries {
-		_ = s.DelOwnedClient(ctx, e.PanelName, e.InboundID, e.ClientEmail)
+		if err := s.DelOwnedClient(ctx, e.PanelID, e.InboundID, e.ClientEmail); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%d/%d/%s: %w", e.PanelID, e.InboundID, e.ClientEmail, err)
+			}
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // DelAllOwnedForInbound removes every panel-owned client living inside the
 // given inbound. Used by node deletion before the inbound itself can be
 // removed (the inbound delete guard requires no unmanaged clients remain).
-func (s *Service) DelAllOwnedForInbound(ctx context.Context, panel string, inboundID int) error {
-	entries, err := s.ownership.ListByInbound(ctx, panel, inboundID)
+func (s *Service) DelAllOwnedForInbound(ctx context.Context, panelID int64, inboundID int) error {
+	entries, err := s.ownership.ListByInbound(ctx, panelID, inboundID)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		_ = s.DelOwnedClient(ctx, e.PanelName, e.InboundID, e.ClientEmail)
+		_ = s.DelOwnedClient(ctx, e.PanelID, e.InboundID, e.ClientEmail)
 	}
 	return nil
 }
@@ -212,10 +279,11 @@ func (s *Service) DelAllOwnedForInbound(ctx context.Context, panel string, inbou
 // The caller is responsible for supplying a correct (email, uuid) pair as
 // it appears in 3X-UI; the unique index on (panel, inbound, email) prevents
 // double-claiming.
-func (s *Service) ClaimClient(ctx context.Context, userID int64, panel string, inboundID int, email, clientUUID string) error {
+func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, inboundID int, email, clientUUID string) error {
 	entry := &domain.XUIClientEntry{
 		UserID:      userID,
-		PanelName:   panel,
+		PanelID:     panelID,
+		PanelName:   s.panelName(panelID),
 		InboundID:   inboundID,
 		ClientEmail: email,
 		ClientUUID:  clientUUID,
@@ -223,13 +291,22 @@ func (s *Service) ClaimClient(ctx context.Context, userID int64, panel string, i
 	return s.ownership.Add(ctx, entry)
 }
 
+func (s *Service) panelName(panelID int64) string {
+	for _, p := range s.pool.List() {
+		if p.ID == panelID {
+			return p.Name
+		}
+	}
+	return ""
+}
+
 // DeleteInbound deletes an inbound only when the guard passes. The caller
 // must also remove the corresponding nodes row (done by NodeSvc).
-func (s *Service) DeleteInbound(ctx context.Context, panel string, inboundID int) error {
-	if err := s.ensureInboundDeletable(ctx, panel, inboundID); err != nil {
+func (s *Service) DeleteInbound(ctx context.Context, panelID int64, inboundID int) error {
+	if err := s.ensureInboundDeletable(ctx, panelID, inboundID); err != nil {
 		return err
 	}
-	c, err := s.pool.Get(panel)
+	c, err := s.pool.Get(panelID)
 	if err != nil {
 		return err
 	}
@@ -245,12 +322,13 @@ func IsOwnershipError(err error) bool {
 
 // buildClientSpec composes a ClientSpec by applying the protocol-specific
 // derivation rule. Caller fills in Enable as needed.
-func buildClientSpec(protocol domain.Protocol, userUUID, email, flow string) ports.ClientSpec {
+func buildClientSpec(protocol domain.Protocol, userUUID, email, flow string, expireTime int64) ports.ClientSpec {
 	password := crypto.DeriveProxyPassword(userUUID, protocol)
 	spec := ports.ClientSpec{
-		Email:  email,
-		Enable: true,
-		Flow:   flow,
+		Email:      email,
+		Enable:     true,
+		Flow:       flow,
+		ExpiryTime: expireTime,
 	}
 	switch protocol {
 	case domain.ProtoVLESS, domain.ProtoVMess:

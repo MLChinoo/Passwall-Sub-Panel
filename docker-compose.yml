@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     # Bind to localhost only; let the host's Nginx terminate TLS and proxy.
     ports:
-      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data

@@ -2,7 +2,7 @@ import { client } from './client'
 import type { ListResponse, Node, UnmanagedInbound } from './types'
 
 export interface ImportNodeRequest {
-  panel_name: string
+  panel_id: number
   inbound_id: number
   display_name: string
   server_address: string
@@ -34,6 +34,44 @@ export async function importNode(req: ImportNodeRequest) {
   return data
 }
 
+export interface InboundSpec {
+  remark: string
+  enable: boolean
+  listen: string
+  port: number
+  protocol: string
+  settings: string
+  stream_settings: string
+  sniffing: string
+  allocate: string
+}
+
+export interface CreateInboundRequest {
+  panel_id: number
+  display_name: string
+  server_address: string
+  region: string
+  tags?: string[]
+  sort_order?: number
+  inbound: InboundSpec
+}
+
+export async function createInbound(req: CreateInboundRequest) {
+  const { data } = await client.post<Node | { queued: true }>('/admin/nodes', req)
+  return data
+}
+
+export interface RealityKeypair {
+  private_key: string
+  public_key: string
+  short_id: string
+}
+
+export async function generateRealityKeypair() {
+  const { data } = await client.post<RealityKeypair>('/admin/nodes/generate-reality-keypair')
+  return data
+}
+
 export async function updateNodeMetadata(id: number, req: UpdateNodeMetadataRequest) {
   const { data } = await client.put<Node>(`/admin/nodes/${id}/metadata`, req)
   return data
@@ -54,7 +92,7 @@ export async function listUnmanagedInbounds() {
 
 export async function claimClient(req: {
   user_id: number
-  panel_name: string
+  panel_id: number
   inbound_id: number
   client_email: string
   client_uuid: string

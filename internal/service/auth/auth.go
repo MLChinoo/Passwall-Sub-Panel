@@ -5,6 +5,8 @@
 package auth
 
 import (
+	"time"
+
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/jwtutil"
 )
@@ -34,3 +36,9 @@ func (s *Service) IssueTokens(u *domain.User) (access, refresh string, err error
 func (s *Service) Verify(tokenStr string) (*jwtutil.Claims, error) {
 	return s.issuer.Parse(tokenStr)
 }
+
+// AccessTTL / RefreshTTL expose the issuer's live TTL values for SSO
+// callback handlers that need to match the cookie Max-Age to the token
+// expiry. Read fresh on every call.
+func (s *Service) AccessTTL() time.Duration  { return s.issuer.AccessTTL() }
+func (s *Service) RefreshTTL() time.Duration { return s.issuer.RefreshTTL() }

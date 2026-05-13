@@ -119,7 +119,7 @@ onMounted(load)
       </el-table-column>
       <el-table-column prop="members" label="成员数" width="100" />
       <el-table-column prop="remark" label="备注" min-width="200" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="180">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="confirmDelete(row)">删除</el-button>
@@ -145,7 +145,7 @@ onMounted(load)
             type="textarea"
             :rows="2"
           />
-          <div style="color: #909399; font-size: 12px; margin-top: 4px">
+          <div style="color: var(--text-muted); font-size: 12px; margin-top: 4px">
             逗号分隔，AND 组合。支持 region:XX / tag:YY / server:ZZ
           </div>
         </el-form-item>

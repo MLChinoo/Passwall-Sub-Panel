@@ -1,6 +1,17 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+// EmailRules captures the runtime-configurable email domain used when
+// constructing a 3X-UI client.email. A single suffix is shared by every
+// user regardless of how they sign in — local password, SAML, OIDC. Loaded
+// from UISettings.
+type EmailRules struct {
+	Domain string // e.g. "passwall.kazuhahub.com"
+}
 
 // User is the panel-side logical user. One User maps to multiple 3X-UI clients
 // (one per authorized inbound) via the ownership table.
@@ -20,6 +31,12 @@ type User struct {
 	TrafficLimitBytes  int64 // 0 = unlimited
 	TrafficResetPeriod ResetPeriod
 	TrafficPeriodStart *time.Time
+	// DisplayName is the friendly name shown in panel UI (avatar label,
+	// header, lists). Independent of Username/UPN — those are identifiers.
+	// SSO users get it from the SAML displayname claim on every login; for
+	// local accounts the admin enters it on create/edit. UI falls back to
+	// Username when empty.
+	DisplayName        string
 	Remark             string
 	Enabled            bool
 	AutoDisabledReason AutoDisabledReason
@@ -32,15 +49,27 @@ func (u *User) IsExpired(t time.Time) bool {
 	return u.ExpireAt != nil && t.After(*u.ExpireAt)
 }
 
-// EmailForXUI returns the value used for 3X-UI client.email.
-// SSO users use their UPN; local accounts use local_{username}@psp.local.
-// Historically-imported clients keep their original email in the ownership
-// table and do NOT go through this helper.
-func (u *User) EmailForXUI() string {
-	if u.Source == UserSourceSSO {
-		return u.UPN
+// ClientEmail builds the 3X-UI client.email for this user. Format:
+// "u<id>@<domain>" — the same email is reused for every inbound the
+// user has access to (3X-UI's uniqueness is per-inbound).
+//
+// Using the panel-side user ID as the local part guarantees:
+//   - uniqueness across local and SSO accounts, regardless of how the
+//     Username field is set or whether it contains '@';
+//   - stability — renaming a user does NOT change their 3X-UI email,
+//     so reconciliation never has to re-create the client;
+//   - that Entra ID's opaque persistent NameID, however garbled, never
+//     leaks into the 3X-UI client list.
+//
+// Cross-reference "u42" with the admin user list to find the human-
+// readable name. Historically-imported clients keep their original
+// email in the ownership table and do NOT go through this helper.
+func (u *User) ClientEmail(r EmailRules) string {
+	suffix := r.Domain
+	if suffix == "" {
+		suffix = "psp.local"
 	}
-	return "local_" + u.Username + "@psp.local"
+	return fmt.Sprintf("u%d@%s", u.ID, suffix)
 }
 
 // Group is a user grouping that defines accessible nodes and render layout.
@@ -94,7 +123,8 @@ type SortEntry struct {
 // the panel records it explicitly here. Required for subscription rendering.
 type Node struct {
 	ID            int64
-	PanelName     string
+	PanelID       int64
+	PanelName     string // display/cache only; PanelID is the stable reference
 	InboundID     int
 	DisplayName   string
 	ServerAddress string
@@ -117,11 +147,12 @@ func (n *Node) HasTag(tag string) bool {
 
 // XUIClientEntry is one row of the ownership table: it records which 3X-UI
 // client a panel user owns. SyncSvc's write guard rejects any client write
-// whose (PanelName, InboundID, ClientEmail) tuple does NOT appear here.
+// whose (PanelID, InboundID, ClientEmail) tuple does NOT appear here.
 type XUIClientEntry struct {
 	ID          int64
 	UserID      int64
-	PanelName   string
+	PanelID     int64
+	PanelName   string // display/cache only; PanelID is the stable reference
 	InboundID   int
 	ClientEmail string
 	ClientUUID  string
@@ -152,17 +183,35 @@ type SubLog struct {
 
 // AuditEntry is one immutable line in the admin audit log.
 type AuditEntry struct {
-	ID         int64
-	Actor      string
-	Action     string
-	Target     string
-	BeforeJSON string
-	AfterJSON  string
-	IP         string
-	At         time.Time
+	ID         int64     `json:"id"`
+	Actor      string    `json:"actor"`
+	Action     string    `json:"action"`
+	Target     string    `json:"target"`
+	BeforeJSON string    `json:"before_json"`
+	AfterJSON  string    `json:"after_json"`
+	IP         string    `json:"ip"`
+	At         time.Time `json:"at"`
 }
 
-// RuleSet is one rules shard stored as a YAML file under config/rule_sets/.
+// SyncTask is a persistent retryable operation that must change a 3X-UI
+// panel before the panel-side state can be considered complete.
+type SyncTask struct {
+	ID         int64          `json:"id"`
+	Type       SyncTaskType   `json:"type"`
+	Status     SyncTaskStatus `json:"status"`
+	TargetType string         `json:"target_type"`
+	TargetID   int64          `json:"target_id"`
+	Summary    string         `json:"summary"`
+	Payload    string         `json:"payload"`
+	LastError  string         `json:"last_error"`
+	Attempts   int            `json:"attempts"`
+	NextRunAt  time.Time      `json:"next_run_at"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	FinishedAt *time.Time     `json:"finished_at"`
+}
+
+// RuleSet is one rules shard stored in the DB.
 type RuleSet struct {
 	Slug    string
 	Name    string
@@ -182,6 +231,7 @@ type Template struct {
 
 // XUIPanel holds the connection credentials for one 3X-UI panel.
 type XUIPanel struct {
+	ID       int64
 	Name     string
 	URL      string
 	APIToken string // preferred: Bearer token auth

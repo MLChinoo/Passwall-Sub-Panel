@@ -1112,7 +1112,7 @@ SAML Response 验签通过 →
   PSP_SECRET_KEY=<random-32-bytes>          # AES key
   PSP_MYSQL_DSN=user:pass@tcp(localhost:3306)/psp?parseTime=true&charset=utf8mb4
 
-Nginx: https://sub.example.com → 127.0.0.1:8787
+Nginx: https://sub.example.com → 127.0.0.1:8788
 ```
 
 ### 14.3 Docker
@@ -1121,7 +1121,7 @@ Nginx: https://sub.example.com → 127.0.0.1:8787
 services:
   panel:
     image: kazuha/passwall-sub-panel:latest
-    ports: ["127.0.0.1:8787:8787"]
+    ports: ["127.0.0.1:8788:8788"]
     volumes:
       - ./config:/app/config
     environment:

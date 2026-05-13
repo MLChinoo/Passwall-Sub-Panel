@@ -71,3 +71,11 @@ func (r *auditRepo) List(ctx context.Context, filter ports.AuditFilter) ([]*doma
 	return out, total, nil
 }
 
+func (r *auditRepo) Clear(ctx context.Context) error {
+	return r.db.WithContext(ctx).Where("1 = 1").Delete(&auditRow{}).Error
+}
+
+func (r *auditRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Where("at < ?", cutoff).Delete(&auditRow{})
+	return res.RowsAffected, res.Error
+}

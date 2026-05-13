@@ -144,9 +144,31 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	}
 
 	b, _ := io.ReadAll(resp.Body)
+	trimmed := strings.TrimSpace(string(b))
+
+	// Distinguish common 3X-UI failure shapes from a real JSON parse error
+	// so the operator gets an actionable message instead of "unexpected end
+	// of JSON input".
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s %s: HTTP %d (body: %s)",
+			method, path, resp.StatusCode, snippet(trimmed, 200))
+	}
+	if trimmed == "" {
+		hint := "verify URL and api_token / username+password — 3X-UI returns an empty body when auth is wrong"
+		if c.apiToken == "" {
+			hint = "verify username/password — 3X-UI returns an empty body when cookie auth is wrong"
+		}
+		return fmt.Errorf("%s %s: empty response body (HTTP %d) — %s",
+			method, path, resp.StatusCode, hint)
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return fmt.Errorf("%s %s: non-JSON response (HTTP %d) — likely an auth redirect or wrong endpoint (preview: %s)",
+			method, path, resp.StatusCode, snippet(trimmed, 120))
+	}
+
 	var r genericResponse
 	if err := json.Unmarshal(b, &r); err != nil {
-		return fmt.Errorf("%s %s: parse: %w (raw: %s)", method, path, err, string(b))
+		return fmt.Errorf("%s %s: parse: %w (raw: %s)", method, path, err, snippet(trimmed, 200))
 	}
 	if !r.Success {
 		return fmt.Errorf("%s %s: %s", method, path, r.Msg)
@@ -157,6 +179,15 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		}
 	}
 	return nil
+}
+
+// snippet truncates s to n chars with an ellipsis, suitable for embedding
+// in an error message without dumping a huge HTML body to logs.
+func snippet(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // --- Inbound ---

@@ -1,4 +1,4 @@
-// Package main is the operational CLI: init-admin to seed the first
+// Package main is the operational CLI: init-admin to create the first
 // admin row, encrypt to prepare AES-GCM ciphertext for xui_panels.yaml.
 package main
 
@@ -29,6 +29,8 @@ func main() {
 	switch os.Args[1] {
 	case "init-admin":
 		initAdmin(os.Args[2:])
+	case "set-password":
+		setPassword(os.Args[2:])
 	case "encrypt":
 		encryptValue(os.Args[2:])
 	case "-h", "--help", "help":
@@ -44,8 +46,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   psp-cli init-admin --username <name> [--password <pw>] [--config <path>]
       Create the first local admin in the panel DB. Auto-generates a
-      password if one is not supplied. Also seeds a "default" group if
+      password if one is not supplied. Also creates a "default" group if
       none exists yet.
+
+  psp-cli set-password --username <name> --password <pw> [--config <path>]
+      Reset a local account password.
 
   psp-cli encrypt --value <plaintext>
       AES-GCM-encrypt <plaintext> with PSP_SECRET_KEY (env). Prints the
@@ -71,8 +76,8 @@ func initAdmin(args []string) {
 	if err != nil {
 		fatal("db open: %v", err)
 	}
-	if err := mysql.Migrate(db); err != nil {
-		fatal("db migrate: %v", err)
+	if err := mysql.EnsureSchema(db); err != nil {
+		fatal("db schema: %v", err)
 	}
 	repos := mysql.NewRepos(db)
 	ctx := context.Background()
@@ -139,6 +144,52 @@ func initAdmin(args []string) {
 	fmt.Printf("  user_id:  %d\n", u.ID)
 	fmt.Printf("  group:    %s (id=%d)\n", g.Slug, g.ID)
 	fmt.Printf("\nKeep the password — it is not stored in plaintext anywhere.\n")
+}
+
+func setPassword(args []string) {
+	fs := flag.NewFlagSet("set-password", flag.ExitOnError)
+	cfgPath := fs.String("config", defaultConfigPath, "main config path")
+	username := fs.String("username", "", "username (required)")
+	password := fs.String("password", "", "new password (required)")
+	_ = fs.Parse(args)
+
+	if *username == "" {
+		fatal("--username is required")
+	}
+	if *password == "" {
+		fatal("--password is required")
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fatal("load config: %v", err)
+	}
+	db, err := mysql.Open(cfg.DBKind(), cfg.DBDSN())
+	if err != nil {
+		fatal("db open: %v", err)
+	}
+	if err := mysql.EnsureSchema(db); err != nil {
+		fatal("db schema: %v", err)
+	}
+	repos := mysql.NewRepos(db)
+	ctx := context.Background()
+
+	u, err := repos.User.GetByUsername(ctx, *username)
+	if err != nil {
+		fatal("lookup user: %v", err)
+	}
+	if u.Source != domain.UserSourceLocal {
+		fatal("user %q is not a local account", *username)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.DefaultCost)
+	if err != nil {
+		fatal("bcrypt: %v", err)
+	}
+	u.PasswordHash = string(hash)
+	if err := repos.User.Update(ctx, u); err != nil {
+		fatal("update password: %v", err)
+	}
+	fmt.Printf("Password updated for %s.\n", u.Username)
 }
 
 func encryptValue(args []string) {

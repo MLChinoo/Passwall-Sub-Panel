@@ -36,7 +36,7 @@ type InboundSettings struct {
 	// SS / SS-2022
 	Method   string `json:"method,omitempty"`
 	Password string `json:"password,omitempty"` // SS-2022 server PSK
-	Network  string `json:"network,omitempty"`  // SS legacy
+	Network  string `json:"network,omitempty"`  // optional SS network field
 
 	Clients []InboundClient `json:"clients,omitempty"`
 }

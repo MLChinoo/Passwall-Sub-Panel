@@ -13,8 +13,8 @@ func TestCreateLocalUsersWithBlankUPN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := Migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {

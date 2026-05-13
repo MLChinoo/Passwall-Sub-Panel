@@ -31,5 +31,5 @@ WORKDIR /app
 COPY --from=go-builder /out/panel /app/panel
 COPY --from=go-builder /out/psp-cli /app/psp-cli
 USER psp
-EXPOSE 8787
+EXPOSE 8788
 ENTRYPOINT ["/app/panel"]

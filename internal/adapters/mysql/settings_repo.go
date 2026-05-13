@@ -1,0 +1,105 @@
+package mysql
+
+import (
+	"context"
+	"errors"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+)
+
+type settingsRepo struct{ db *gorm.DB }
+
+func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (ports.UISettings, error) {
+	var row uiSettingsRow
+	if err := r.db.WithContext(ctx).First(&row, 1).Error; err != nil {
+		err = wrapNotFound(err)
+		if errors.Is(err, domain.ErrNotFound) {
+			return defaults, nil
+		}
+		if err != nil {
+			return defaults, err
+		}
+	}
+	if row.ID == 0 {
+		return defaults, nil
+	}
+	out := ports.UISettings{
+		LoginMode:              row.LoginMode,
+		SiteTitle:              row.SiteTitle,
+		LogoURL:                row.LogoURL,
+		LogoURLDark:            row.LogoURLDark,
+		EmailDomain:            row.EmailDomain,
+		AuditRetentionDays:     row.AuditRetentionDays,
+		SubBaseURL:             row.SubBaseURL,
+		CronTrafficPullMinutes: row.CronTrafficPullMinutes,
+		CronReconcileMinutes:   row.CronReconcileMinutes,
+		JWTAccessTTLMinutes:    row.JWTAccessTTLMinutes,
+		JWTRefreshTTLMinutes:   row.JWTRefreshTTLMinutes,
+		JWTIssuer:              row.JWTIssuer,
+		SubPerIPPerMin:         row.SubPerIPPerMin,
+		LoginPerIPPerMin:       row.LoginPerIPPerMin,
+		SyncTaskRetentionDays:  row.SyncTaskRetentionDays,
+	}
+	if out.LoginMode == "" {
+		out.LoginMode = defaults.LoginMode
+	}
+	if out.SiteTitle == "" {
+		out.SiteTitle = defaults.SiteTitle
+	}
+	if out.EmailDomain == "" {
+		out.EmailDomain = defaults.EmailDomain
+	}
+	if out.SubBaseURL == "" {
+		out.SubBaseURL = defaults.SubBaseURL
+	}
+	// Hardcoded fallbacks for runtime tuning fields. These preserve the
+	// pre-DB-migration defaults so an empty DB still produces a working panel.
+	if out.CronTrafficPullMinutes <= 0 {
+		out.CronTrafficPullMinutes = 5
+	}
+	if out.CronReconcileMinutes <= 0 {
+		out.CronReconcileMinutes = 15
+	}
+	if out.JWTAccessTTLMinutes <= 0 {
+		out.JWTAccessTTLMinutes = 120
+	}
+	if out.JWTRefreshTTLMinutes <= 0 {
+		out.JWTRefreshTTLMinutes = 60 * 24 * 7
+	}
+	if out.JWTIssuer == "" {
+		out.JWTIssuer = "passwall-sub-panel"
+	}
+	if out.SubPerIPPerMin <= 0 {
+		out.SubPerIPPerMin = 60
+	}
+	if out.LoginPerIPPerMin <= 0 {
+		out.LoginPerIPPerMin = 5
+	}
+	return out, nil
+}
+
+func (r *settingsRepo) Save(ctx context.Context, s ports.UISettings) error {
+	row := uiSettingsRow{
+		ID:                     1,
+		LoginMode:              s.LoginMode,
+		SiteTitle:              s.SiteTitle,
+		LogoURL:                s.LogoURL,
+		LogoURLDark:            s.LogoURLDark,
+		EmailDomain:            s.EmailDomain,
+		AuditRetentionDays:     s.AuditRetentionDays,
+		SubBaseURL:             s.SubBaseURL,
+		CronTrafficPullMinutes: s.CronTrafficPullMinutes,
+		CronReconcileMinutes:   s.CronReconcileMinutes,
+		JWTAccessTTLMinutes:    s.JWTAccessTTLMinutes,
+		JWTRefreshTTLMinutes:   s.JWTRefreshTTLMinutes,
+		JWTIssuer:              s.JWTIssuer,
+		SubPerIPPerMin:         s.SubPerIPPerMin,
+		LoginPerIPPerMin:       s.LoginPerIPPerMin,
+		SyncTaskRetentionDays:  s.SyncTaskRetentionDays,
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+}

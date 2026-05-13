@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/realitykey"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
@@ -19,16 +21,18 @@ type AdminNodeHandler struct {
 	node      *node.Service
 	sync      *syncsvc.Service
 	ownership ports.OwnershipRepo
+	panels    ports.XUIPanelRepo
 }
 
-func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo) *AdminNodeHandler {
-	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership}
+func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, panels ports.XUIPanelRepo) *AdminNodeHandler {
+	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, panels: panels}
 }
 
 // ---- DTOs ----
 
 type nodeDTO struct {
 	ID            int64    `json:"id"`
+	PanelID       int64    `json:"panel_id"`
 	PanelName     string   `json:"panel_name"`
 	InboundID     int      `json:"inbound_id"`
 	DisplayName   string   `json:"display_name"`
@@ -40,7 +44,7 @@ type nodeDTO struct {
 }
 
 type importNodeRequest struct {
-	PanelName     string   `json:"panel_name" binding:"required"`
+	PanelID       int64    `json:"panel_id" binding:"required"`
 	InboundID     int      `json:"inbound_id" binding:"required"`
 	DisplayName   string   `json:"display_name" binding:"required"`
 	ServerAddress string   `json:"server_address" binding:"required"`
@@ -50,7 +54,7 @@ type importNodeRequest struct {
 }
 
 type createNodeRequest struct {
-	PanelName     string         `json:"panel_name" binding:"required"`
+	PanelID       int64          `json:"panel_id" binding:"required"`
 	DisplayName   string         `json:"display_name" binding:"required"`
 	ServerAddress string         `json:"server_address" binding:"required"`
 	Region        string         `json:"region" binding:"required"`
@@ -85,7 +89,7 @@ type setNodeEnabledRequest struct {
 
 type claimRequest struct {
 	UserID      int64  `json:"user_id" binding:"required"`
-	PanelName   string `json:"panel_name" binding:"required"`
+	PanelID     int64  `json:"panel_id" binding:"required"`
 	InboundID   int    `json:"inbound_id" binding:"required"`
 	ClientEmail string `json:"client_email" binding:"required"`
 	ClientUUID  string `json:"client_uuid" binding:"required"`
@@ -101,7 +105,7 @@ func (h *AdminNodeHandler) List(c *gin.Context) {
 	}
 	out := make([]nodeDTO, len(nodes))
 	for i, n := range nodes {
-		out[i] = toNodeDTO(n)
+		out[i] = h.toNodeDTO(c.Request.Context(), n)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
@@ -127,14 +131,14 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 	if err != nil {
 		// Detail without clients is still useful; surface the error but don't 500.
 		c.JSON(http.StatusOK, gin.H{
-			"node":           toNodeDTO(n),
-			"clients":        []any{},
-			"clients_error":  err.Error(),
+			"node":          h.toNodeDTO(c.Request.Context(), n),
+			"clients":       []any{},
+			"clients_error": err.Error(),
 		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"node":    toNodeDTO(n),
+		"node":    h.toNodeDTO(c.Request.Context(), n),
 		"clients": clients,
 	})
 }
@@ -146,7 +150,7 @@ func (h *AdminNodeHandler) ImportExisting(c *gin.Context) {
 		return
 	}
 	n := &domain.Node{
-		PanelName:     req.PanelName,
+		PanelID:       req.PanelID,
 		InboundID:     req.InboundID,
 		DisplayName:   req.DisplayName,
 		ServerAddress: req.ServerAddress,
@@ -158,7 +162,7 @@ func (h *AdminNodeHandler) ImportExisting(c *gin.Context) {
 		mapNodeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toNodeDTO(n))
+	c.JSON(http.StatusCreated, h.toNodeDTO(c.Request.Context(), n))
 }
 
 func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
@@ -168,7 +172,7 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 		return
 	}
 	n := &domain.Node{
-		PanelName:     req.PanelName,
+		PanelID:       req.PanelID,
 		DisplayName:   req.DisplayName,
 		ServerAddress: req.ServerAddress,
 		Region:        req.Region,
@@ -190,7 +194,11 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 		mapNodeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toNodeDTO(n))
+	if n.ID == 0 {
+		c.JSON(http.StatusAccepted, gin.H{"queued": true})
+		return
+	}
+	c.JSON(http.StatusCreated, h.toNodeDTO(c.Request.Context(), n))
 }
 
 func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
@@ -226,7 +234,7 @@ func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
 		mapNodeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toNodeDTO(n))
+	c.JSON(http.StatusOK, h.toNodeDTO(c.Request.Context(), n))
 }
 
 func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
@@ -298,6 +306,27 @@ func (h *AdminNodeHandler) ListUnmanaged(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+// GenerateRealityKeypair returns a fresh X25519 keypair + shortID for use
+// when admin creates a new Reality inbound. Frontend embeds these in the
+// streamSettings JSON it composes for POST /api/admin/nodes.
+func (h *AdminNodeHandler) GenerateRealityKeypair(c *gin.Context) {
+	priv, pub, err := realitykey.GenerateKeypair()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	shortID, err := realitykey.GenerateShortID()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"private_key": priv,
+		"public_key":  pub,
+		"short_id":    shortID,
+	})
+}
+
 // ClaimClient adopts an existing 3X-UI client under a panel user without
 // touching 3X-UI. The frontend pre-fetches client_uuid via the unmanaged
 // listing flow (TODO M2: surface uuid through a richer listing endpoint).
@@ -307,7 +336,7 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelName, req.InboundID, req.ClientEmail, req.ClientUUID); err != nil {
+	if err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, req.ClientUUID); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": "client already managed"})
 			return
@@ -320,10 +349,17 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 
 // ---- helpers ----
 
-func toNodeDTO(n *domain.Node) nodeDTO {
+func (h *AdminNodeHandler) toNodeDTO(ctx context.Context, n *domain.Node) nodeDTO {
+	panelName := n.PanelName
+	if h.panels != nil {
+		if p, err := h.panels.GetByID(ctx, n.PanelID); err == nil && p != nil {
+			panelName = p.Name
+		}
+	}
 	return nodeDTO{
 		ID:            n.ID,
-		PanelName:     n.PanelName,
+		PanelID:       n.PanelID,
+		PanelName:     panelName,
 		InboundID:     n.InboundID,
 		DisplayName:   n.DisplayName,
 		ServerAddress: n.ServerAddress,

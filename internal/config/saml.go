@@ -2,11 +2,20 @@ package config
 
 import "time"
 
-// SAMLConfig is the schema of saml.yaml. It lives in this package — not in
-// adapters/yaml — so both the loader (adapter) and the consumer (service)
-// can reference the same type without one importing the other.
+// SAMLConfig is the persisted SAML/SSO configuration schema. It lives in
+// this package so storage adapters and auth services can share one type
+// without importing each other.
+//
+// Mode controls how much of the form the admin fills in:
+//   - "auto": one-click via App Federation Metadata URL. The panel derives
+//     SP entity_id / ACS URL from the panel's public base URL, auto-generates
+//     a self-signed SP keypair on first save, and uses the Microsoft-default
+//     claim URIs for attribute mapping. Periodic refresh of the IdP metadata
+//     is always on.
+//   - "manual": every field is admin-controlled.
 type SAMLConfig struct {
 	Enabled bool    `yaml:"enabled"`
+	Mode    string  `yaml:"mode"`
 	SP      SPConf  `yaml:"sp"`
 	IDP     IDPConf `yaml:"idp"`
 
@@ -18,10 +27,10 @@ type SAMLConfig struct {
 }
 
 type SPConf struct {
-	EntityID    string `yaml:"entity_id"`
-	ACSURL      string `yaml:"acs_url"`
-	CertPEMPath string `yaml:"cert_pem_path"`
-	KeyPEMPath  string `yaml:"key_pem_path"`
+	EntityID string `yaml:"entity_id"`
+	ACSURL   string `yaml:"acs_url"`
+	CertPEM  string `yaml:"cert_pem,omitempty"`
+	KeyPEM   string `yaml:"key_pem,omitempty"`
 }
 
 type IDPConf struct {
@@ -43,11 +52,22 @@ type SAMLNewUserDefaults struct {
 }
 
 // ApplySAMLDefaults fills in any zero fields with sensible defaults.
-// Kept here so both the YAML loader and a future bootstrap CLI share one rule set.
+// Kept here so runtime storage and a future bootstrap CLI share one rule set.
 func ApplySAMLDefaults(c *SAMLConfig) {
+	switch c.Mode {
+	case "auto", "manual":
+		// keep
+	default:
+		c.Mode = "auto"
+	}
 	if c.IDP.MetadataRefreshInterval == 0 {
 		c.IDP.MetadataRefreshInterval = 24 * time.Hour
 	}
+	// UPN claim. Entra typically doesn't send this exact URL by default,
+	// so the panel's fallback chain (UPN claim → email claim → NameID)
+	// usually lands on the email claim — which gives a stable, readable
+	// "me@kazuha.org" subject for an Entra tenant whose NameID format is
+	// "Email address" with source user.userprincipalname.
 	if c.AttributeMapping.UPN == "" {
 		c.AttributeMapping.UPN = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn"
 	}
@@ -55,7 +75,11 @@ func ApplySAMLDefaults(c *SAMLConfig) {
 		c.AttributeMapping.Email = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
 	}
 	if c.AttributeMapping.DisplayName == "" {
-		c.AttributeMapping.DisplayName = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/displayname"
+		// Microsoft Entra's "displayname" claim — the user-facing real
+		// display name from user.displayname. Entra emits it when the
+		// claim has been explicitly added to the SAML app's "Attributes &
+		// Claims" list.
+		c.AttributeMapping.DisplayName = "http://schemas.microsoft.com/identity/claims/displayname"
 	}
 	if c.AttributeMapping.Groups == "" {
 		c.AttributeMapping.Groups = "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"

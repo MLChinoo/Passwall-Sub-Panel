@@ -1,7 +1,5 @@
 // Package mysql provides the GORM-backed implementation of ports.Repos.
-// The name is historical — the package also supports SQLite (pure Go, via
-// glebarez/sqlite) so the panel runs zero-config out of the box and only
-// needs a real MySQL when the operator opts in.
+// It supports both MySQL and SQLite; SQLite keeps local setups zero-config.
 package mysql
 
 import (
@@ -21,7 +19,7 @@ import (
 //   - "mysql":  dsn is a standard go-sql-driver MySQL DSN.
 //   - "sqlite": dsn is a filesystem path; parent dirs are created if missing.
 //
-// Call Migrate(db) separately to run schema migrations.
+// Call EnsureSchema(db) separately to create the required tables.
 func Open(kind, dsn string) (*gorm.DB, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("empty database dsn")
@@ -62,12 +60,18 @@ func Open(kind, dsn string) (*gorm.DB, error) {
 // and safely share a single *gorm.DB.
 func NewRepos(db *gorm.DB) ports.Repos {
 	return ports.Repos{
-		User:      &userRepo{db: db},
-		Group:     &groupRepo{db: db},
-		Node:      &nodeRepo{db: db},
-		Ownership: &ownershipRepo{db: db},
-		Traffic:   &trafficRepo{db: db},
-		Audit:     &auditRepo{db: db},
-		SubLog:    &subLogRepo{db: db},
+		User:       &userRepo{db: db},
+		Group:      &groupRepo{db: db},
+		Node:       &nodeRepo{db: db},
+		Ownership:  &ownershipRepo{db: db},
+		Traffic:    &trafficRepo{db: db},
+		Audit:      &auditRepo{db: db},
+		SubLog:     &subLogRepo{db: db},
+		SyncTask:   &syncTaskRepo{db: db},
+		RuleSet:    &ruleSetRepo{db: db},
+		XUIPanel:   &xuiPanelRepo{db: db},
+		Settings:   &settingsRepo{db: db},
+		SAMLConfig: &samlConfigRepo{db: db},
+		OIDCConfig: &oidcConfigRepo{db: db},
 	}
 }

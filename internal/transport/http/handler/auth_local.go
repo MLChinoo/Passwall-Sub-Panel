@@ -7,18 +7,62 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 )
 
-// AuthLocalHandler exposes /api/auth/local/login.
+// AuthLocalHandler exposes /api/auth/local/login and the public /methods
+// metadata endpoint the login page consults.
 type AuthLocalHandler struct {
-	auth *auth.Service
-	user *user.Service
+	auth     *auth.Service
+	user     *user.Service
+	saml     *auth.SAMLService
+	oidc     *auth.OIDCService
+	settings ports.SettingsRepo
 }
 
-func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service) *AuthLocalHandler {
-	return &AuthLocalHandler{auth: authSvc, user: userSvc}
+func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *auth.SAMLService, oidcSvc *auth.OIDCService, settings ports.SettingsRepo) *AuthLocalHandler {
+	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings}
+}
+
+// Methods reports which login methods are configured and which UI mode the
+// login page should render. Public endpoint. Reads the runtime-editable
+// login_mode from the DB on every call so admin edits propagate
+// to the next visitor without a restart. "sso" is true when EITHER SAML
+// or OIDC is enabled; the frontend further distinguishes via "saml" /
+// "oidc" booleans when rendering provider-specific buttons.
+func (h *AuthLocalHandler) activeLoginMode(c *gin.Context) string {
+	s, err := h.settings.Load(c.Request.Context(), ports.UISettings{LoginMode: "dual"})
+	if err != nil {
+		return "dual"
+	}
+	return s.LoginMode
+}
+
+func (h *AuthLocalHandler) Methods(c *gin.Context) {
+	defaults := ports.UISettings{LoginMode: "dual", SiteTitle: "Passwall"}
+	s, err := h.settings.Load(c.Request.Context(), defaults)
+	if err != nil {
+		s = defaults
+	}
+	mode := s.LoginMode
+	samlEnabled := h.saml != nil && h.saml.Enabled()
+	oidcEnabled := h.oidc != nil && h.oidc.Enabled()
+	ssoEnabled := samlEnabled || oidcEnabled
+	if !ssoEnabled && (mode == "sso_first" || mode == "sso_strict" || mode == "dual") {
+		mode = "local_only"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"local":         true,
+		"sso":           ssoEnabled,
+		"saml":          samlEnabled,
+		"oidc":          oidcEnabled,
+		"login_mode":    mode,
+		"site_title":    s.SiteTitle,
+		"logo_url":      s.LogoURL,
+		"logo_url_dark": s.LogoURLDark,
+	})
 }
 
 type loginRequest struct {
@@ -27,16 +71,16 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
 	User         userBrief `json:"user"`
 }
 
 type userBrief struct {
-	ID       int64       `json:"id"`
-	Username string      `json:"username"`
-	Role     domain.Role `json:"role"`
-	Source   domain.UserSource `json:"source"`
+	ID          int64       `json:"id"`
+	Username    string      `json:"username"`
+	DisplayName string      `json:"display_name,omitempty"`
+	Role        domain.Role `json:"role"`
 }
 
 func (h *AuthLocalHandler) Login(c *gin.Context) {
@@ -57,6 +101,14 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 		}
 		return
 	}
+	// sso_strict: only admins may use the local password form, even with a
+	// valid credential. Regular users must come through SSO. This is the
+	// break-glass mode — /login/local stays reachable by URL so admins can
+	// recover when SSO is broken.
+	if h.activeLoginMode(c) == "sso_strict" && u.Role != domain.RoleAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "local login is restricted to administrators; please use SSO"})
+		return
+	}
 	access, refresh, err := h.auth.IssueTokens(u)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -66,7 +118,7 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 		AccessToken:  access,
 		RefreshToken: refresh,
 		User: userBrief{
-			ID: u.ID, Username: u.Username, Role: u.Role, Source: u.Source,
+			ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
 		},
 	})
 }

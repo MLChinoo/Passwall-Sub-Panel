@@ -1,5 +1,20 @@
 import { client } from './client'
-import type { CreateUserRequest, CreateUserResponse, ListResponse, User } from './types'
+import type {
+  CreateUserRequest,
+  CreateUserResponse,
+  ListResponse,
+  ResetPeriod,
+  User,
+} from './types'
+
+export interface UpdateUserRequest {
+  group_id?: number
+  expire_at?: string | null
+  clear_expire?: boolean
+  traffic_limit_gb?: number
+  traffic_reset_period?: ResetPeriod
+  remark?: string
+}
 
 export interface UserListParams {
   page?: number
@@ -24,19 +39,19 @@ export async function createUser(req: CreateUserRequest) {
   return data
 }
 
+export async function updateUser(id: number, req: UpdateUserRequest) {
+  const { data } = await client.put<User>(`/admin/users/${id}`, req)
+  return data
+}
+
 export async function deleteUser(id: number) {
   await client.delete(`/admin/users/${id}`)
 }
 
-export async function resetSubToken(id: number) {
-  const { data } = await client.post<{ sub_token: string; sub_url: string }>(
-    `/admin/users/${id}/reset-sub-token`,
+export async function resetCredentials(id: number) {
+  const { data } = await client.post<{ sub_token: string; sub_url: string; uuid: string }>(
+    `/admin/users/${id}/reset-credentials`,
   )
-  return data
-}
-
-export async function resetUUID(id: number) {
-  const { data } = await client.post<{ uuid: string }>(`/admin/users/${id}/reset-uuid`)
   return data
 }
 

@@ -10,8 +10,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
-// AdminRuleSetsHandler exposes CRUD for the YAML-backed rule_sets under
-// /api/admin/rules. The repo writes one file per slug atomically.
+// AdminRuleSetsHandler exposes CRUD for rule sets under /api/admin/rules.
 type AdminRuleSetsHandler struct {
 	repo ports.RuleSetRepo
 }

@@ -41,6 +41,18 @@ func (s *Service) List(ctx context.Context, filter ports.AuditFilter) ([]*domain
 	return s.repo.List(ctx, filter)
 }
 
+func (s *Service) Insert(ctx context.Context, entry *domain.AuditEntry) error {
+	return s.repo.Insert(ctx, entry)
+}
+
+func (s *Service) Clear(ctx context.Context) error {
+	return s.repo.Clear(ctx)
+}
+
+func (s *Service) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.repo.DeleteBefore(ctx, cutoff)
+}
+
 func jsonString(v any) string {
 	if v == nil {
 		return ""

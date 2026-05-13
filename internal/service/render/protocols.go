@@ -1,8 +1,11 @@
 package render
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"golang.org/x/crypto/curve25519"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
@@ -44,7 +47,7 @@ func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.In
 	case domain.ProtoTrojan:
 		return emitTrojan(base, crypto.DeriveProxyPassword(u.UUID, protocol), stream), nil
 	case domain.ProtoSS:
-		return emitSSLegacy(base, settings.Method, crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+		return emitSSProxy(base, settings.Method, crypto.DeriveProxyPassword(u.UUID, protocol)), nil
 	case domain.ProtoSS2022:
 		return emitSS2022(base, settings.Method, settings.Password,
 			crypto.DeriveProxyPassword(u.UUID, protocol)), nil
@@ -78,8 +81,18 @@ func emitVLESS(base map[string]any, uuid string, stream xuiStreamSettings) map[s
 		if stream.RealitySettings != nil {
 			base["client-fingerprint"] = defaultStr(stream.RealitySettings.Settings.Fingerprint, "chrome")
 			base["servername"] = first(stream.RealitySettings.ServerNames)
+			// publicKey is what the client actually needs. Modern 3X-UI stores
+			// it alongside privateKey under realitySettings.settings.publicKey.
+			// Older versions only persisted privateKey; in that case derive
+			// the public key on the fly via X25519(scalar=priv, base=9).
+			pub := stream.RealitySettings.Settings.PublicKey
+			if pub == "" && stream.RealitySettings.PrivateKey != "" {
+				if derived, err := derivePublicKey(stream.RealitySettings.PrivateKey); err == nil {
+					pub = derived
+				}
+			}
 			base["reality-opts"] = map[string]any{
-				"public-key": stream.RealitySettings.Settings.PublicKey,
+				"public-key": pub,
 				"short-id":   first(stream.RealitySettings.ShortIds),
 			}
 		}
@@ -122,7 +135,7 @@ func emitTrojan(base map[string]any, password string, stream xuiStreamSettings) 
 	return base
 }
 
-func emitSSLegacy(base map[string]any, method, password string) map[string]any {
+func emitSSProxy(base map[string]any, method, password string) map[string]any {
 	base["type"] = "ss"
 	base["cipher"] = method
 	base["password"] = password
@@ -169,4 +182,40 @@ func defaultStr(v, def string) string {
 		return v
 	}
 	return def
+}
+
+// derivePublicKey computes the X25519 public key from a Reality private key
+// (base64-encoded). Tries URL-safe base64 first — 3X-UI's format — and falls
+// back to standard base64 with optional padding. Returns base64-url(no pad)
+// for the public key, matching what 3X-UI emits elsewhere.
+func derivePublicKey(privateKeyB64 string) (string, error) {
+	priv, err := decodeBase64Any(privateKeyB64)
+	if err != nil {
+		return "", err
+	}
+	if len(priv) != 32 {
+		return "", fmt.Errorf("reality private key must be 32 bytes, got %d", len(priv))
+	}
+	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(pub), nil
+}
+
+// decodeBase64Any accepts any of: raw URL-safe, padded URL-safe, raw std,
+// padded std. Reality keys are typically raw URL-safe but operators may
+// paste either variant.
+func decodeBase64Any(s string) ([]byte, error) {
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("not a valid base64 (URL or std)")
 }

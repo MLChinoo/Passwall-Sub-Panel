@@ -20,14 +20,15 @@ type UserDisabler interface {
 }
 
 type Service struct {
-	users    ports.UserRepo
-	traffic  ports.TrafficRepo
-	pool     ports.XUIPool
-	disabler UserDisabler
+	users     ports.UserRepo
+	ownership ports.OwnershipRepo
+	traffic   ports.TrafficRepo
+	pool      ports.XUIPool
+	disabler  UserDisabler
 }
 
-func New(users ports.UserRepo, traffic ports.TrafficRepo, pool ports.XUIPool, disabler UserDisabler) *Service {
-	return &Service{users: users, traffic: traffic, pool: pool, disabler: disabler}
+func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.TrafficRepo, pool ports.XUIPool, disabler UserDisabler) *Service {
+	return &Service{users: users, ownership: ownership, traffic: traffic, pool: pool, disabler: disabler}
 }
 
 // PollOnce walks every user, pulls aggregated traffic, writes a snapshot,
@@ -59,23 +60,24 @@ func (s *Service) PollOnce(ctx context.Context) error {
 }
 
 func (s *Service) pollUser(ctx context.Context, u *domain.User) error {
-	email := u.EmailForXUI()
-	if email == "" {
-		return nil
+	// Walk the ownership table for this user: each entry has the (panel,
+	// inbound, email) tuple actually stored in 3X-UI. Querying ownership
+	// (rather than re-deriving the email) keeps traffic polling correct
+	// even when the email-format setting changes between client creations.
+	entries, err := s.ownership.ListByUser(ctx, u.ID)
+	if err != nil {
+		return fmt.Errorf("list ownership: %w", err)
 	}
-
-	// Aggregate across panels. Most users live on one panel and the inner
-	// loop runs once.
 	var totalUp, totalDown int64
 	hits := 0
-	for _, panel := range s.pool.List() {
-		c, err := s.pool.Get(panel)
+	for _, e := range entries {
+		c, err := s.pool.Get(e.PanelID)
 		if err != nil {
 			continue
 		}
-		traffics, err := c.GetClientTraffic(ctx, email)
+		traffics, err := c.GetClientTraffic(ctx, e.ClientEmail)
 		if err != nil {
-			continue // email may not exist on this panel — try the next
+			continue
 		}
 		for _, t := range traffics {
 			totalUp += t.Up

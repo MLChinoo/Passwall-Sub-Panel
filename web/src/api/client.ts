@@ -16,8 +16,25 @@ client.interceptors.request.use((config) => {
   return config
 })
 
+// Throttle the "3X-UI sync pending" toast so a burst of admin clicks
+// doesn't spam the user with the same warning.
+let lastSyncPendingToast = 0
+
 client.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Backend signals "operation succeeded synchronously on the panel
+    // side, but 3X-UI sync had to be queued for background retry" via the
+    // X-Sync-Pending response header. Surface that here so the admin
+    // knows changes won't reach 3X-UI until the panel can reach it.
+    if (res.headers?.['x-sync-pending'] === '1') {
+      const now = Date.now()
+      if (now - lastSyncPendingToast > 3000) {
+        lastSyncPendingToast = now
+        ElMessage.warning('3X-UI 暂时不可达，同步任务已加入后台队列（每分钟自动重试）')
+      }
+    }
+    return res
+  },
   (err) => {
     if (err.response?.status === 401) {
       sessionStorage.removeItem('psp_access')

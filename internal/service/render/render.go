@@ -111,7 +111,7 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 		inb, err := s.fetchInbound(ctx, it.node)
 		if err != nil {
 			log.Warn("render: skip node, fetch inbound failed",
-				"node_id", it.node.ID, "panel", it.node.PanelName, "inbound_id", it.node.InboundID, "err", err)
+				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID, "err", err)
 			continue
 		}
 		block, err := emitProxy(it.node.DisplayName, it.node, u, inb)
@@ -130,7 +130,7 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 }
 
 func (s *Service) fetchInbound(ctx context.Context, n *domain.Node) (*ports.Inbound, error) {
-	c, err := s.pool.Get(n.PanelName)
+	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return nil, err
 	}

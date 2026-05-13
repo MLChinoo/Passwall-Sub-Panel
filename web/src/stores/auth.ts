@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
-import { localLogin } from '@/api/auth'
-import type { Role, UserSource } from '@/api/types'
+import { localLogin, ssoComplete } from '@/api/auth'
+import type { Role } from '@/api/types'
 
 interface AuthState {
   userId: number | null
   username: string
+  displayName: string
   role: Role | ''
-  source: UserSource | ''
 }
 
 const STORAGE_KEY = 'psp_user'
@@ -18,7 +18,7 @@ function loadFromStorage(): AuthState {
   } catch {
     // ignored
   }
-  return { userId: null, username: '', role: '', source: '' }
+  return { userId: null, username: '', displayName: '', role: '' }
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -26,6 +26,7 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     loggedIn: (s) => !!sessionStorage.getItem('psp_access'),
     isAdmin: (s) => s.role === 'admin',
+    label: (s) => s.displayName || s.username || 'User',
   },
   actions: {
     async login(username: string, password: string) {
@@ -34,8 +35,25 @@ export const useAuthStore = defineStore('auth', {
       sessionStorage.setItem('psp_refresh', res.refresh_token)
       this.userId = res.user.id
       this.username = res.user.username
+      this.displayName = res.user.display_name || ''
       this.role = res.user.role
-      this.source = res.user.source
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(this.$state))
+    },
+    async loginSSO() {
+      const res = await ssoComplete()
+      sessionStorage.setItem('psp_access', res.access_token)
+      sessionStorage.setItem('psp_refresh', res.refresh_token)
+      this.userId = res.user.id
+      this.username = res.user.username
+      this.displayName = res.user.display_name || ''
+      this.role = res.user.role
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(this.$state))
+    },
+    // setDisplayName updates the cached display name without re-issuing
+    // tokens. Use after the admin edits their own profile, so the top-bar
+    // label updates in place instead of waiting for the next login.
+    setDisplayName(name: string) {
+      this.displayName = name
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(this.$state))
     },
     logout() {
@@ -44,8 +62,8 @@ export const useAuthStore = defineStore('auth', {
       sessionStorage.removeItem(STORAGE_KEY)
       this.userId = null
       this.username = ''
+      this.displayName = ''
       this.role = ''
-      this.source = ''
     },
   },
 })

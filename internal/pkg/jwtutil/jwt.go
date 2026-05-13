@@ -20,33 +20,46 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-type Issuer struct {
-	secret        []byte
-	accessTTL     time.Duration
-	refreshTTL    time.Duration
-	issuer        string
+// Params is the live-tunable subset of JWT issuance — TTLs and the "iss"
+// claim. Resolved fresh on every IssueAccess/IssueRefresh so admin edits
+// take effect on the next login without a restart.
+type Params struct {
+	AccessTTL  time.Duration
+	RefreshTTL time.Duration
+	Issuer     string
 }
 
-func NewIssuer(secret string, accessTTL, refreshTTL time.Duration, iss string) *Issuer {
-	return &Issuer{
-		secret:     []byte(secret),
-		accessTTL:  accessTTL,
-		refreshTTL: refreshTTL,
-		issuer:     iss,
-	}
+type Issuer struct {
+	secret []byte
+	params func() Params
 }
+
+// NewIssuer takes a closure rather than fixed values so that JWT TTLs and
+// the issuer string can be edited from Admin → Settings and applied on the
+// next token issue.
+func NewIssuer(secret string, params func() Params) *Issuer {
+	return &Issuer{secret: []byte(secret), params: params}
+}
+
+// AccessTTL / RefreshTTL expose the current TTL values so SSO callback
+// handlers can match the access-cookie's Max-Age to the access token's
+// natural expiry.
+func (i *Issuer) AccessTTL() time.Duration  { return i.params().AccessTTL }
+func (i *Issuer) RefreshTTL() time.Duration { return i.params().RefreshTTL }
 
 // IssueAccess signs and returns an access token.
 func (i *Issuer) IssueAccess(uid int64, username string, role domain.Role, src domain.UserSource) (string, error) {
-	return i.issue(uid, username, role, src, "access", i.accessTTL)
+	p := i.params()
+	return i.issue(uid, username, role, src, "access", p.AccessTTL, p.Issuer)
 }
 
 // IssueRefresh signs and returns a refresh token.
 func (i *Issuer) IssueRefresh(uid int64, username string, role domain.Role, src domain.UserSource) (string, error) {
-	return i.issue(uid, username, role, src, "refresh", i.refreshTTL)
+	p := i.params()
+	return i.issue(uid, username, role, src, "refresh", p.RefreshTTL, p.Issuer)
 }
 
-func (i *Issuer) issue(uid int64, username string, role domain.Role, src domain.UserSource, sub string, ttl time.Duration) (string, error) {
+func (i *Issuer) issue(uid int64, username string, role domain.Role, src domain.UserSource, sub string, ttl time.Duration, iss string) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		UserID:   uid,
@@ -54,7 +67,7 @@ func (i *Issuer) issue(uid int64, username string, role domain.Role, src domain.
 		Role:     role,
 		Source:   src,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    i.issuer,
+			Issuer:    iss,
 			Subject:   sub,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),

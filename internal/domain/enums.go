@@ -25,10 +25,12 @@ const (
 type AutoDisabledReason string
 
 const (
-	DisabledNone            AutoDisabledReason = ""
-	DisabledTrafficExceeded AutoDisabledReason = "traffic_exceeded"
-	DisabledExpired         AutoDisabledReason = "expired"
-	DisabledManual          AutoDisabledReason = "manual"
+	DisabledNone             AutoDisabledReason = ""
+	DisabledTrafficExceeded  AutoDisabledReason = "traffic_exceeded"
+	DisabledExpired          AutoDisabledReason = "expired"
+	DisabledManual           AutoDisabledReason = "manual"
+	DisabledPendingDelete    AutoDisabledReason = "pending_delete"
+	DisabledPendingApproval  AutoDisabledReason = "pending_approval"
 )
 
 // Protocol identifies a 3X-UI inbound's protocol family.
@@ -49,4 +51,25 @@ const (
 	ClientClash     ClientType = "clash"
 	ClientClashMeta ClientType = "clash-meta"
 	ClientSingBox   ClientType = "sing-box"
+)
+
+type SyncTaskType string
+
+const (
+	SyncTaskUserDelete     SyncTaskType = "user_delete"
+	SyncTaskUserResync     SyncTaskType = "user_resync"
+	SyncTaskUserPushConfig SyncTaskType = "user_push_config"
+	SyncTaskNodeCreate     SyncTaskType = "node_create"
+	SyncTaskNodeDelete     SyncTaskType = "node_delete"
+	SyncTaskNodeSetEnabled SyncTaskType = "node_set_enabled"
+	SyncTaskNodeUpdate     SyncTaskType = "node_update"
+)
+
+type SyncTaskStatus string
+
+const (
+	SyncTaskPending   SyncTaskStatus = "pending"
+	SyncTaskRunning   SyncTaskStatus = "running"
+	SyncTaskSucceeded SyncTaskStatus = "succeeded"
+	SyncTaskCanceled  SyncTaskStatus = "canceled"
 )

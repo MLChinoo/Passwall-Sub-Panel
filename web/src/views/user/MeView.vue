@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { client } from '@/api/client'
 import { getMyUsage, type UsageReport } from '@/api/traffic'
@@ -8,8 +8,8 @@ import { getMyUsage, type UsageReport } from '@/api/traffic'
 interface MeProfile {
   id: number
   username: string
+  display_name?: string
   upn?: string
-  source: string
   sub_url: string
   expire_at?: string | null
   traffic_limit_bytes: number
@@ -18,6 +18,7 @@ interface MeProfile {
 }
 
 const profile = ref<MeProfile | null>(null)
+const displayName = computed(() => profile.value?.display_name || profile.value?.username || '')
 const usage = ref<UsageReport | null>(null)
 const qrDataURL = ref<string>('')
 const passwordDialog = ref(false)
@@ -32,22 +33,31 @@ async function load() {
   profile.value = p
   usage.value = u
   if (p.sub_url) {
-    qrDataURL.value = await QRCode.toDataURL(p.sub_url, { width: 220 })
+    qrDataURL.value = await QRCode.toDataURL(p.sub_url, { width: 200, margin: 2 })
   }
 }
 
 function copyText(s: string) {
   navigator.clipboard.writeText(s)
-  ElMessage.success('已复制')
+  ElMessage.success('已复制到剪贴板')
 }
 
-async function resetSubToken() {
-  const { data } = await client.post<{ sub_token: string; sub_url: string }>(
-    '/user/me/reset-sub-token',
-  )
-  if (profile.value) profile.value.sub_url = data.sub_url
-  qrDataURL.value = await QRCode.toDataURL(data.sub_url, { width: 220 })
-  ElMessage.success('已重置，旧 URL 立即失效')
+async function confirmResetCredentials() {
+  try {
+    await ElMessageBox.confirm(
+      '重置凭证会导致您的旧订阅链接立即失效，且您现有正在使用的所有节点连接都会被强制断开。重置后，您必须去客户端中更新订阅才能重新上网。确定继续吗？',
+      '重置凭证',
+      { type: 'warning', confirmButtonText: '确定重置', cancelButtonText: '取消' }
+    )
+    const { data } = await client.post<{ sub_token: string; sub_url: string; uuid: string }>(
+      '/user/me/reset-credentials',
+    )
+    if (profile.value) profile.value.sub_url = data.sub_url
+    qrDataURL.value = await QRCode.toDataURL(data.sub_url, { width: 200, margin: 2 })
+    ElMessage.success('已重置！请务必更新您的订阅配置。')
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('操作失败')
+  }
 }
 
 async function changePassword() {
@@ -66,7 +76,7 @@ async function changePassword() {
 }
 
 function formatBytes(n: number): string {
-  if (n === 0) return '0'
+  if (n === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let u = 0
@@ -85,96 +95,380 @@ onMounted(load)
 </script>
 
 <template>
-  <div v-if="profile" class="psp-page" style="max-width: 720px; margin: 0 auto">
-    <el-card>
-      <div style="display: flex; gap: 24px">
-        <div style="flex: 1">
-          <h2 style="margin-top: 0">{{ profile.username }}</h2>
-          <p style="color: #909399; font-size: 13px">
-            来源：{{ profile.source === 'sso' ? 'SSO' : '本地账号' }}
-          </p>
-
-          <div v-if="profile.expire_at" style="margin: 16px 0">
-            <div style="color: #909399; font-size: 13px">到期</div>
-            <div style="font-size: 18px; font-weight: 600">
-              {{ new Date(profile.expire_at).toLocaleDateString() }}
-              <span
-                :style="{
-                  color: daysUntil(profile.expire_at) < 7 ? '#f56c6c' : '#67c23a',
-                  fontSize: '14px',
-                  marginLeft: '8px',
-                }"
-              >
-                还剩 {{ daysUntil(profile.expire_at) }} 天
-              </span>
-            </div>
-          </div>
-          <div v-else style="margin: 16px 0">
-            <div style="color: #909399; font-size: 13px">到期</div>
-            <div style="font-size: 18px; font-weight: 600">永久</div>
-          </div>
-
-          <div v-if="usage" style="margin: 16px 0">
-            <div style="color: #909399; font-size: 13px">本周期已用 / 限额</div>
-            <div style="font-size: 18px; font-weight: 600">
-              {{ formatBytes(usage.period_used_bytes) }} /
-              {{
-                profile.traffic_limit_bytes > 0
-                  ? formatBytes(profile.traffic_limit_bytes)
-                  : '不限'
-              }}
-            </div>
-            <el-progress
-              v-if="profile.traffic_limit_bytes > 0"
-              :percentage="
-                Math.min(
-                  100,
-                  Math.round((usage.period_used_bytes / profile.traffic_limit_bytes) * 100),
-                )
-              "
-              style="margin-top: 6px"
-            />
-          </div>
-        </div>
-
-        <div style="text-align: center">
-          <img v-if="qrDataURL" :src="qrDataURL" alt="QR" />
-          <div style="font-size: 12px; color: #909399; margin-top: 8px">
-            扫码导入订阅
+  <div v-if="profile" class="profile-dashboard">
+    <!-- Header Summary -->
+    <div class="profile-header">
+      <div class="user-info-section">
+        <div class="avatar-large">{{ displayName.charAt(0).toUpperCase() }}</div>
+        <div>
+          <h1 class="username">{{ displayName }}</h1>
+          <div class="tags">
+            <span class="tag status-tag" :class="profile.enabled ? 'active' : 'inactive'">
+              {{ profile.enabled ? '运行中' : '已禁用' }}
+            </span>
           </div>
         </div>
       </div>
-
-      <el-divider />
-
-      <div style="margin-bottom: 8px; color: #909399; font-size: 13px">订阅 URL</div>
-      <el-input :model-value="profile.sub_url" readonly>
-        <template #append>
-          <el-button @click="copyText(profile.sub_url)">复制</el-button>
-        </template>
-      </el-input>
-
-      <div style="margin-top: 24px; display: flex; gap: 12px">
-        <el-button @click="resetSubToken">重置订阅 URL</el-button>
-        <el-button v-if="profile.source === 'local'" @click="passwordDialog = true">
-          修改密码
+      <div class="header-actions">
+        <el-button @click="passwordDialog = true" plain>
+          <el-icon class="mr-1"><Lock /></el-icon> 修改密码
         </el-button>
       </div>
-    </el-card>
+    </div>
 
-    <el-dialog v-model="passwordDialog" title="修改密码" width="400px">
-      <el-form label-width="80px">
+    <div class="dashboard-grid">
+      <!-- Left Column: Stats & Usage -->
+      <div class="grid-col-left">
+        <!-- Usage Card -->
+        <el-card class="stat-card">
+          <div class="card-header-flex">
+            <h3 class="card-title">流量使用情况</h3>
+            <span class="reset-period">{{ profile.traffic_reset_period === 'monthly' ? '月度重置' : profile.traffic_reset_period === 'quarterly' ? '季度重置' : '不重置' }}</span>
+          </div>
+          
+          <div v-if="usage" class="usage-stats">
+            <div class="usage-numbers">
+              <span class="used">{{ formatBytes(usage.period_used_bytes) }}</span>
+              <span class="divider">/</span>
+              <span class="limit">{{ profile.traffic_limit_bytes > 0 ? formatBytes(profile.traffic_limit_bytes) : '不限' }}</span>
+            </div>
+            
+            <el-progress
+              v-if="profile.traffic_limit_bytes > 0"
+              :percentage="Math.min(100, Math.round((usage.period_used_bytes / profile.traffic_limit_bytes) * 100))"
+              :stroke-width="12"
+              :color="[ { color: '#67c23a', percentage: 70 }, { color: '#e6a23c', percentage: 90 }, { color: '#f56c6c', percentage: 100 } ]"
+              class="usage-progress"
+            />
+          </div>
+        </el-card>
+
+        <!-- Expiration Card -->
+        <el-card class="stat-card">
+          <h3 class="card-title">账户到期时间</h3>
+          <div class="expire-stats">
+            <div v-if="profile.expire_at">
+              <div class="expire-date">{{ new Date(profile.expire_at).toLocaleDateString() }}</div>
+              <div class="expire-countdown" :class="daysUntil(profile.expire_at) < 7 ? 'danger' : 'safe'">
+                还剩 {{ daysUntil(profile.expire_at) }} 天
+              </div>
+            </div>
+            <div v-else class="expire-date">永久有效</div>
+          </div>
+        </el-card>
+      </div>
+
+      <!-- Right Column: Subscription -->
+      <div class="grid-col-right">
+        <el-card class="sub-card">
+          <h3 class="card-title text-center">快速导入订阅</h3>
+          
+          <div class="qr-container">
+            <div class="qr-frame">
+              <img v-if="qrDataURL" :src="qrDataURL" alt="QR Code" class="qr-image" />
+            </div>
+            <p class="qr-hint">使用任意支持的客户端扫描二维码</p>
+          </div>
+
+          <div class="sub-url-section">
+            <p class="section-label">或复制订阅链接：</p>
+            <div class="url-box">
+              <input type="text" :value="profile.sub_url" readonly class="url-input" />
+              <button class="copy-btn" @click="copyText(profile.sub_url)">复制</button>
+            </div>
+          </div>
+
+          <div class="sub-actions">
+            <el-button type="danger" plain @click="confirmResetCredentials" class="w-full">
+              重置所有凭证 (Token & UUID)
+            </el-button>
+            <p class="action-hint">若发生流量盗刷或链接泄露，请立即重置。</p>
+          </div>
+        </el-card>
+      </div>
+    </div>
+
+    <!-- Password Dialog -->
+    <el-dialog v-model="passwordDialog" title="修改密码" width="400px" class="custom-dialog">
+      <el-form label-position="top">
         <el-form-item label="旧密码">
-          <el-input v-model="oldPassword" type="password" show-password />
+          <el-input v-model="oldPassword" type="password" show-password size="large" />
         </el-form-item>
         <el-form-item label="新密码">
-          <el-input v-model="newPassword" type="password" show-password />
+          <el-input v-model="newPassword" type="password" show-password size="large" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="passwordDialog = false">取消</el-button>
-        <el-button type="primary" @click="changePassword">提交</el-button>
+        <el-button @click="passwordDialog = false" size="large">取消</el-button>
+        <el-button type="primary" @click="changePassword" size="large">确认修改</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.profile-dashboard {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+/* Header */
+.profile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.user-info-section {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.avatar-large {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  background: var(--sidebar-active-bg);
+  color: white;
+  font-size: 32px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3);
+}
+
+.username {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.5px;
+}
+
+.tags {
+  display: flex;
+  gap: 8px;
+}
+
+.tag {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.source-tag {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-muted);
+}
+
+.status-tag.active {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+
+.status-tag.inactive {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+/* Grid Layout */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 768px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.grid-col-left {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 20px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.card-header-flex {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.card-header-flex .card-title {
+  margin: 0;
+}
+
+.reset-period {
+  font-size: 12px;
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+/* Stats Styling */
+.usage-numbers {
+  margin-bottom: 16px;
+}
+
+.used {
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-main);
+  letter-spacing: -1px;
+}
+
+.divider {
+  font-size: 24px;
+  color: var(--text-muted);
+  margin: 0 8px;
+  font-weight: 300;
+}
+
+.limit {
+  font-size: 20px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.usage-progress :deep(.el-progress-bar__outer) {
+  background-color: rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+}
+
+.expire-date {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 8px;
+}
+
+.expire-countdown {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.expire-countdown.safe {
+  color: #10b981;
+}
+
+.expire-countdown.danger {
+  color: #ef4444;
+}
+
+/* Right Column (Subscription) */
+.sub-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.qr-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 32px;
+}
+
+.qr-frame {
+  background: white;
+  padding: 12px;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  margin-bottom: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.qr-image {
+  border-radius: 8px;
+  display: block;
+}
+
+.qr-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 8px 0;
+}
+
+.url-box {
+  display: flex;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid var(--header-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 12px 16px;
+  color: var(--text-main);
+  font-size: 13px;
+  font-family: monospace;
+  outline: none;
+}
+
+.copy-btn {
+  background: var(--sidebar-active-bg);
+  color: white;
+  border: none;
+  padding: 0 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.copy-btn:hover {
+  opacity: 0.9;
+}
+
+.sub-actions {
+  margin-top: auto;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.action-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 8px 0 0 0;
+}
+
+.mr-1 {
+  margin-right: 4px;
+}
+</style>

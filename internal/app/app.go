@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/adapters/mysql"
@@ -37,7 +36,17 @@ type App struct {
 	server    *http.Server
 	traffic   *traffic.Service
 	reconcile *reconcile.Service
+	user      *user.Service
+	node      *node.Service
+	audit     *audit.Service
+	settings  ports.SettingsRepo
+	syncTasks ports.SyncTaskRepo
 	saml      *auth.SAMLService
+
+	// Resolved at startup from the settings DB. Loops/handlers using these
+	// see "restart required to change" semantics for the underlying setting.
+	trafficInterval   time.Duration
+	reconcileInterval time.Duration
 
 	bgCancel context.CancelFunc
 }
@@ -50,40 +59,47 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db open: %w", err)
 	}
-	if err := mysql.Migrate(db); err != nil {
-		return nil, fmt.Errorf("db migrate: %w", err)
+	if err := mysql.EnsureSchema(db); err != nil {
+		return nil, fmt.Errorf("db schema: %w", err)
 	}
 	mysqlRepos := mysql.NewRepos(db)
-
-	ruleSetRepo, err := yamladapter.NewRuleSetRepo(cfg.ConfigDir)
-	if err != nil {
-		return nil, fmt.Errorf("rule_set repo: %w", err)
+	if err := mysqlRepos.SyncTask.ResetRunning(ctx); err != nil {
+		return nil, fmt.Errorf("reset sync tasks: %w", err)
 	}
+	if err := syncPanelNameCaches(ctx, mysqlRepos); err != nil {
+		return nil, fmt.Errorf("sync server name caches: %w", err)
+	}
+
 	templateRepo, err := yamladapter.NewTemplateRepo(cfg.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("template repo: %w", err)
 	}
-	secretKey := []byte(os.Getenv("PSP_SECRET_KEY"))
-	xuiPanelRepo, err := yamladapter.NewXUIPanelRepo(cfg.XUIPanelsFile, secretKey)
+
+	samlCfg, err := mysqlRepos.SAMLConfig.Load(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("xui_panels repo: %w", err)
+		return nil, fmt.Errorf("load saml config: %w", err)
 	}
-	samlCfg, err := yamladapter.LoadSAMLConfig(cfg.SAMLFile)
+
+	oidcCfg, err := mysqlRepos.OIDCConfig.Load(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("saml config: %w", err)
+		return nil, fmt.Errorf("load oidc config: %w", err)
 	}
 
 	repos := ports.Repos{
-		User:      mysqlRepos.User,
-		Group:     mysqlRepos.Group,
-		Node:      mysqlRepos.Node,
-		Ownership: mysqlRepos.Ownership,
-		Traffic:   mysqlRepos.Traffic,
-		Audit:     mysqlRepos.Audit,
-		SubLog:    mysqlRepos.SubLog,
-		RuleSet:   ruleSetRepo,
-		Template:  templateRepo,
-		XUIPanel:  xuiPanelRepo,
+		User:       mysqlRepos.User,
+		Group:      mysqlRepos.Group,
+		Node:       mysqlRepos.Node,
+		Ownership:  mysqlRepos.Ownership,
+		Traffic:    mysqlRepos.Traffic,
+		Audit:      mysqlRepos.Audit,
+		SubLog:     mysqlRepos.SubLog,
+		SyncTask:   mysqlRepos.SyncTask,
+		RuleSet:    mysqlRepos.RuleSet,
+		Template:   templateRepo,
+		XUIPanel:   mysqlRepos.XUIPanel,
+		Settings:   mysqlRepos.Settings,
+		SAMLConfig: mysqlRepos.SAMLConfig,
+		OIDCConfig: mysqlRepos.OIDCConfig,
 	}
 
 	pool, err := xuiadapter.NewPool(ctx, repos.XUIPanel)
@@ -92,55 +108,103 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	// --- service layer ---
-	issuer := jwtutil.NewIssuer(
-		cfg.JWTSecret,
-		cfg.AccessTTL(),
-		cfg.RefreshTTL(),
-		cfg.JWT.Issuer,
-	)
+	// Cron intervals + rate limits are still startup-loaded (the tickers /
+	// middleware they configure aren't rebuilt mid-run). JWT TTLs and the
+	// "iss" claim ARE live: the issuer reads them from settings on every
+	// IssueAccess / IssueRefresh.
+	sysSettings, err := repos.Settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+	issuer := jwtutil.NewIssuer(cfg.JWTSecret, func() jwtutil.Params {
+		s, err := repos.Settings.Load(context.Background(), ports.UISettings{})
+		if err != nil {
+			// Settings load failed (DB blip?). Fall back to the hardcoded
+			// defaults baked into settings_repo so logins keep working.
+			return jwtutil.Params{
+				AccessTTL:  120 * time.Minute,
+				RefreshTTL: 7 * 24 * time.Hour,
+				Issuer:     "passwall-sub-panel",
+			}
+		}
+		return jwtutil.Params{
+			AccessTTL:  time.Duration(s.JWTAccessTTLMinutes) * time.Minute,
+			RefreshTTL: time.Duration(s.JWTRefreshTTLMinutes) * time.Minute,
+			Issuer:     s.JWTIssuer,
+		}
+	})
 	authSvc := auth.New(issuer)
 	samlSvc, err := auth.NewSAML(samlCfg)
 	if err != nil {
 		return nil, fmt.Errorf("init saml: %w", err)
 	}
+	oidcSvc, err := auth.NewOIDC(oidcCfg)
+	if err != nil {
+		return nil, fmt.Errorf("init oidc: %w", err)
+	}
 	auditSvc := audit.New(repos.Audit)
 	groupSvc := group.New(repos.Group, repos.Node)
 	syncSvc := syncsvc.New(pool, repos.Ownership)
-	userSvc := user.New(repos.User, repos.Group, repos.Ownership, groupSvc, syncSvc, pool)
-	nodeSvc := node.New(repos.Node, pool, syncSvc)
-	trafficSvc := traffic.New(repos.User, repos.Traffic, pool, userSvc)
-	reconcileSvc := reconcile.New(repos.User, repos.Ownership, repos.Node, repos.Audit, pool, syncSvc)
+	userSvc := user.New(repos.User, repos.Group, repos.Ownership, repos.SyncTask, groupSvc, syncSvc, pool, repos.Settings)
+	nodeSvc := node.New(repos.Node, pool, syncSvc, repos.SyncTask, repos.Group, repos.User, syncSvc, repos.Settings)
+	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, pool, userSvc)
+	reconcileSvc := reconcile.New(repos.User, repos.Ownership, repos.Node, repos.Group, repos.Settings, repos.Audit, pool, syncSvc)
 	renderSvc := render.New(repos, pool, groupSvc)
-
-	_ = auditSvc // direct AuditSvc wiring lands when admin handlers start recording diffs
 
 	// --- transport layer ---
 	httpHandler := httptransport.NewRouter(httptransport.Deps{
-		Cfg:     cfg,
-		Repos:   repos,
-		Pool:    pool,
-		Auth:    authSvc,
-		SAML:    samlSvc,
-		User:    userSvc,
-		Group:   groupSvc,
-		Node:    nodeSvc,
-		Render:  renderSvc,
-		Audit:   auditSvc,
-		Sync:    syncSvc,
-		Traffic: trafficSvc,
+		Cfg:              cfg,
+		Repos:            repos,
+		Pool:             pool,
+		Auth:             authSvc,
+		SAML:             samlSvc,
+		OIDC:             oidcSvc,
+		User:             userSvc,
+		Group:            groupSvc,
+		Node:             nodeSvc,
+		Render:           renderSvc,
+		Audit:            auditSvc,
+		Sync:             syncSvc,
+		Traffic:          trafficSvc,
+		Reconcile:        reconcileSvc,
+		SubPerIPPerMin:   sysSettings.SubPerIPPerMin,
+		LoginPerIPPerMin: sysSettings.LoginPerIPPerMin,
 	})
 
 	return &App{
-		cfg:       cfg,
-		traffic:   trafficSvc,
-		reconcile: reconcileSvc,
-		saml:      samlSvc,
+		cfg:               cfg,
+		traffic:           trafficSvc,
+		reconcile:         reconcileSvc,
+		user:              userSvc,
+		node:              nodeSvc,
+		audit:             auditSvc,
+		settings:          repos.Settings,
+		syncTasks:         repos.SyncTask,
+		saml:              samlSvc,
+		trafficInterval:   time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute,
+		reconcileInterval: time.Duration(sysSettings.CronReconcileMinutes) * time.Minute,
 		server: &http.Server{
 			Addr:              cfg.Listen,
 			Handler:           httpHandler,
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}, nil
+}
+
+func syncPanelNameCaches(ctx context.Context, repos ports.Repos) error {
+	panels, err := repos.XUIPanel.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, panel := range panels {
+		if err := repos.Node.UpdatePanelName(ctx, panel.ID, panel.Name); err != nil {
+			return err
+		}
+		if err := repos.Ownership.UpdatePanelName(ctx, panel.ID, panel.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Run launches background workers (SAML metadata refresh, traffic poll,
@@ -150,10 +214,93 @@ func (a *App) Run() error {
 	a.bgCancel = cancel
 
 	a.saml.StartMetadataRefresh(bgCtx)
+	go a.runSyncTaskLoop(bgCtx)
+	go a.runAuditCleanupLoop(bgCtx)
 	go a.runTrafficLoop(bgCtx)
 	go a.runReconcileLoop(bgCtx)
 
 	return a.server.ListenAndServe()
+}
+
+func (a *App) runAuditCleanupLoop(ctx context.Context) {
+	interval := time.Hour
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	log.Info("audit cleanup loop started", "interval", interval.String())
+	for {
+		a.pruneAudit(ctx)
+		a.pruneSyncTasks(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (a *App) pruneSyncTasks(ctx context.Context) {
+	if a.settings == nil || a.syncTasks == nil {
+		return
+	}
+	settings, err := a.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		return
+	}
+	if settings.SyncTaskRetentionDays <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -settings.SyncTaskRetentionDays)
+	deleted, err := a.syncTasks.DeleteSucceededBefore(ctx, cutoff)
+	if err != nil {
+		log.Warn("sync task cleanup", "err", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("sync task cleanup", "deleted", deleted, "retention_days", settings.SyncTaskRetentionDays)
+	}
+}
+
+func (a *App) pruneAudit(ctx context.Context) {
+	if a.audit == nil || a.settings == nil {
+		return
+	}
+	settings, err := a.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		log.Warn("audit cleanup load settings", "err", err)
+		return
+	}
+	if settings.AuditRetentionDays <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -settings.AuditRetentionDays)
+	deleted, err := a.audit.PruneBefore(ctx, cutoff)
+	if err != nil {
+		log.Warn("audit cleanup", "err", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("audit cleanup", "deleted", deleted, "retention_days", settings.AuditRetentionDays)
+	}
+}
+
+func (a *App) runSyncTaskLoop(ctx context.Context) {
+	interval := 30 * time.Second
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	log.Info("sync task loop started", "interval", interval.String())
+	for {
+		if err := a.user.ProcessDueTasks(ctx, 20); err != nil {
+			log.Warn("user sync tasks", "err", err)
+		}
+		if err := a.node.ProcessDueTasks(ctx, 20); err != nil {
+			log.Warn("node sync tasks", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // Shutdown stops background workers and gracefully closes the HTTP server.
@@ -165,7 +312,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) runTrafficLoop(ctx context.Context) {
-	interval := a.cfg.TrafficPullInterval()
+	interval := a.trafficInterval
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	log.Info("traffic loop started", "interval", interval.String())
@@ -182,7 +329,7 @@ func (a *App) runTrafficLoop(ctx context.Context) {
 }
 
 func (a *App) runReconcileLoop(ctx context.Context) {
-	interval := a.cfg.ReconcileInterval()
+	interval := a.reconcileInterval
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	log.Info("reconcile loop started", "interval", interval.String())
