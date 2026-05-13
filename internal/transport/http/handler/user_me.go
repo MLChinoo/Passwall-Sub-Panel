@@ -42,6 +42,16 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Server-side derived: hide the "change password" affordance for SSO
+	// users (no password to begin with) and for non-admin local users when
+	// the admin has flipped DisallowUserPasswordChange on. Admins always
+	// keep the option as a break-glass path.
+	canChangePassword := u.Source == domain.UserSourceLocal
+	if canChangePassword && u.Role != domain.RoleAdmin {
+		if s, err := h.settings.Load(c.Request.Context(), ports.UISettings{}); err == nil && s.DisallowUserPasswordChange {
+			canChangePassword = false
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"id":                   u.ID,
 		"username":             u.Username,
@@ -52,6 +62,7 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		"traffic_limit_bytes":  u.TrafficLimitBytes,
 		"traffic_reset_period": u.TrafficResetPeriod,
 		"enabled":              u.Enabled,
+		"can_change_password":  canChangePassword,
 	})
 }
 

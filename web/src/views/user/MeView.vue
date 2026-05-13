@@ -15,6 +15,7 @@ interface MeProfile {
   traffic_limit_bytes: number
   traffic_reset_period: string
   enabled: boolean
+  can_change_password: boolean
 }
 
 const profile = ref<MeProfile | null>(null)
@@ -110,7 +111,7 @@ onMounted(load)
         </div>
       </div>
       <div class="header-actions">
-        <el-button @click="passwordDialog = true" plain>
+        <el-button v-if="profile.can_change_password" @click="passwordDialog = true" plain>
           <el-icon class="mr-1"><Lock /></el-icon> 修改密码
         </el-button>
       </div>
