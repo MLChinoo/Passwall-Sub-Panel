@@ -2,6 +2,7 @@
 package http
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -65,6 +66,7 @@ func NewRouter(d Deps) *gin.Engine {
 	// The actual route is registered via NoRoute handler for dynamic path support.
 	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.Settings, d.Repos.User, d.Mail)
 	subLimiter := middleware.NewPerIPLimiter(d.SubPerIPPerMin, time.Minute)
+	subPathCache := newSubPathCache(d.Repos.Settings)
 
 	// Auth endpoints
 	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings)
@@ -212,8 +214,8 @@ func NewRouter(d Deps) *gin.Engine {
 	// subscription path keep precedence.
 	// NoRoute handles both dynamic subscription paths and SPA fallback.
 	g.NoRoute(func(c *gin.Context) {
-		// Check if this is a subscription request.
-		if isSubRequest(c, d.Repos.Settings) {
+		// Check if this is a subscription request (cached, no DB query).
+		if subPathCache.isSubRequest(c.Request.URL.Path) {
 			subLimiter.Handler()(c)
 			if !c.IsAborted() {
 				subHandler.Get(c)
@@ -227,13 +229,27 @@ func NewRouter(d Deps) *gin.Engine {
 	return g
 }
 
-// isSubRequest checks if the request path matches the subscription path prefix.
-func isSubRequest(c *gin.Context, settings ports.SettingsRepo) bool {
-	// Load current settings to get the sub path prefix.
-	s, err := settings.Load(c.Request.Context(), ports.UISettings{})
-	if err != nil {
-		return false
+// subPathCache caches the subscription path prefix to avoid DB queries on every request.
+type subPathCache struct {
+	prefix string
+	repo   ports.SettingsRepo
+}
+
+func newSubPathCache(repo ports.SettingsRepo) *subPathCache {
+	c := &subPathCache{repo: repo}
+	c.refresh()
+	return c
+}
+
+func (c *subPathCache) refresh() {
+	s, err := c.repo.Load(context.Background(), ports.UISettings{SubPath: "sub"})
+	if err != nil || s.SubPath == "" {
+		c.prefix = "/sub/"
+		return
 	}
-	prefix := "/" + strings.Trim(s.SubPath, "/") + "/"
-	return strings.HasPrefix(c.Request.URL.Path, prefix)
+	c.prefix = "/" + strings.Trim(s.SubPath, "/") + "/"
+}
+
+func (c *subPathCache) isSubRequest(path string) bool {
+	return strings.HasPrefix(path, c.prefix)
 }

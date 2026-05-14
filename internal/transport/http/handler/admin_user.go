@@ -421,7 +421,3 @@ func (h *AdminUserHandler) subURLFor(ctx context.Context, token string) string {
 	}
 	return base + "/sub/" + token
 }
-
-func notImplemented(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented yet"})
-}

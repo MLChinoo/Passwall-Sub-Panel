@@ -54,10 +54,7 @@ func (h *AuthOIDCHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	returnTo := c.Query("return_to")
-	if returnTo == "" {
-		returnTo = "/user/me"
-	}
+	returnTo := sanitizeReturnTo(c.Query("return_to"), "/user/me")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(cookieOIDCState, state, oidcCookieTTL, "/", "", false, true)
 	c.SetCookie(cookieOIDCNonce, nonce, oidcCookieTTL, "/", "", false, true)
@@ -129,7 +126,7 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	secure := false
+	secure := isHTTPS(c)
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(CookieAccessToken, access, int(h.auth.AccessTTL().Seconds()), "/", "", secure, true)
 	c.SetCookie(CookieRefreshToken, refresh, int(h.auth.RefreshTTL().Seconds()), "/", "", secure, true)

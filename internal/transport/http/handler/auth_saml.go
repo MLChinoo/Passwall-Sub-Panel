@@ -39,10 +39,7 @@ func (h *AuthSAMLHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
 		return
 	}
-	returnTo := c.Query("return_to")
-	if returnTo == "" {
-		returnTo = "/user/me"
-	}
+	returnTo := sanitizeReturnTo(c.Query("return_to"), "/user/me")
 	redirectURL, err := h.saml.BuildAuthnURL(returnTo)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -110,7 +107,7 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 		return
 	}
 
-	secure := false
+	secure := isHTTPS(c)
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(CookieAccessToken, access, int(h.auth.AccessTTL().Seconds()), "/", "", secure, true)
 	c.SetCookie(CookieRefreshToken, refresh, int(h.auth.RefreshTTL().Seconds()), "/", "", secure, true)

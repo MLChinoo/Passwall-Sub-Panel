@@ -122,9 +122,11 @@ func (h *AdminNodeHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Batch load panel names to avoid N+1 queries.
+	panelNames := h.loadPanelNames(c.Request.Context())
 	out := make([]nodeDTO, len(nodes))
 	for i, n := range nodes {
-		out[i] = h.toNodeDTO(c.Request.Context(), n)
+		out[i] = h.toNodeDTO(n, panelNames)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
@@ -147,12 +149,15 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 
 	inbound, inboundErr := h.node.GetInboundConfig(c.Request.Context(), id)
 
+	// Load panel name for this node.
+	panelNames := h.loadPanelNames(c.Request.Context())
+
 	// Bundle the inbound clients so the detail page only needs one round-trip.
 	clients, err := h.node.ListClientsOfInbound(c.Request.Context(), id, h.ownership)
 	if err != nil {
 		// Detail without clients is still useful; surface the error but don't 500.
 		out := gin.H{
-			"node":          h.toNodeDTO(c.Request.Context(), n),
+			"node":          h.toNodeDTO(n, panelNames),
 			"clients":       []any{},
 			"clients_error": err.Error(),
 		}
@@ -166,7 +171,7 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 		return
 	}
 	out := gin.H{
-		"node":    h.toNodeDTO(c.Request.Context(), n),
+		"node":    h.toNodeDTO(n, panelNames),
 		"clients": clients,
 	}
 	if inbound != nil {
@@ -198,7 +203,8 @@ func (h *AdminNodeHandler) ImportExisting(c *gin.Context) {
 		mapNodeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, h.toNodeDTO(c.Request.Context(), n))
+	panelNames := h.loadPanelNames(c.Request.Context())
+	c.JSON(http.StatusCreated, h.toNodeDTO(n, panelNames))
 }
 
 func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
@@ -236,7 +242,8 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 		c.JSON(http.StatusAccepted, gin.H{"queued": true})
 		return
 	}
-	c.JSON(http.StatusCreated, h.toNodeDTO(c.Request.Context(), n))
+	panelNames := h.loadPanelNames(c.Request.Context())
+	c.JSON(http.StatusCreated, h.toNodeDTO(n, panelNames))
 }
 
 func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
@@ -273,7 +280,8 @@ func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
 		mapNodeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, h.toNodeDTO(c.Request.Context(), n))
+	panelNames := h.loadPanelNames(c.Request.Context())
+	c.JSON(http.StatusOK, h.toNodeDTO(n, panelNames))
 }
 
 func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
@@ -389,12 +397,26 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 
 // ---- helpers ----
 
-func (h *AdminNodeHandler) toNodeDTO(ctx context.Context, n *domain.Node) nodeDTO {
+// loadPanelNames fetches all panels and returns a map of panelID -> panelName.
+func (h *AdminNodeHandler) loadPanelNames(ctx context.Context) map[int64]string {
+	names := make(map[int64]string)
+	if h.panels == nil {
+		return names
+	}
+	panels, err := h.panels.List(ctx)
+	if err != nil {
+		return names
+	}
+	for _, p := range panels {
+		names[p.ID] = p.Name
+	}
+	return names
+}
+
+func (h *AdminNodeHandler) toNodeDTO(n *domain.Node, panelNames map[int64]string) nodeDTO {
 	panelName := n.PanelName
-	if h.panels != nil {
-		if p, err := h.panels.GetByID(ctx, n.PanelID); err == nil && p != nil {
-			panelName = p.Name
-		}
+	if name, ok := panelNames[n.PanelID]; ok {
+		panelName = name
 	}
 	return nodeDTO{
 		ID:            n.ID,
