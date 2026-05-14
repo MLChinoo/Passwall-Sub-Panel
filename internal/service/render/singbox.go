@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -40,9 +41,15 @@ func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain
 		"final_outbound": finalJSON,
 	}))
 
+	// Build profile name for Content-Disposition header.
+	profileName := s.buildProfileName(ctx, u)
+	encodedName := url.PathEscape(profileName)
+
 	headers := map[string]string{
 		"Content-Type":            "application/json; charset=utf-8",
 		"Profile-Update-Interval": "24",
+		"Content-Disposition":     `attachment; filename*=UTF-8''` + encodedName,
+		"Profile-Title":           profileName,
 	}
 	if info := s.buildSubInfo(ctx, u); info != "" {
 		headers["Subscription-Userinfo"] = info

@@ -7,6 +7,7 @@ package render
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -96,9 +97,15 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	body = substituteInlinePlaceholders(body, s.profilePlaceholders(ctx, u))
 	body = expandNodeRefs(body, items)
 
+	// Build profile name for Content-Disposition header.
+	profileName := s.buildProfileName(ctx, u)
+	encodedName := url.PathEscape(profileName)
+
 	headers := map[string]string{
 		"Content-Type":            "text/yaml; charset=utf-8",
 		"Profile-Update-Interval": "24",
+		"Content-Disposition":     `attachment; filename*=UTF-8''` + encodedName,
+		"Profile-Title":           profileName,
 	}
 	if info := s.buildSubInfo(ctx, u); info != "" {
 		headers["Subscription-Userinfo"] = info
@@ -215,6 +222,30 @@ func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template) 
 		parts = append(parts, strings.TrimRight(rs.Content, "\n"))
 	}
 	return strings.Join(parts, "\n"), nil
+}
+
+// buildProfileName generates the subscription profile name used in
+// Content-Disposition header. Format: "SiteTitle - DisplayName"
+func (s *Service) buildProfileName(ctx context.Context, u *domain.User) string {
+	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{SiteTitle: "Passwall"})
+	siteTitle := st.SiteTitle
+	if siteTitle == "" {
+		siteTitle = "Passwall"
+	}
+	displayName := u.DisplayName
+	if displayName == "" {
+		displayName = u.UPN
+	}
+	// Format: SiteTitle - DisplayName
+	name := fmt.Sprintf("%s - %s", siteTitle, displayName)
+	// Clean the name for use in filename
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, `\`, "-")
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, "?", "")
+	name = strings.ReplaceAll(name, "*", "")
+	name = strings.ReplaceAll(name, ":", " -")
+	return name
 }
 
 // buildSubInfo produces the Subscription-Userinfo header value. Bytes are

@@ -664,17 +664,17 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 			trafficRemainGB = gb(remain)
 		}
 	}
-	siteTitle := "Passwall"
 	logoURL := "" // Empty by default - no logo if not configured
 	panelURL := "" // Panel URL for email button
+	appTitle := "Passwall"
 	if s.settings != nil {
 		st, err := s.settings.Load(ctx, ports.UISettings{
 			SiteTitle: "Passwall",
 			AppTitle:  "Passwall",
 		})
 		if err == nil {
-			if st.SiteTitle != "" {
-				siteTitle = st.SiteTitle
+			if st.AppTitle != "" {
+				appTitle = st.AppTitle
 			}
 			base := strings.TrimRight(st.SubBaseURL, "/")
 			if base != "" {
@@ -691,7 +691,7 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 		"UPN":                  u.UPN,
 		"DisplayName":          name,
 		"Email":                u.Email,
-		"SiteTitle":            siteTitle,
+		"SiteTitle":            appTitle, // Use AppTitle for email (with logo)
 		"LogoURL":              logoURL,
 		"PanelURL":             panelURL,
 		"GeneratedAt":          time.Now().Format("2006-01-02 15:04"),
