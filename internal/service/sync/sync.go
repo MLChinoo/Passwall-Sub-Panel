@@ -138,12 +138,6 @@ func (s *Service) UpdateOwnedClient(ctx context.Context, panelID int64, inboundI
 
 // DelOwnedClient removes a panel-owned client from 3X-UI and the ownership
 // table. Refuses if not in the ownership table.
-//
-// The 3X-UI canonical delete endpoint is /delClient/{uuid}; the ownership
-// row carries the uuid, so we look it up first. /delClientByEmail/{email}
-// is a fork-specific variant that some panels don't ship — using it caused
-// silent delete failures that left orphaned clients (and orphaned
-// ownership rows since the loop in DelAllOwnedForUser swallows errors).
 func (s *Service) DelOwnedClient(ctx context.Context, panelID int64, inboundID int, email string) error {
 	entry, err := s.ownership.GetByMatch(ctx, panelID, inboundID, email)
 	if err != nil {
@@ -160,36 +154,49 @@ func (s *Service) DelOwnedClient(ctx context.Context, panelID int64, inboundID i
 	if err != nil {
 		return err
 	}
-	if err := c.DelClient(ctx, inboundID, entry.ClientUUID); err != nil {
-		// 3X-UI rejected. If the client isn't actually there (out-of-sync
-		// after a partial earlier run, manual cleanup in 3X-UI, etc.) the
-		// desired end-state is already achieved — clean our ownership row
-		// and return success. Only genuine "panel unreachable / inbound
-		// errored" cases bubble up to trigger async retry.
-		if missing, vErr := s.clientMissing(ctx, c, inboundID, entry.ClientUUID); vErr == nil && missing {
+
+	clients, err := c.GetInboundClients(ctx, inboundID)
+	if err != nil {
+		return fmt.Errorf("xui list clients: %w", err)
+	}
+	current, ok := findClientByEmail(clients, email)
+	if !ok {
+		return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+	}
+	if current.ID != "" {
+		if err := c.DelClient(ctx, inboundID, current.ID); err != nil {
+			if missing, vErr := s.clientMissingByEmail(ctx, c, inboundID, entry.ClientEmail); vErr == nil && missing {
+				return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+			}
+			return fmt.Errorf("xui delClient: %w", err)
+		}
+		return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+	}
+	if err := c.DelClientByEmail(ctx, inboundID, email); err != nil {
+		if missing, vErr := s.clientMissingByEmail(ctx, c, inboundID, entry.ClientEmail); vErr == nil && missing {
 			return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
 		}
-		return fmt.Errorf("xui delClient: %w", err)
+		return fmt.Errorf("xui delClientByEmail: %w", err)
 	}
 	return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
 }
 
-// clientMissing returns (true, nil) when the inbound exists and does NOT
-// contain a client with the given UUID. (false, nil) means the client is
-// still there. A non-nil error means we couldn't verify (panel unreachable,
-// inbound gone) — the caller should treat as "can't tell" and bubble the
-// original delete error.
-func (s *Service) clientMissing(ctx context.Context, c ports.XUIClient, inboundID int, uuid string) (bool, error) {
+func (s *Service) clientMissingByEmail(ctx context.Context, c ports.XUIClient, inboundID int, email string) (bool, error) {
 	clients, err := c.GetInboundClients(ctx, inboundID)
 	if err != nil {
 		return false, err
 	}
+	_, ok := findClientByEmail(clients, email)
+	return !ok, nil
+}
+
+func findClientByEmail(clients []ports.ClientDetail, email string) (ports.ClientDetail, bool) {
 	for _, cl := range clients {
-		if cl.ID == uuid {
-			return false, nil
+		if cl.Email == email {
+			return cl, true
 		}
 	}
-	return true, nil
+	return ports.ClientDetail{}, false
 }
 
 // RotateClientUUID rewrites a panel-owned client's UUID. 3X-UI's
@@ -280,6 +287,21 @@ func (s *Service) DelAllOwnedForInbound(ctx context.Context, panelID int64, inbo
 // it appears in 3X-UI; the unique index on (panel, inbound, email) prevents
 // double-claiming.
 func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, inboundID int, email, clientUUID string) error {
+	c, err := s.pool.Get(panelID)
+	if err != nil {
+		return err
+	}
+	clients, err := c.GetInboundClients(ctx, inboundID)
+	if err != nil {
+		return fmt.Errorf("xui list clients: %w", err)
+	}
+	current, ok := findClientByEmail(clients, email)
+	if !ok {
+		return fmt.Errorf("%w: client email %s not found in panel_id=%d inbound=%d", domain.ErrNotFound, email, panelID, inboundID)
+	}
+	if clientUUID == "" {
+		clientUUID = current.ID
+	}
 	entry := &domain.XUIClientEntry{
 		UserID:      userID,
 		PanelID:     panelID,

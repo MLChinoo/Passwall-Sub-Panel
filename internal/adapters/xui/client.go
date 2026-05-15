@@ -223,7 +223,13 @@ func (c *Client) AddInbound(ctx context.Context, spec ports.InboundSpec) (int, e
 }
 
 func (c *Client) UpdateInbound(ctx context.Context, id int, spec ports.InboundSpec) error {
-	body := specToRaw(&spec, id)
+	mergedSpec := spec
+	settings, err := c.settingsWithCurrentClients(ctx, id, spec.Settings)
+	if err != nil {
+		return err
+	}
+	mergedSpec.Settings = settings
+	body := specToRaw(&mergedSpec, id)
 	return c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/update/"+strconv.Itoa(id), body, nil)
 }
 
@@ -261,20 +267,28 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, spec ports.Client
 // UpdateClient replaces the client identified by clientUUID with the values
 // in spec. clientUUID is the value of client.id / uuid.
 func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID string, spec ports.ClientSpec) error {
-	clientJSON, err := buildClientJSON(spec)
+	inb, err := c.GetInbound(ctx, inboundID)
 	if err != nil {
 		return err
 	}
-	settings := map[string]any{
-		"clients": []json.RawMessage{clientJSON},
+	settings, err := updateClientInSettings(inb.Settings, clientUUID, spec)
+	if err != nil {
+		return err
 	}
-	settingsJSON, _ := json.Marshal(settings)
-	body := map[string]any{
-		"id":       inboundID,
-		"settings": string(settingsJSON),
+	inboundSpec := ports.InboundSpec{
+		Remark:         inb.Remark,
+		Enable:         inb.Enable,
+		Listen:         inb.Listen,
+		Port:           inb.Port,
+		Protocol:       inb.Protocol,
+		Settings:       settings,
+		StreamSettings: inb.StreamSettings,
+		Sniffing:       inb.Sniffing,
+		Allocate:       inb.Allocate,
+		ExpiryTime:     inb.ExpiryTime,
 	}
-	return c.doJSON(ctx, http.MethodPost,
-		"/panel/api/inbounds/updateClient/"+clientUUID, body, nil)
+	body := specToRaw(&inboundSpec, inboundID)
+	return c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/update/"+strconv.Itoa(inboundID), body, nil)
 }
 
 func (c *Client) DelClient(ctx context.Context, inboundID int, clientUUID string) error {
@@ -419,6 +433,108 @@ func rawTrafficsToPorts(raws []rawClientTraffic) []ports.ClientTraffic {
 		}
 	}
 	return out
+}
+
+func (c *Client) settingsWithCurrentClients(ctx context.Context, inboundID int, nextSettings string) (string, error) {
+	if strings.TrimSpace(nextSettings) == "" {
+		return nextSettings, nil
+	}
+	inb, err := c.GetInbound(ctx, inboundID)
+	if err != nil {
+		return "", err
+	}
+	return replaceSettingsClients(nextSettings, inb.Settings)
+}
+
+func replaceSettingsClients(nextSettings, currentSettings string) (string, error) {
+	currentClients, err := clientsFromSettings(currentSettings)
+	if err != nil {
+		return "", err
+	}
+	if len(currentClients) == 0 {
+		return nextSettings, nil
+	}
+	var next map[string]any
+	if err := json.Unmarshal([]byte(nextSettings), &next); err != nil {
+		return "", fmt.Errorf("decode inbound settings: %w", err)
+	}
+	next["clients"] = currentClients
+	b, err := json.Marshal(next)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func updateClientInSettings(settingsJSON, clientUUID string, spec ports.ClientSpec) (string, error) {
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+		return "", fmt.Errorf("decode inbound settings: %w", err)
+	}
+	clients, err := clientsFromSettings(settingsJSON)
+	if err != nil {
+		return "", err
+	}
+	if len(clients) == 0 {
+		return "", fmt.Errorf("client not found in inbound settings: email=%s id=%s", spec.Email, clientUUID)
+	}
+	clientJSON, err := buildClientJSON(spec)
+	if err != nil {
+		return "", err
+	}
+	var nextClient map[string]any
+	if err := json.Unmarshal(clientJSON, &nextClient); err != nil {
+		return "", err
+	}
+	for i, existing := range clients {
+		if !clientMatches(existing, clientUUID, spec.Email) {
+			continue
+		}
+		merged := make(map[string]any, len(existing)+len(nextClient))
+		for k, v := range existing {
+			merged[k] = v
+		}
+		for k, v := range nextClient {
+			merged[k] = v
+		}
+		clients[i] = merged
+		settings["clients"] = clients
+		b, err := json.Marshal(settings)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	return "", fmt.Errorf("client not found in inbound settings: email=%s id=%s", spec.Email, clientUUID)
+}
+
+func clientsFromSettings(settingsJSON string) ([]map[string]any, error) {
+	if strings.TrimSpace(settingsJSON) == "" {
+		return nil, nil
+	}
+	var settings struct {
+		Clients []map[string]any `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+		return nil, fmt.Errorf("decode inbound settings: %w", err)
+	}
+	return settings.Clients, nil
+}
+
+func clientMatches(client map[string]any, id, email string) bool {
+	if id != "" && stringValue(client["id"]) == id {
+		return true
+	}
+	return email != "" && stringValue(client["email"]) == email
+}
+
+func stringValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	default:
+		return fmt.Sprint(x)
+	}
 }
 
 // buildClientJSON serializes a ClientSpec into the JSON shape 3X-UI expects.

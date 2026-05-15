@@ -18,6 +18,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/idgen"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
@@ -401,7 +402,7 @@ func (s *Service) ResetCredentialsAndSync(ctx context.Context, userID int64) (*R
 	}
 	if needsRetry {
 		if err := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.UPN)); err != nil {
-			return nil, err
+			log.Warn("enqueue user credential resync failed", "user_id", userID, "err", err)
 		}
 	} else {
 		s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.UPN))
@@ -668,16 +669,17 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 		return err
 	}
 	if groupChanged {
-		if err := s.ResyncMembership(ctx, userID); err != nil {
-			return s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.UPN))
+		if err := s.ResyncMembershipOrEnqueue(ctx, userID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
+			log.Warn("enqueue user membership resync failed", "user_id", userID, "err", err)
 		}
-		s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.UPN))
+		return nil
 	}
-	// Note: ResyncMembership skips updating existing clients, so if expireChanged we
-	// must explicitly push it. We do this by calling a sync loop similar to SetEnabledAndSync.
 	if expireChanged {
 		if err := s.pushClientConfigToAll(ctx, u); err != nil {
-			return s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN))
+			if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
+				log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
+			}
+			return nil
 		}
 		s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN))
 	}
@@ -723,7 +725,7 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64) (*Emerge
 	}
 	if err := s.pushClientConfigToAll(ctx, u); err != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync emergency access for user %s", u.UPN)); taskErr != nil {
-			return nil, taskErr
+			log.Warn("enqueue emergency access sync failed", "user_id", userID, "err", taskErr)
 		}
 	} else {
 		s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync emergency access for user %s", u.UPN))
@@ -768,10 +770,20 @@ func (s *Service) ChangeGroupAndSync(ctx context.Context, userID, newGroupID int
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
-	if err := s.ResyncMembership(ctx, userID); err != nil {
-		return s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.UPN))
+	if err := s.ResyncMembershipOrEnqueue(ctx, userID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
+		log.Warn("enqueue user membership resync failed", "user_id", userID, "err", err)
 	}
-	s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync node membership for user %s", u.UPN))
+	return nil
+}
+
+// ResyncMembershipOrEnqueue tries ResyncMembership immediately and leaves a
+// durable task when the remote panel is unavailable. Local state has already
+// been committed by callers before this is invoked.
+func (s *Service) ResyncMembershipOrEnqueue(ctx context.Context, userID int64, summary string) error {
+	if err := s.ResyncMembership(ctx, userID); err != nil {
+		return s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, summary)
+	}
+	s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserResync, userID, summary)
 	return nil
 }
 
@@ -783,7 +795,8 @@ func (s *Service) ChangeGroupAndSync(ctx context.Context, userID, newGroupID int
 //  1. desired = NodesFor(user's group) — set of (panel, inbound) tuples
 //  2. current = ownership.ListByUser — set of (panel, inbound, email)
 //  3. ADD = desired - current  → AddClientToInbound for each
-//  4. DEL = current - desired  → DelOwnedClient for each
+//  4. UPDATE = desired ∩ current → SetOwnedClientEnable for current config
+//  5. DEL = current - desired  → DelOwnedClient for each
 //
 // Errors during individual sync calls are returned as a single wrapped error
 // after the loop so partial progress is preserved. Drift left behind is
@@ -853,6 +866,36 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		}
 	}
 
+	// UPDATE: currently owned and still desired. Keep remote client fields in
+	// lockstep with the local user record. This makes queued user_resync tasks
+	// sufficient after credential reset, expiry changes, or enable flips.
+	for k, e := range have {
+		n, ok := desired[k]
+		if !ok {
+			continue
+		}
+		info, err := s.inspectInbound(ctx, n)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("inspect %d/%d: %w", k.panelID, k.inboundID, err)
+			}
+			continue
+		}
+		if info.protocol == "" {
+			continue
+		}
+		var expireTime int64
+		if u.ExpireAt != nil {
+			expireTime = u.ExpireAt.UnixMilli()
+		}
+		if err := s.syncer.SetOwnedClientEnable(ctx, e.PanelID, e.InboundID, e.ClientEmail,
+			info.protocol, u.UUID, info.flow, u.Enabled, expireTime); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("update %d/%d: %w", k.panelID, k.inboundID, err)
+			}
+		}
+	}
+
 	// DEL: currently owned but no longer desired
 	for k, e := range have {
 		if _, ok := desired[k]; ok {
@@ -886,7 +929,10 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 		return err
 	}
 	if err := s.pushClientConfigToAll(ctx, u); err != nil {
-		return s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN))
+		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
+			log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
+		}
+		return nil
 	}
 	s.recordUserTaskSucceeded(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN))
 	return nil
@@ -908,7 +954,7 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 		info, err := s.inspectInboundByPanel(ctx, e.PanelID, e.InboundID)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = fmt.Errorf("inspect %d/%d/%s: %w", e.PanelID, e.InboundID, e.ClientEmail, err)
 			}
 			continue
 		}
@@ -917,7 +963,7 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 		}
 		if err := s.syncer.SetOwnedClientEnable(ctx, e.PanelID, e.InboundID, e.ClientEmail,
 			info.protocol, u.UUID, info.flow, u.Enabled, expireTime); err != nil && firstErr == nil {
-			firstErr = err
+			firstErr = fmt.Errorf("push config %d/%d/%s: %w", e.PanelID, e.InboundID, e.ClientEmail, err)
 		}
 	}
 	return firstErr

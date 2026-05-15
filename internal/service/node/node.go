@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
@@ -147,6 +148,9 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 	}
 	inboundID, err := c.AddInbound(ctx, spec)
 	if err != nil {
+		if permanentErr := permanentInboundCreateError(err); permanentErr != nil {
+			return permanentErr
+		}
 		return s.enqueueNodeCreateTask(ctx, n, spec, fmt.Errorf("xui addInbound: %w", err))
 	}
 	n.InboundID = inboundID
@@ -210,10 +214,16 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 	}
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
-		return s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled})
+		if taskErr := s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled}); taskErr != nil {
+			log.Warn("enqueue node enabled sync failed", "node_id", n.ID, "err", taskErr)
+		}
+		return nil
 	}
 	if err := c.SetInboundEnable(ctx, n.InboundID, enabled); err != nil {
-		return s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled})
+		if taskErr := s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled}); taskErr != nil {
+			log.Warn("enqueue node enabled sync failed", "node_id", n.ID, "err", taskErr)
+		}
+		return nil
 	}
 	s.recordNodeTaskSucceeded(ctx, domain.SyncTaskNodeSetEnabled, n, fmt.Sprintf("sync node enabled state %s", n.DisplayName), map[string]bool{"enabled": enabled})
 	return nil
@@ -253,6 +263,12 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 			return err
 		}
 		if err := s.runNodeTask(ctx, task); err != nil {
+			if isPermanentNodeTaskError(err) {
+				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
+					return markErr
+				}
+				continue
+			}
 			next := time.Now().Add(nodeTaskBackoff(task.Attempts + 1))
 			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
 				return markErr
@@ -325,6 +341,9 @@ func (s *Service) runNodeCreateTask(ctx context.Context, task *domain.SyncTask) 
 	}
 	inboundID, err := c.AddInbound(ctx, p.Spec)
 	if err != nil {
+		if permanentErr := permanentInboundCreateError(err); permanentErr != nil {
+			return permanentErr
+		}
 		return fmt.Errorf("xui addInbound: %w", err)
 	}
 	n.InboundID = inboundID
@@ -357,6 +376,23 @@ func (s *Service) enqueueNodeCreateTask(ctx context.Context, n *domain.Node, spe
 		LastError:  cause.Error(),
 		NextRunAt:  time.Now(),
 	})
+}
+
+func permanentInboundCreateError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "port already exists"):
+		return fmt.Errorf("%w: %s", domain.ErrAlreadyExists, msg)
+	}
+	return nil
+}
+
+func isPermanentNodeTaskError(err error) bool {
+	return errors.Is(err, domain.ErrAlreadyExists) || errors.Is(err, domain.ErrValidation)
 }
 
 func (s *Service) enqueueNodeTask(ctx context.Context, typ domain.SyncTaskType, n *domain.Node, summary string, payload any) error {
