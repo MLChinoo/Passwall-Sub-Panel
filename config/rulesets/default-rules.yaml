@@ -2,6 +2,28 @@ slug: default_rules
 name: Default Rules
 sort: 10
 enabled: true
+proxy_group_order:
+  - '🚀 节点选择'
+  - '🇨🇳 中国大陆'
+  - '📲 电报消息'
+  - '💬 Ai平台'
+  - '📹 油管视频'
+  - '🎥 奈飞视频'
+  - '📺 巴哈姆特'
+  - '📺 哔哩哔哩'
+  - '🌍 国外媒体'
+  - '🌏 国内媒体'
+  - '📢 谷歌FCM'
+  - 'Ⓜ️ 微软Bing'
+  - 'Ⓜ️ 微软云盘'
+  - 'Ⓜ️ 微软服务'
+  - '🍎 苹果服务'
+  - '🎮 游戏平台'
+  - '🎶 网易音乐'
+  - '🎯 全球直连'
+  - '🛑 广告拦截'
+  - '🍃 应用净化'
+  - '🐟 漏网之鱼'
 content: |
   - DOMAIN-SUFFIX,ip6-localhost,🎯 全球直连
   - DOMAIN-SUFFIX,ip6-loopback,🎯 全球直连

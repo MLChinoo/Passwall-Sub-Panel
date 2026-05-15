@@ -263,14 +263,3 @@ echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendCompone
 | `web/src/views/admin/TrafficView.vue` | 重构为 Tab 布局 + 图表 |
 | `web/src/views/user/MeView.vue` | 增加流量图表 |
 | `web/package.json` | 添加 echarts 依赖 |
-
----
-
-## 8. 估算工作量
-
-| 阶段 | 工作量 |
-|---|---|
-| 后端 API | 2-3 小时 |
-| 前端图表 | 3-4 小时 |
-| 测试调优 | 1-2 小时 |
-| **总计** | **6-9 小时** |
