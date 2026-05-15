@@ -53,6 +53,7 @@ type settingsDTO struct {
 	SubLogRetentionDays        int                   `json:"sub_log_retention_days"`
 	SubBlockAutoDisable        bool                  `json:"sub_block_auto_disable"`
 	SubBlockAutoDisableCount   int                   `json:"sub_block_auto_disable_count"`
+	SubUpdateIntervalHours     int                   `json:"sub_update_interval_hours"`
 	QuickLinks                 []ports.QuickLink     `json:"quick_links"`
 	GlobalAnnouncement         ports.GlobalAnnouncement `json:"global_announcement"`
 	FooterText                 string                `json:"footer_text"`
@@ -104,6 +105,7 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
+		SubUpdateIntervalHours:     s.SubUpdateIntervalHours,
 		QuickLinks:                 s.QuickLinks,
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,
@@ -225,6 +227,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
+		SubUpdateIntervalHours:     s.SubUpdateIntervalHours,
 		QuickLinks:                 s.QuickLinks,
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,

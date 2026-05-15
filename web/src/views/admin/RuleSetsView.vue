@@ -18,11 +18,13 @@ const batchBusy = ref<'enable' | 'disable' | 'delete' | ''>('')
 const selectedCount = computed(() => selectedItems.value.length)
 const dialog = ref(false)
 const editing = ref(false)
+const proxyGroupOrderText = ref('')
 const form = reactive<RuleSet>({
   slug: '',
   name: '',
   sort: 100,
   enabled: true,
+  proxy_group_order: [],
   content: '',
 })
 
@@ -48,6 +50,8 @@ function openCreate() {
   form.name = ''
   form.sort = 100
   form.enabled = true
+  form.proxy_group_order = []
+  proxyGroupOrderText.value = ''
   form.content = ''
   dialog.value = true
 }
@@ -58,6 +62,8 @@ function openEdit(rs: RuleSet) {
   form.name = rs.name
   form.sort = rs.sort
   form.enabled = rs.enabled
+  form.proxy_group_order = rs.proxy_group_order ? rs.proxy_group_order.slice() : []
+  proxyGroupOrderText.value = form.proxy_group_order.join('\n')
   form.content = rs.content
   dialog.value = true
 }
@@ -67,7 +73,11 @@ async function submit() {
     ElMessage.warning('slug 和 name 必填')
     return
   }
-  await saveRuleSet({ ...form })
+  const proxyGroupOrder = proxyGroupOrderText.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  await saveRuleSet({ ...form, proxy_group_order: proxyGroupOrder })
   ElMessage.success('已保存')
   dialog.value = false
   await load()
@@ -232,6 +242,18 @@ onMounted(load)
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
         </el-form-item>
+        <el-form-item label="策略组顺序">
+          <el-input
+            v-model="proxyGroupOrderText"
+            type="textarea"
+            :rows="6"
+            placeholder="🚀 节点选择&#10;💬 Ai平台&#10;🎮 游戏平台"
+            class="psp-yaml-editor"
+          />
+          <div class="form-hint">
+            可留空；一行一个策略组名。绑定该规则集的订阅会优先按这里排列，未列出的策略组保持规则内容中的首次出现顺序。
+          </div>
+        </el-form-item>
         <el-form-item label="规则内容">
           <el-input
             v-model="form.content"
@@ -270,5 +292,12 @@ onMounted(load)
 .psp-page-desc {
   margin-top: 6px;
   font-size: 13px;
+}
+
+.form-hint {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 </style>

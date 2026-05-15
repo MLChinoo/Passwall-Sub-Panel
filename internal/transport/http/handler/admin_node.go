@@ -111,7 +111,7 @@ type claimRequest struct {
 	PanelID     int64  `json:"panel_id" binding:"required"`
 	InboundID   int    `json:"inbound_id" binding:"required"`
 	ClientEmail string `json:"client_email" binding:"required"`
-	ClientUUID  string `json:"client_uuid" binding:"required"`
+	ClientUUID  string `json:"client_uuid"`
 }
 
 // ---- Handlers ----
@@ -376,8 +376,8 @@ func (h *AdminNodeHandler) GenerateRealityKeypair(c *gin.Context) {
 }
 
 // ClaimClient adopts an existing 3X-UI client under a panel user without
-// touching 3X-UI. The frontend pre-fetches client_uuid via the unmanaged
-// listing flow (TODO M2: surface uuid through a richer listing endpoint).
+// touching 3X-UI. Some protocols can have an empty client id, so email is the
+// stable lookup key and client_uuid is optional.
 func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 	var req claimRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

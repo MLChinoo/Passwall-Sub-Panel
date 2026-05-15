@@ -305,6 +305,28 @@ async function toggleEnabled(row: User) {
   await load()
 }
 
+function isExpired(row: User): boolean {
+  if (!row.expire_at) return false
+  return new Date(row.expire_at).getTime() < Date.now()
+}
+
+function formatExpire(expireAt: string): string {
+  const expire = new Date(expireAt)
+  const now = new Date()
+  const diffMs = expire.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) {
+    return `已过期 ${Math.abs(diffDays)} 天`
+  } else if (diffDays === 0) {
+    return '今天到期'
+  } else if (diffDays <= 7) {
+    return `还有 ${diffDays} 天到期`
+  } else {
+    return expire.toLocaleDateString()
+  }
+}
+
 function canQuickRenew(row: User) {
   return !!row.expire_at && row.auto_disabled_reason !== 'pending_delete'
 }
@@ -600,7 +622,12 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="到期" min-width="160">
         <template #default="{ row }">
-          {{ row.expire_at ? new Date(row.expire_at).toLocaleDateString() : '永久' }}
+          <template v-if="!row.expire_at">永久</template>
+          <template v-else>
+            <span :style="isExpired(row) ? 'color: var(--el-color-danger)' : ''">
+              {{ formatExpire(row.expire_at) }}
+            </span>
+          </template>
         </template>
       </el-table-column>
       <el-table-column label="流量限额" width="120">
@@ -614,7 +641,8 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
-          <el-tag v-if="row.enabled" type="success" size="small">已启用</el-tag>
+          <el-tag v-if="!row.enabled && isExpired(row)" type="warning" size="small">已到期</el-tag>
+          <el-tag v-else-if="row.enabled" type="success" size="small">已启用</el-tag>
           <el-tag v-else-if="row.auto_disabled_reason === 'pending_approval'" type="warning" size="small">待审批</el-tag>
           <el-tag v-else-if="row.auto_disabled_reason === 'pending_delete'" type="info" size="small">删除中</el-tag>
           <el-tag v-else type="danger" size="small">

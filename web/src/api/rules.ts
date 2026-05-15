@@ -5,6 +5,7 @@ export interface RuleSet {
   name: string
   sort: number
   enabled: boolean
+  proxy_group_order: string[]
   content: string
 }
 

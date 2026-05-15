@@ -176,13 +176,13 @@ func DefaultTemplates() []*domain.MailTemplate {
 			Kind:    domain.MailReminderAccountDisable,
 			Enabled: true,
 			Subject: "账号已被停用",
-			Body:    defaultHTMLTemplate("账号已停用", "你的账号已被停用。{{.DisableReason}}", "停用原因", "{{.DisableDetail}}"),
+			Body:    defaultHTMLTemplate("账号已停用", "你的账号已被停用。{{if .DisableDetail}}原因：{{.DisableDetail}}{{end}}", "停用时间", "{{.GeneratedAt}}"),
 		},
 		{
 			Kind:    domain.MailReminderAccountEnable,
 			Enabled: true,
 			Subject: "账号已恢复正常",
-			Body:    defaultHTMLTemplate("账号已恢复", "你的账号已恢复正常，可以继续使用订阅服务。{{.EnableReason}}", "备注", "{{.EnableDetail}}"),
+			Body:    defaultHTMLTemplate("账号已恢复", "你的账号已恢复正常，可以继续使用订阅服务。{{if .EnableDetail}}备注：{{.EnableDetail}}{{end}}", "恢复时间", "{{.GeneratedAt}}"),
 		},
 		{
 			Kind:    domain.MailReminderAnnouncement,
@@ -204,7 +204,6 @@ func defaultHTMLTemplate(title, message, metricLabel, metricValue string) string
       <h1 style="margin:8px 0 0;font-size:24px;line-height:1.3;color:#ffffff;font-weight:700;">` + title + `</h1>
     </div>
     <div style="padding:30px 32px;">
-      <p style="margin:0 0 18px;font-size:16px;line-height:1.7;">你好 {{.DisplayName}}，</p>
       <p style="margin:0 0 24px;font-size:15px;line-height:1.7;color:#374151;">` + message + `</p>
       <table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 26px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
         <tr>

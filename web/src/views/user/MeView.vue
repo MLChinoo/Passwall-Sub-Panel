@@ -275,6 +275,39 @@ function daysUntil(iso: string): number {
   return Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000)
 }
 
+const isExpired = computed(() => {
+  if (!profile.value?.expire_at) return false
+  return new Date(profile.value.expire_at).getTime() < Date.now()
+})
+
+const statusClass = computed(() => {
+  if (!profile.value?.enabled) return 'inactive'
+  if (isExpired.value) return 'expired'
+  return 'active'
+})
+
+const statusText = computed(() => {
+  if (!profile.value?.enabled) return '已禁用'
+  if (isExpired.value) return '已到期'
+  return '运行中'
+})
+
+const expireClass = computed(() => {
+  if (!profile.value?.expire_at) return 'safe'
+  const days = daysUntil(profile.value.expire_at)
+  if (days < 0) return 'expired'
+  if (days < 7) return 'danger'
+  return 'safe'
+})
+
+const expireText = computed(() => {
+  if (!profile.value?.expire_at) return '永久有效'
+  const days = daysUntil(profile.value.expire_at)
+  if (days < 0) return `已过期 ${Math.abs(days)} 天`
+  if (days === 0) return '今天到期'
+  return `还剩 ${days} 天`
+})
+
 onMounted(load)
 </script>
 
@@ -287,8 +320,8 @@ onMounted(load)
         <div>
           <h1 class="username">{{ displayName }}</h1>
           <div class="tags">
-            <span class="tag status-tag" :class="profile.enabled ? 'active' : 'inactive'">
-              {{ profile.enabled ? '运行中' : '已禁用' }}
+            <span class="tag status-tag" :class="statusClass">
+              {{ statusText }}
             </span>
           </div>
         </div>
@@ -369,8 +402,8 @@ onMounted(load)
           <div class="expire-stats">
             <div v-if="profile.expire_at">
               <div class="expire-date">{{ new Date(profile.expire_at).toLocaleDateString() }}</div>
-              <div class="expire-countdown" :class="daysUntil(profile.expire_at) < 7 ? 'danger' : 'safe'">
-                还剩 {{ daysUntil(profile.expire_at) }} 天
+              <div class="expire-countdown" :class="expireClass">
+                {{ expireText }}
               </div>
             </div>
             <div v-else class="expire-date">永久有效</div>
@@ -558,6 +591,11 @@ onMounted(load)
   color: #ef4444;
 }
 
+.status-tag.expired {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
 .global-announcement {
   display: flex;
   gap: 14px;
@@ -722,6 +760,11 @@ onMounted(load)
 
 .expire-countdown.danger {
   color: #ef4444;
+}
+
+.expire-countdown.expired {
+  color: #f59e0b;
+  font-weight: 600;
 }
 
 .emergency-section {

@@ -6,6 +6,7 @@ export interface Template {
   client_type: string
   is_default: boolean
   rule_sets: string[]
+  proxy_group_order?: string[]
   content: string
 }
 

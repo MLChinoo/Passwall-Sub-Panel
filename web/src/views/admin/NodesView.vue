@@ -213,7 +213,7 @@ function openCreate() {
   createForm.display_name = ''
   createForm.server_address = ''
   createForm.region = ''
-  createForm.tags_text = 'reality'
+  createForm.tags_text = ''
   createForm.sort_order = 100
   createForm.listen = ''
   createForm.port = 443
@@ -1142,7 +1142,7 @@ onMounted(async () => {
           <el-input v-model="createForm.region" placeholder="TW / US / HK / ..." />
         </el-form-item>
         <el-form-item label="Tags">
-          <el-input v-model="createForm.tags_text" placeholder="reality, global (逗号分隔)" />
+          <el-input v-model="createForm.tags_text" placeholder="可留空；多个标签用逗号分隔，例如 ss2022, premium" />
         </el-form-item>
         <el-form-item label="排序权重">
           <el-input-number v-model="createForm.sort_order" />
@@ -1394,7 +1394,7 @@ onMounted(async () => {
             <el-input v-model="editForm.region" placeholder="TW / US / HK / ..." />
           </el-form-item>
           <el-form-item label="Tags">
-            <el-input v-model="editForm.tags_text" placeholder="reality, global (逗号分隔)" />
+            <el-input v-model="editForm.tags_text" placeholder="可留空；多个标签用逗号分隔，例如 ss2022, premium" />
           </el-form-item>
           <el-form-item label="排序权重">
             <el-input-number v-model="editForm.sort_order" />
@@ -1687,7 +1687,7 @@ onMounted(async () => {
           <el-input v-model="importForm.region" placeholder="TW / US / HK / ..." />
         </el-form-item>
         <el-form-item label="Tags">
-          <el-input v-model="importForm.tags_text" placeholder="reality, global (逗号分隔)" />
+          <el-input v-model="importForm.tags_text" placeholder="可留空；多个标签用逗号分隔，例如 ss2022, premium" />
         </el-form-item>
         <el-form-item label="排序权重">
           <el-input-number v-model="importForm.sort_order" />

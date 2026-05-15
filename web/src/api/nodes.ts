@@ -123,7 +123,7 @@ export async function claimClient(req: {
   panel_id: number
   inbound_id: number
   client_email: string
-  client_uuid: string
+  client_uuid?: string
 }) {
   await client.post('/admin/nodes/-/claim', req)
 }
