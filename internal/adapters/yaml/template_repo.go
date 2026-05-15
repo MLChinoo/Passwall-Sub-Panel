@@ -61,7 +61,10 @@ func (r *TemplateRepo) List(ctx context.Context) ([]*domain.Template, error) {
 func (r *TemplateRepo) GetBySlug(ctx context.Context, slug string) (*domain.Template, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p := r.pathOf(slug)
+	p, err := r.pathOf(slug)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(p); err != nil {
 		if os.IsNotExist(err) {
 			return nil, domain.ErrNotFound
@@ -97,6 +100,10 @@ func (r *TemplateRepo) Save(ctx context.Context, t *domain.Template) error {
 	if t.Slug == "" {
 		return fmt.Errorf("%w: template slug empty", domain.ErrValidation)
 	}
+	p, err := r.pathOf(t.Slug)
+	if err != nil {
+		return err
+	}
 	doc := templateFile{
 		Slug:            t.Slug,
 		Name:            t.Name,
@@ -106,17 +113,21 @@ func (r *TemplateRepo) Save(ctx context.Context, t *domain.Template) error {
 		ProxyGroupOrder: t.ProxyGroupOrder,
 		Content:         t.Content,
 	}
-	return writeYAML(r.pathOf(t.Slug), doc)
+	return writeYAML(p, doc)
 }
 
 func (r *TemplateRepo) Delete(ctx context.Context, slug string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return os.Remove(r.pathOf(slug))
+	p, err := r.pathOf(slug)
+	if err != nil {
+		return err
+	}
+	return os.Remove(p)
 }
 
-func (r *TemplateRepo) pathOf(slug string) string {
-	return filepath.Join(r.dir, slug+".yaml")
+func (r *TemplateRepo) pathOf(slug string) (string, error) {
+	return pathForSafeSlug(r.dir, slug, "template")
 }
 
 func (r *TemplateRepo) readFile(path string) (*domain.Template, error) {

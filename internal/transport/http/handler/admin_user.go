@@ -416,8 +416,9 @@ func (h *AdminUserHandler) toDTO(ctx context.Context, u *domain.User) userDTO {
 
 func (h *AdminUserHandler) subURLFor(ctx context.Context, token string) string {
 	base := strings.TrimRight(resolveSubBase(ctx, h.settings), "/")
+	path := resolveSubPath(ctx, h.settings, token)
 	if base == "" {
-		return "/sub/" + token
+		return path
 	}
-	return base + "/sub/" + token
+	return base + path
 }

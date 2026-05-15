@@ -14,9 +14,8 @@ import (
 // oidcConfigRow is the single-row persistence of OIDCConfig (PK pinned at 1,
 // same pattern as samlConfigRow).
 //
-// ClientSecret is stored in plaintext for simplicity; it is never returned
-// in the admin GET response (the handler returns a has_client_secret
-// boolean instead).
+// ClientSecret is encrypted at rest and is never returned in the admin GET
+// response (the handler returns a has_client_secret boolean instead).
 type oidcConfigRow struct {
 	ID      int64 `gorm:"primaryKey"`
 	Enabled bool
@@ -44,12 +43,16 @@ type oidcConfigRow struct {
 
 func (oidcConfigRow) TableName() string { return "oidc_config" }
 
-func (r *oidcConfigRow) toDomain() *config.OIDCConfig {
+func (r *oidcConfigRow) toDomain() (*config.OIDCConfig, error) {
+	secret, err := decryptSecret(r.ClientSecret)
+	if err != nil {
+		return nil, err
+	}
 	c := &config.OIDCConfig{
 		Enabled:      r.Enabled,
 		IssuerURL:    r.IssuerURL,
 		ClientID:     r.ClientID,
-		ClientSecret: r.ClientSecret,
+		ClientSecret: secret,
 		RedirectURL:  r.RedirectURL,
 		Scopes:       []string(r.Scopes),
 		AttributeMapping: config.OIDCAttributeMap{
@@ -67,16 +70,20 @@ func (r *oidcConfigRow) toDomain() *config.OIDCConfig {
 		},
 	}
 	config.ApplyOIDCDefaults(c)
-	return c
+	return c, nil
 }
 
-func oidcConfigFromDomain(c *config.OIDCConfig) *oidcConfigRow {
+func oidcConfigFromDomain(c *config.OIDCConfig) (*oidcConfigRow, error) {
+	secret, err := encryptSecret(c.ClientSecret)
+	if err != nil {
+		return nil, err
+	}
 	return &oidcConfigRow{
 		ID:                        1,
 		Enabled:                   c.Enabled,
 		IssuerURL:                 c.IssuerURL,
 		ClientID:                  c.ClientID,
-		ClientSecret:              c.ClientSecret,
+		ClientSecret:              secret,
 		RedirectURL:               c.RedirectURL,
 		Scopes:                    jsonStrings(c.Scopes),
 		AttrUsername:              c.AttributeMapping.Username,
@@ -88,7 +95,7 @@ func oidcConfigFromDomain(c *config.OIDCConfig) *oidcConfigRow {
 		NewUserExpireDays:         c.NewUserDefaults.ExpireDays,
 		NewUserTrafficLimitBytes:  c.NewUserDefaults.TrafficLimitBytes,
 		NewUserTrafficResetPeriod: c.NewUserDefaults.TrafficResetPeriod,
-	}
+	}, nil
 }
 
 type oidcConfigRepo struct{ db *gorm.DB }
@@ -104,9 +111,13 @@ func (r *oidcConfigRepo) Load(ctx context.Context) (*config.OIDCConfig, error) {
 		}
 		return nil, err
 	}
-	return row.toDomain(), nil
+	return row.toDomain()
 }
 
 func (r *oidcConfigRepo) Save(ctx context.Context, c *config.OIDCConfig) error {
-	return r.db.WithContext(ctx).Save(oidcConfigFromDomain(c)).Error
+	row, err := oidcConfigFromDomain(c)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Save(row).Error
 }

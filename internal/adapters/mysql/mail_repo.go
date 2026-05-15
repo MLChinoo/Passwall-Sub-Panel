@@ -22,7 +22,10 @@ func (r *mailRepo) LoadSettings(ctx context.Context, defaults domain.MailSetting
 		}
 		return defaults, err
 	}
-	out := row.toDomain()
+	out, err := row.toDomain()
+	if err != nil {
+		return defaults, err
+	}
 	if out.SMTPPort <= 0 {
 		out.SMTPPort = defaults.SMTPPort
 	}
@@ -39,7 +42,11 @@ func (r *mailRepo) LoadSettings(ctx context.Context, defaults domain.MailSetting
 }
 
 func (r *mailRepo) SaveSettings(ctx context.Context, s domain.MailSettings) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(mailSettingsFromDomain(s)).Error
+	row, err := mailSettingsFromDomain(s)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(row).Error
 }
 
 func (r *mailRepo) ListTemplates(ctx context.Context) ([]*domain.MailTemplate, error) {

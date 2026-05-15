@@ -103,19 +103,23 @@ clientCheckDone:
 
 		// Increment violation count.
 		u.BlockViolationCount++
-		u.AutoDisabledReason = domain.DisabledBlockedClient
-		u.DisableDetail = fmt.Sprintf("blocked client: %s", detected.ClientName)
+		u.DisableDetail = fmt.Sprintf("last blocked client: %s", detected.ClientName)
 
 		// Check if auto-disable is enabled and threshold reached.
 		if settings.SubBlockAutoDisable && u.BlockViolationCount >= settings.SubBlockAutoDisableCount {
-			u.Enabled = false
-			u.AutoDisabledReason = domain.DisabledBlockedClient
-			u.DisableDetail = fmt.Sprintf("auto-disabled after %d violations, last client: %s", u.BlockViolationCount, detected.ClientName)
+			detail := fmt.Sprintf("auto-disabled after %d violations, last client: %s", u.BlockViolationCount, detected.ClientName)
+			u.DisableDetail = detail
 
-			// Save user with disabled status.
+			// Persist the violation count before SetEnabledAndSync reloads
+			// the user and propagates the disabled state to 3X-UI.
 			if err := h.users.Update(c.Request.Context(), u); err != nil {
+				log.Warn("failed to update blocked-client violation count", "user_id", u.ID, "err", err)
+			}
+			if err := h.user.SetEnabledAndSync(c.Request.Context(), u.ID, false, domain.DisabledBlockedClient, detail); err != nil {
 				log.Warn("failed to auto-disable user", "user_id", u.ID, "err", err)
 			}
+			u.Enabled = false
+			u.AutoDisabledReason = domain.DisabledBlockedClient
 
 			// Send account disabled notification email (async).
 			if h.mailer != nil {

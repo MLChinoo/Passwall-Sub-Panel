@@ -34,7 +34,7 @@ func (s *Service) IssueTokens(u *domain.User) (access, refresh string, err error
 
 // Verify parses and validates an access token.
 func (s *Service) Verify(tokenStr string) (*jwtutil.Claims, error) {
-	return s.issuer.Parse(tokenStr)
+	return s.issuer.ParseAccess(tokenStr)
 }
 
 // AccessTTL / RefreshTTL expose the issuer's live TTL values for SSO

@@ -70,6 +70,12 @@ func (s *Service) ensureInboundDeletable(ctx context.Context, panelID int64, inb
 	return nil
 }
 
+// EnsureInboundDeletable exposes the inbound delete guard for callers that
+// need a preflight before doing any destructive cleanup.
+func (s *Service) EnsureInboundDeletable(ctx context.Context, panelID int64, inboundID int) error {
+	return s.ensureInboundDeletable(ctx, panelID, inboundID)
+}
+
 // AddClientToInbound creates a new client in 3X-UI and records ownership.
 // The caller is responsible for choosing a unique email per user.
 //
@@ -286,18 +292,18 @@ func (s *Service) DelAllOwnedForInbound(ctx context.Context, panelID int64, inbo
 // The caller is responsible for supplying a correct (email, uuid) pair as
 // it appears in 3X-UI; the unique index on (panel, inbound, email) prevents
 // double-claiming.
-func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, inboundID int, email, clientUUID string) error {
+func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, inboundID int, email, clientUUID string) (string, error) {
 	c, err := s.pool.Get(panelID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	clients, err := c.GetInboundClients(ctx, inboundID)
 	if err != nil {
-		return fmt.Errorf("xui list clients: %w", err)
+		return "", fmt.Errorf("xui list clients: %w", err)
 	}
 	current, ok := findClientByEmail(clients, email)
 	if !ok {
-		return fmt.Errorf("%w: client email %s not found in panel_id=%d inbound=%d", domain.ErrNotFound, email, panelID, inboundID)
+		return "", fmt.Errorf("%w: client email %s not found in panel_id=%d inbound=%d", domain.ErrNotFound, email, panelID, inboundID)
 	}
 	if clientUUID == "" {
 		clientUUID = current.ID
@@ -310,7 +316,10 @@ func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, 
 		ClientEmail: email,
 		ClientUUID:  clientUUID,
 	}
-	return s.ownership.Add(ctx, entry)
+	if err := s.ownership.Add(ctx, entry); err != nil {
+		return "", err
+	}
+	return clientUUID, nil
 }
 
 func (s *Service) panelName(panelID int64) string {

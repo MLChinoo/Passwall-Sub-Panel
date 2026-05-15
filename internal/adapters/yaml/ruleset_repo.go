@@ -80,6 +80,10 @@ func (r *RuleSetRepo) Save(ctx context.Context, rs *domain.RuleSet) error {
 	if rs.Slug == "" {
 		return fmt.Errorf("%w: rule set slug empty", domain.ErrValidation)
 	}
+	p, err := r.pathOf(rs.Slug)
+	if err != nil {
+		return err
+	}
 	doc := ruleSetFile{
 		Slug:            rs.Slug,
 		Name:            rs.Name,
@@ -88,7 +92,7 @@ func (r *RuleSetRepo) Save(ctx context.Context, rs *domain.RuleSet) error {
 		ProxyGroupOrder: rs.ProxyGroupOrder,
 		Content:         rs.Content,
 	}
-	return writeYAML(r.pathOf(rs.Slug), doc)
+	return writeYAML(p, doc)
 }
 
 func (r *RuleSetRepo) Delete(ctx context.Context, slug string) error {
@@ -101,12 +105,15 @@ func (r *RuleSetRepo) Delete(ctx context.Context, slug string) error {
 	return os.Remove(p)
 }
 
-func (r *RuleSetRepo) pathOf(slug string) string {
-	return filepath.Join(r.dir, slug+".yaml")
+func (r *RuleSetRepo) pathOf(slug string) (string, error) {
+	return pathForSafeSlug(r.dir, slug, "rule set")
 }
 
 func (r *RuleSetRepo) pathForSlug(slug string) (string, error) {
-	p := r.pathOf(slug)
+	p, err := r.pathOf(slug)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(p); err == nil {
 		return p, nil
 	} else if !os.IsNotExist(err) {

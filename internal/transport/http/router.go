@@ -3,7 +3,9 @@ package http
 
 import (
 	"context"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -57,6 +59,9 @@ type Deps struct {
 // NewRouter returns a configured *gin.Engine ready to be served.
 func NewRouter(d Deps) *gin.Engine {
 	g := gin.New()
+	if err := g.SetTrustedProxies(trustedProxies()); err != nil {
+		panic("invalid PSP_TRUSTED_PROXIES: " + err.Error())
+	}
 	g.Use(gin.Logger(), gin.Recovery())
 
 	// Public endpoints
@@ -128,7 +133,7 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.GET("/users/:id/rules", users.GetRules)
 		adminGroup.PUT("/users/:id/rules", users.PutRules)
 
-		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.XUIPanel)
+		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.User, d.Repos.XUIPanel)
 		adminGroup.GET("/nodes", nodes.List)
 		adminGroup.GET("/nodes/:id", nodes.Get)
 		adminGroup.POST("/nodes/import", nodes.ImportExisting)
@@ -233,10 +238,31 @@ func NewRouter(d Deps) *gin.Engine {
 	return g
 }
 
+func trustedProxies() []string {
+	raw := strings.TrimSpace(os.Getenv("PSP_TRUSTED_PROXIES"))
+	if raw == "" {
+		return []string{"127.0.0.1", "::1"}
+	}
+	if strings.EqualFold(raw, "none") {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // subPathCache caches the subscription path prefix to avoid DB queries on every request.
 type subPathCache struct {
-	prefix string
-	repo   ports.SettingsRepo
+	mu          sync.RWMutex
+	prefix      string
+	nextRefresh time.Time
+	repo        ports.SettingsRepo
 }
 
 func newSubPathCache(repo ports.SettingsRepo) *subPathCache {
@@ -247,13 +273,29 @@ func newSubPathCache(repo ports.SettingsRepo) *subPathCache {
 
 func (c *subPathCache) refresh() {
 	s, err := c.repo.Load(context.Background(), ports.UISettings{SubPath: "sub"})
-	if err != nil || s.SubPath == "" {
-		c.prefix = "/sub/"
-		return
+	prefix := "/sub/"
+	subPath := strings.Trim(strings.TrimSpace(s.SubPath), "/")
+	if err != nil || subPath == "" {
+		prefix = "/sub/"
+	} else {
+		prefix = "/" + subPath + "/"
 	}
-	c.prefix = "/" + strings.Trim(s.SubPath, "/") + "/"
+	c.mu.Lock()
+	c.prefix = prefix
+	c.nextRefresh = time.Now().Add(5 * time.Second)
+	c.mu.Unlock()
 }
 
 func (c *subPathCache) isSubRequest(path string) bool {
-	return strings.HasPrefix(path, c.prefix)
+	c.mu.RLock()
+	prefix := c.prefix
+	stale := time.Now().After(c.nextRefresh)
+	c.mu.RUnlock()
+	if stale {
+		c.refresh()
+		c.mu.RLock()
+		prefix = c.prefix
+		c.mu.RUnlock()
+	}
+	return strings.HasPrefix(path, prefix)
 }

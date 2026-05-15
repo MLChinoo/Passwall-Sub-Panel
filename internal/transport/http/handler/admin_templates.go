@@ -90,6 +90,10 @@ func (h *AdminTemplatesHandler) Save(c *gin.Context) {
 		ProxyGroupOrder: req.ProxyGroupOrder,
 		Content:         req.Content,
 	}); err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -99,6 +103,10 @@ func (h *AdminTemplatesHandler) Save(c *gin.Context) {
 func (h *AdminTemplatesHandler) Delete(c *gin.Context) {
 	slug := c.Param("slug")
 	if err := h.repo.Delete(c.Request.Context(), slug); err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

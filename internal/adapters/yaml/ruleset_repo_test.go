@@ -97,3 +97,21 @@ content: |
 		t.Fatalf("expected scanned file to be deleted, stat err = %v", err)
 	}
 }
+
+func TestRuleSetRepoRejectsUnsafeSlug(t *testing.T) {
+	ctx := context.Background()
+	repo, err := NewRuleSetRepo(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = repo.Save(ctx, &domain.RuleSet{
+		Slug:    "../escape",
+		Name:    "Escape",
+		Enabled: true,
+		Content: "- MATCH,DIRECT",
+	})
+	if err == nil {
+		t.Fatal("Save with unsafe slug succeeded, want error")
+	}
+}

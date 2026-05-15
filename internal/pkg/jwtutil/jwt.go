@@ -20,6 +20,11 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+const (
+	SubjectAccess  = "access"
+	SubjectRefresh = "refresh"
+)
+
 // Params is the live-tunable subset of JWT issuance — TTLs and the "iss"
 // claim. Resolved fresh on every IssueAccess/IssueRefresh so admin edits
 // take effect on the next login without a restart.
@@ -98,13 +103,13 @@ func (i *Issuer) RefreshTTL() time.Duration { return i.params().RefreshTTL }
 // IssueAccess signs and returns an access token.
 func (i *Issuer) IssueAccess(uid int64, upn string, role domain.Role) (string, error) {
 	p := i.params()
-	return i.issue(uid, upn, role, "access", p.AccessTTL, p.Issuer)
+	return i.issue(uid, upn, role, SubjectAccess, p.AccessTTL, p.Issuer)
 }
 
 // IssueRefresh signs and returns a refresh token.
 func (i *Issuer) IssueRefresh(uid int64, upn string, role domain.Role) (string, error) {
 	p := i.params()
-	return i.issue(uid, upn, role, "refresh", p.RefreshTTL, p.Issuer)
+	return i.issue(uid, upn, role, SubjectRefresh, p.RefreshTTL, p.Issuer)
 }
 
 func (i *Issuer) issue(uid int64, upn string, role domain.Role, sub string, ttl time.Duration, iss string) (string, error) {
@@ -127,6 +132,20 @@ func (i *Issuer) issue(uid int64, upn string, role domain.Role, sub string, ttl 
 
 // Parse verifies signature and time window and returns the embedded Claims.
 func (i *Issuer) Parse(tokenStr string) (*Claims, error) {
+	return i.parse(tokenStr, "")
+}
+
+// ParseAccess verifies signature, time window and the access-token subject.
+func (i *Issuer) ParseAccess(tokenStr string) (*Claims, error) {
+	return i.parse(tokenStr, SubjectAccess)
+}
+
+// ParseRefresh verifies signature, time window and the refresh-token subject.
+func (i *Issuer) ParseRefresh(tokenStr string) (*Claims, error) {
+	return i.parse(tokenStr, SubjectRefresh)
+}
+
+func (i *Issuer) parse(tokenStr, expectedSubject string) (*Claims, error) {
 	tok, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
@@ -137,6 +156,9 @@ func (i *Issuer) Parse(tokenStr string) (*Claims, error) {
 		return nil, err
 	}
 	if c, ok := tok.Claims.(*Claims); ok && tok.Valid {
+		if expectedSubject != "" && c.Subject != expectedSubject {
+			return nil, errors.New("unexpected token subject")
+		}
 		return c, nil
 	}
 	return nil, errors.New("invalid token")

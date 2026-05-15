@@ -32,6 +32,7 @@ import (
 // Defined here so the node package never imports sync.
 type InboundCleaner interface {
 	DelAllOwnedForInbound(ctx context.Context, panelID int64, inboundID int) error
+	EnsureInboundDeletable(ctx context.Context, panelID int64, inboundID int) error
 	DeleteInbound(ctx context.Context, panelID int64, inboundID int) error
 }
 
@@ -236,6 +237,14 @@ func (s *Service) DeleteAndSync(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+	if err := s.cleaner.EnsureInboundDeletable(ctx, n.PanelID, n.InboundID); err != nil {
+		if errors.Is(err, domain.ErrInboundHasUnmanagedClients) {
+			return err
+		}
+		// Remote reachability problems are left to the queued task. The task
+		// will run the same guard before deleting any managed clients.
+		log.Warn("node delete preflight failed; queueing guarded delete", "node_id", n.ID, "err", err)
+	}
 	n.Enabled = false
 	if err := s.nodes.Update(ctx, n); err != nil {
 		return err
@@ -299,6 +308,9 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 	}
 	switch task.Type {
 	case domain.SyncTaskNodeDelete:
+		if err := s.cleaner.EnsureInboundDeletable(ctx, n.PanelID, n.InboundID); err != nil {
+			return err
+		}
 		if err := s.cleaner.DelAllOwnedForInbound(ctx, n.PanelID, n.InboundID); err != nil {
 			return fmt.Errorf("clear owned clients: %w", err)
 		}
@@ -392,7 +404,9 @@ func permanentInboundCreateError(err error) error {
 }
 
 func isPermanentNodeTaskError(err error) bool {
-	return errors.Is(err, domain.ErrAlreadyExists) || errors.Is(err, domain.ErrValidation)
+	return errors.Is(err, domain.ErrAlreadyExists) ||
+		errors.Is(err, domain.ErrValidation) ||
+		errors.Is(err, domain.ErrInboundHasUnmanagedClients)
 }
 
 func (s *Service) enqueueNodeTask(ctx context.Context, typ domain.SyncTaskType, n *domain.Node, summary string, payload any) error {

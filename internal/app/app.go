@@ -68,6 +68,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err := mysql.EnsureSchema(db); err != nil {
 		return nil, fmt.Errorf("db schema: %w", err)
 	}
+	mysql.ConfigureSecretKey(cfg.SecretKeyMaterial())
 	mysqlRepos := mysql.NewRepos(db)
 	if err := mysqlRepos.SyncTask.ResetRunning(ctx); err != nil {
 		return nil, fmt.Errorf("reset sync tasks: %w", err)

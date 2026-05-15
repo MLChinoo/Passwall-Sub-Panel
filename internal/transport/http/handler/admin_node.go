@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -21,11 +22,12 @@ type AdminNodeHandler struct {
 	node      *node.Service
 	sync      *syncsvc.Service
 	ownership ports.OwnershipRepo
+	users     ports.UserRepo
 	panels    ports.XUIPanelRepo
 }
 
-func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, panels ports.XUIPanelRepo) *AdminNodeHandler {
-	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, panels: panels}
+func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo) *AdminNodeHandler {
+	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels}
 }
 
 // ---- DTOs ----
@@ -384,7 +386,13 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, req.ClientUUID); err != nil {
+	preExisting, err := h.ownership.ListByUser(c.Request.Context(), req.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	claimedUUID, err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, req.ClientUUID)
+	if err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": "client already managed"})
 			return
@@ -392,7 +400,41 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if claimedUUID != "" {
+		if err := h.alignClaimedUserUUID(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, claimedUUID, len(preExisting)); err != nil {
+			if errors.Is(err, domain.ErrValidation) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	c.Status(http.StatusCreated)
+}
+
+func (h *AdminNodeHandler) alignClaimedUserUUID(ctx context.Context, userID, panelID int64, inboundID int, email, claimedUUID string, preExistingOwned int) error {
+	if h.users == nil {
+		return nil
+	}
+	u, err := h.users.GetByID(ctx, userID)
+	if err != nil {
+		_ = h.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+		return err
+	}
+	if u.UUID == claimedUUID {
+		return nil
+	}
+	if preExistingOwned > 0 {
+		_ = h.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+		return fmt.Errorf("%w: claimed client UUID differs from a user that already owns other clients; claim it to a fresh user or reset credentials first", domain.ErrValidation)
+	}
+	u.UUID = claimedUUID
+	if err := h.users.Update(ctx, u); err != nil {
+		_ = h.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+		return err
+	}
+	return nil
 }
 
 // ---- helpers ----

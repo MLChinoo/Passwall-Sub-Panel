@@ -12,10 +12,11 @@ import (
 // Suitable for the project's friend-circle scale; swap for a token-bucket
 // or a Redis-backed limiter if traffic grows.
 type PerIPLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	limit   int
-	window  time.Duration
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	limit     int
+	window    time.Duration
+	lastSweep time.Time
 }
 
 type bucket struct {
@@ -24,6 +25,9 @@ type bucket struct {
 }
 
 func NewPerIPLimiter(limitPerWindow int, window time.Duration) *PerIPLimiter {
+	if limitPerWindow <= 0 {
+		limitPerWindow = 1
+	}
 	return &PerIPLimiter{
 		buckets: make(map[string]*bucket),
 		limit:   limitPerWindow,
@@ -36,6 +40,7 @@ func (l *PerIPLimiter) Allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	l.sweepExpiredLocked(now)
 	b, ok := l.buckets[ip]
 	if !ok || now.After(b.expire) {
 		l.buckets[ip] = &bucket{count: 1, expire: now.Add(l.window)}
@@ -46,6 +51,18 @@ func (l *PerIPLimiter) Allow(ip string) bool {
 	}
 	b.count++
 	return true
+}
+
+func (l *PerIPLimiter) sweepExpiredLocked(now time.Time) {
+	if l.window <= 0 || now.Sub(l.lastSweep) < l.window {
+		return
+	}
+	for ip, b := range l.buckets {
+		if now.After(b.expire) {
+			delete(l.buckets, ip)
+		}
+	}
+	l.lastSweep = now
 }
 
 // Handler returns a Gin middleware that 429s requests above the limit.

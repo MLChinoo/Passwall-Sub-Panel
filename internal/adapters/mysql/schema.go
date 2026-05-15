@@ -379,17 +379,17 @@ type uiSettingsRow struct {
 	EmergencyAccessHours       int
 	EmergencyAccessMaxCount    int
 	// Subscription settings
-	SubPath            string       `gorm:"size:128;default:'sub'"`
-	SubClientRules     jsonSubRules `gorm:"type:json"`
-	SubImportClients   jsonSubImportClients `gorm:"type:json"`
-	SubLogRetentionDays int         `gorm:"default:7"`
-	SubBlockAutoDisable       bool        `gorm:"default:false"`
-	SubBlockAutoDisableCount int         `gorm:"default:3"`
-	SubUpdateIntervalHours   int         `gorm:"default:24"`
-	QuickLinks               jsonQuickLinks `gorm:"type:json"`
-	GlobalAnnouncement jsonGlobalAnnouncement `gorm:"type:json"`
-	FooterText         string       `gorm:"size:255"`
-	UpdatedAt          time.Time
+	SubPath                  string                 `gorm:"size:128;default:'sub'"`
+	SubClientRules           jsonSubRules           `gorm:"type:json"`
+	SubImportClients         jsonSubImportClients   `gorm:"type:json"`
+	SubLogRetentionDays      int                    `gorm:"default:7"`
+	SubBlockAutoDisable      bool                   `gorm:"default:false"`
+	SubBlockAutoDisableCount int                    `gorm:"default:3"`
+	SubUpdateIntervalHours   int                    `gorm:"default:24"`
+	QuickLinks               jsonQuickLinks         `gorm:"type:json"`
+	GlobalAnnouncement       jsonGlobalAnnouncement `gorm:"type:json"`
+	FooterText               string                 `gorm:"size:255"`
+	UpdatedAt                time.Time
 }
 
 // jsonSubRules is a JSON wrapper for []ports.SubClientRule.
@@ -611,35 +611,43 @@ type mailSettingsRow struct {
 
 func (mailSettingsRow) TableName() string { return "mail_settings" }
 
-func (r *mailSettingsRow) toDomain() domain.MailSettings {
+func (r *mailSettingsRow) toDomain() (domain.MailSettings, error) {
+	password, err := decryptSecret(r.SMTPPassword)
+	if err != nil {
+		return domain.MailSettings{}, err
+	}
 	return domain.MailSettings{
 		Enabled:              r.Enabled,
 		SMTPHost:             r.SMTPHost,
 		SMTPPort:             r.SMTPPort,
 		SMTPUsername:         r.SMTPUsername,
-		SMTPPassword:         r.SMTPPassword,
+		SMTPPassword:         password,
 		FromEmail:            r.FromEmail,
 		FromName:             r.FromName,
 		Encryption:           r.Encryption,
 		ExpireBeforeDays:     r.ExpireBeforeDays,
 		TrafficRemainPercent: r.TrafficRemainPercent,
-	}
+	}, nil
 }
 
-func mailSettingsFromDomain(s domain.MailSettings) *mailSettingsRow {
+func mailSettingsFromDomain(s domain.MailSettings) (*mailSettingsRow, error) {
+	password, err := encryptSecret(s.SMTPPassword)
+	if err != nil {
+		return nil, err
+	}
 	return &mailSettingsRow{
 		ID:                   1,
 		Enabled:              s.Enabled,
 		SMTPHost:             s.SMTPHost,
 		SMTPPort:             s.SMTPPort,
 		SMTPUsername:         s.SMTPUsername,
-		SMTPPassword:         s.SMTPPassword,
+		SMTPPassword:         password,
 		FromEmail:            s.FromEmail,
 		FromName:             s.FromName,
 		Encryption:           s.Encryption,
 		ExpireBeforeDays:     s.ExpireBeforeDays,
 		TrafficRemainPercent: s.TrafficRemainPercent,
-	}
+	}, nil
 }
 
 type mailTemplateRow struct {
@@ -684,28 +692,44 @@ func (mailSentRow) TableName() string { return "mail_sent" }
 
 func (xuiPanelRow) TableName() string { return "xui_panels" }
 
-func (r *xuiPanelRow) toDomain() *domain.XUIPanel {
+func (r *xuiPanelRow) toDomain() (*domain.XUIPanel, error) {
+	apiToken, err := decryptSecret(r.APIToken)
+	if err != nil {
+		return nil, err
+	}
+	password, err := decryptSecret(r.Password)
+	if err != nil {
+		return nil, err
+	}
 	return &domain.XUIPanel{
 		ID:       r.ID,
 		Name:     r.Name,
 		URL:      r.URL,
-		APIToken: r.APIToken,
+		APIToken: apiToken,
 		Username: r.Username,
-		Password: r.Password,
+		Password: password,
 		Remark:   r.Remark,
-	}
+	}, nil
 }
 
-func xuiPanelFromDomain(p *domain.XUIPanel) *xuiPanelRow {
+func xuiPanelFromDomain(p *domain.XUIPanel) (*xuiPanelRow, error) {
+	apiToken, err := encryptSecret(p.APIToken)
+	if err != nil {
+		return nil, err
+	}
+	password, err := encryptSecret(p.Password)
+	if err != nil {
+		return nil, err
+	}
 	return &xuiPanelRow{
 		ID:       p.ID,
 		Name:     p.Name,
 		URL:      p.URL,
-		APIToken: p.APIToken,
+		APIToken: apiToken,
 		Username: p.Username,
-		Password: p.Password,
+		Password: password,
 		Remark:   p.Remark,
-	}
+	}, nil
 }
 
 func (subLogRow) TableName() string { return "sub_logs" }

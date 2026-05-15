@@ -9,10 +9,21 @@
 
 listen: ":8788"
 
+# Reverse proxy client IP handling:
+#   PSP_TRUSTED_PROXIES="127.0.0.1,::1"   # default, local reverse proxy only
+#   PSP_TRUSTED_PROXIES="none"            # ignore forwarded client IP headers
+# Add your proxy/container gateway CIDRs here when running behind a non-local
+# reverse proxy so audit logs and per-IP rate limits use the real client IP.
+
 # Generate (PowerShell):
 #   -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 48 | % {[char]$_})
 # or set env PSP_JWT_SECRET instead.
 jwt_secret: "CHANGE-ME-TO-RANDOM-48-CHAR-STRING"
+
+# Separate key for encrypting database secrets at rest. Keep it stable; losing
+# it prevents decrypting saved 3X-UI/OIDC/SAML/SMTP credentials.
+# Env override: PSP_ENCRYPTION_KEY.
+encryption_key: "CHANGE-ME-TO-RANDOM-48-CHAR-STRING"
 
 # YAML config directory (templates).
 config_dir: "./config"

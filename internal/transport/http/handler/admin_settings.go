@@ -25,38 +25,38 @@ func NewAdminSettingsHandler(repo ports.SettingsRepo, jwtParams *jwtutil.ParamsC
 }
 
 type settingsDTO struct {
-	LoginMode                  string                `json:"login_mode"`
-	SiteTitle                  string                `json:"site_title"`
-	AppTitle                   string                `json:"app_title"`
-	IconURL                    string                `json:"icon_url"`
-	LogoURL                    string                `json:"logo_url"`
-	LogoURLDark                string                `json:"logo_url_dark"`
-	EmailDomain                string                `json:"email_domain"`
-	AuditRetentionDays         int                   `json:"audit_retention_days"`
-	SubBaseURL                 string                `json:"sub_base_url"`
-	CronTrafficPullMinutes     int                   `json:"cron_traffic_pull_minutes"`
-	CronReconcileMinutes       int                   `json:"cron_reconcile_minutes"`
-	JWTAccessTTLMinutes        int                   `json:"jwt_access_ttl_minutes"`
-	JWTRefreshTTLMinutes       int                   `json:"jwt_refresh_ttl_minutes"`
-	JWTIssuer                  string                `json:"jwt_issuer"`
-	SubPerIPPerMin             int                   `json:"sub_per_ip_per_min"`
-	LoginPerIPPerMin           int                   `json:"login_per_ip_per_min"`
-	SyncTaskRetentionDays      int                   `json:"sync_task_retention_days"`
-	DisallowUserLocalLogin     bool                  `json:"disallow_user_local_login"`
-	DisallowUserPasswordChange bool                  `json:"disallow_user_password_change"`
-	EmergencyAccessEnabled     bool                  `json:"emergency_access_enabled"`
-	EmergencyAccessHours       int                   `json:"emergency_access_hours"`
-	EmergencyAccessMaxCount    int                   `json:"emergency_access_max_count"`
-	SubPath                    string                `json:"sub_path"`
-	SubClientRules             []ports.SubClientRule `json:"sub_client_rules"`
-	SubImportClients           []ports.SubImportClient `json:"sub_import_clients"`
-	SubLogRetentionDays        int                   `json:"sub_log_retention_days"`
-	SubBlockAutoDisable        bool                  `json:"sub_block_auto_disable"`
-	SubBlockAutoDisableCount   int                   `json:"sub_block_auto_disable_count"`
-	SubUpdateIntervalHours     int                   `json:"sub_update_interval_hours"`
-	QuickLinks                 []ports.QuickLink     `json:"quick_links"`
+	LoginMode                  string                   `json:"login_mode"`
+	SiteTitle                  string                   `json:"site_title"`
+	AppTitle                   string                   `json:"app_title"`
+	IconURL                    string                   `json:"icon_url"`
+	LogoURL                    string                   `json:"logo_url"`
+	LogoURLDark                string                   `json:"logo_url_dark"`
+	EmailDomain                string                   `json:"email_domain"`
+	AuditRetentionDays         int                      `json:"audit_retention_days"`
+	SubBaseURL                 string                   `json:"sub_base_url"`
+	CronTrafficPullMinutes     int                      `json:"cron_traffic_pull_minutes"`
+	CronReconcileMinutes       int                      `json:"cron_reconcile_minutes"`
+	JWTAccessTTLMinutes        int                      `json:"jwt_access_ttl_minutes"`
+	JWTRefreshTTLMinutes       int                      `json:"jwt_refresh_ttl_minutes"`
+	JWTIssuer                  string                   `json:"jwt_issuer"`
+	SubPerIPPerMin             int                      `json:"sub_per_ip_per_min"`
+	LoginPerIPPerMin           int                      `json:"login_per_ip_per_min"`
+	SyncTaskRetentionDays      int                      `json:"sync_task_retention_days"`
+	DisallowUserLocalLogin     bool                     `json:"disallow_user_local_login"`
+	DisallowUserPasswordChange bool                     `json:"disallow_user_password_change"`
+	EmergencyAccessEnabled     bool                     `json:"emergency_access_enabled"`
+	EmergencyAccessHours       int                      `json:"emergency_access_hours"`
+	EmergencyAccessMaxCount    int                      `json:"emergency_access_max_count"`
+	SubPath                    string                   `json:"sub_path"`
+	SubClientRules             []ports.SubClientRule    `json:"sub_client_rules"`
+	SubImportClients           []ports.SubImportClient  `json:"sub_import_clients"`
+	SubLogRetentionDays        int                      `json:"sub_log_retention_days"`
+	SubBlockAutoDisable        bool                     `json:"sub_block_auto_disable"`
+	SubBlockAutoDisableCount   int                      `json:"sub_block_auto_disable_count"`
+	SubUpdateIntervalHours     int                      `json:"sub_update_interval_hours"`
+	QuickLinks                 []ports.QuickLink        `json:"quick_links"`
 	GlobalAnnouncement         ports.GlobalAnnouncement `json:"global_announcement"`
-	FooterText                 string                `json:"footer_text"`
+	FooterText                 string                   `json:"footer_text"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -154,6 +154,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		SubLogRetentionDays:        req.SubLogRetentionDays,
 		SubBlockAutoDisable:        req.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   req.SubBlockAutoDisableCount,
+		SubUpdateIntervalHours:     req.SubUpdateIntervalHours,
 		QuickLinks:                 normalizeQuickLinks(req.QuickLinks),
 		GlobalAnnouncement:         normalizeGlobalAnnouncement(req.GlobalAnnouncement),
 		FooterText:                 strings.TrimSpace(req.FooterText),
@@ -166,7 +167,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		s.JWTAccessTTLMinutes < 0 || s.JWTRefreshTTLMinutes < 0 ||
 		s.SubPerIPPerMin < 0 || s.LoginPerIPPerMin < 0 ||
 		s.EmergencyAccessHours < 0 || s.EmergencyAccessMaxCount < 0 ||
-		s.SubLogRetentionDays < 0 || s.SubBlockAutoDisableCount < 0 {
+		s.SubLogRetentionDays < 0 || s.SubBlockAutoDisableCount < 0 ||
+		s.SubUpdateIntervalHours < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "runtime tuning values must be >= 0"})
 		return
 	}

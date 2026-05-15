@@ -18,8 +18,9 @@ import (
 // rate limits, login mode, branding, sub_base_url, etc.) is stored in the
 // settings table and edited through Admin → Settings.
 type Config struct {
-	Listen    string `yaml:"listen"`
-	JWTSecret string `yaml:"jwt_secret"`
+	Listen        string `yaml:"listen"`
+	JWTSecret     string `yaml:"jwt_secret"`
+	EncryptionKey string `yaml:"encryption_key"`
 
 	MySQL MySQLConfig `yaml:"mysql"`
 
@@ -95,6 +96,11 @@ listen: ":8788"                            # bind address; ":port" listens on al
 # value (invalidates every existing session). Env override: PSP_JWT_SECRET.
 jwt_secret: "%s"
 
+# Database secret encryption key. Generated randomly on first run. It protects
+# 3X-UI credentials, SAML/OIDC secrets, and SMTP passwords at rest.
+# Env override: PSP_ENCRYPTION_KEY.
+encryption_key: "%s"
+
 # ---- Filesystem ----
 config_dir: "./config"                     # runtime configs (templates, etc.)
 data_dir: "./data"                         # SQLite panel.db lives here when no MySQL is set
@@ -128,7 +134,11 @@ data_dir: "./data"                         # SQLite panel.db lives here when no 
 # a specific SQLite path via dsn:
 #   dsn: "sqlite:./data/panel.db"
 `
-	return os.WriteFile(abs, []byte(fmt.Sprintf(tpl, secret)), 0o600)
+	encKey, err := randomBase64(32)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(abs, []byte(fmt.Sprintf(tpl, secret, encKey)), 0o600)
 }
 
 func randomBase64(n int) (string, error) {
@@ -161,11 +171,24 @@ func Load(path string) (*Config, error) {
 	if sec := os.Getenv("PSP_JWT_SECRET"); sec != "" {
 		c.JWTSecret = sec
 	}
+	if key := os.Getenv("PSP_ENCRYPTION_KEY"); key != "" {
+		c.EncryptionKey = key
+	}
 
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// SecretKeyMaterial returns stable key material used to derive the AES-GCM key
+// for database secrets. Existing configs without encryption_key fall back to
+// jwt_secret for compatibility; new generated configs include a separate key.
+func (c *Config) SecretKeyMaterial() string {
+	if strings.TrimSpace(c.EncryptionKey) != "" {
+		return c.EncryptionKey
+	}
+	return c.JWTSecret
 }
 
 func (c *Config) applyDefaults() {
@@ -238,4 +261,3 @@ func (c *Config) DBDSN() string {
 	}
 	return filepath.Join(c.DataDir, "panel.db")
 }
-

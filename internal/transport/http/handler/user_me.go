@@ -320,10 +320,11 @@ func (h *UserMeHandler) ChangePassword(c *gin.Context) {
 
 func (h *UserMeHandler) subURL(ctx context.Context, token string) string {
 	base := strings.TrimRight(resolveSubBase(ctx, h.settings), "/")
+	path := resolveSubPath(ctx, h.settings, token)
 	if base == "" {
-		return "/sub/" + token
+		return path
 	}
-	return base + "/sub/" + token
+	return base + path
 }
 
 // resolveSubBase returns the panel's public base URL from the DB settings.
@@ -337,4 +338,18 @@ func resolveSubBase(ctx context.Context, s ports.SettingsRepo) string {
 		return ""
 	}
 	return st.SubBaseURL
+}
+
+func resolveSubPath(ctx context.Context, s ports.SettingsRepo, token string) string {
+	subPath := "sub"
+	if s != nil {
+		st, err := s.Load(ctx, ports.UISettings{SubPath: "sub"})
+		if err == nil && strings.TrimSpace(st.SubPath) != "" {
+			subPath = strings.Trim(strings.TrimSpace(st.SubPath), "/")
+		}
+	}
+	if subPath == "" {
+		subPath = "sub"
+	}
+	return "/" + subPath + "/" + token
 }
