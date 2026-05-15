@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/KazuhaHub/passwall-sub-panel/internal/app"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 )
@@ -28,6 +30,10 @@ func ensureDirs(cfg *config.Config) {
 const defaultConfigPath = "config.yaml"
 
 func main() {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	cfgPath := configPath()
 	cfg, err := config.LoadOrGenerate(cfgPath)
 	if err != nil {
