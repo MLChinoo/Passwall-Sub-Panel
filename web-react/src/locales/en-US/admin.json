@@ -3,8 +3,20 @@
     "title": "Dashboard",
     "metric": {
       "users": "Total users",
-      "nodes": "Total nodes",
-      "groups": "Total groups"
+      "users_breakdown": "{{enabled}} active · {{disabled}} disabled",
+      "nodes": "Enabled nodes",
+      "nodes_breakdown": "{{healthy}} / {{total}} healthy",
+      "groups": "Total groups",
+      "emergency_active": "Emergency active",
+      "emergency_active_hint": "Users inside an active emergency window"
+    },
+    "alerts": {
+      "node_health": "Node health alerts",
+      "node_health_empty": "All nodes healthy ✓",
+      "expiring_soon": "Expiring soon (7 days)",
+      "expiring_empty": "No accounts expire in the next 7 days ✓",
+      "expiring_today": "today",
+      "expiring_in_days": "in {{days}}d"
     },
     "trend_title": "Last 7-day traffic trend",
     "traffic": {

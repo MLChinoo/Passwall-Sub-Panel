@@ -3,8 +3,20 @@
     "title": "总览",
     "metric": {
       "users": "用户总数",
-      "nodes": "节点总数",
-      "groups": "分组总数"
+      "users_breakdown": "{{enabled}} 启用 · {{disabled}} 停用",
+      "nodes": "启用节点",
+      "nodes_breakdown": "{{healthy}} / {{total}} 健康",
+      "groups": "分组总数",
+      "emergency_active": "紧急访问中",
+      "emergency_active_hint": "正在使用紧急访问窗口"
+    },
+    "alerts": {
+      "node_health": "节点健康警报",
+      "node_health_empty": "所有节点工作正常 ✓",
+      "expiring_soon": "即将到期（7 天内）",
+      "expiring_empty": "7 天内无到期用户 ✓",
+      "expiring_today": "今日",
+      "expiring_in_days": "{{days}} 天后"
     },
     "trend_title": "近 7 天流量趋势",
     "traffic": {

@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import {
   Box,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   Link as MuiLink,
   Table,
@@ -19,11 +20,15 @@ import { useTranslation } from 'react-i18next'
 import GroupIcon from '@mui/icons-material/Group'
 import DnsIcon from '@mui/icons-material/Dns'
 import WorkspacesIcon from '@mui/icons-material/Workspaces'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
+import ScheduleIcon from '@mui/icons-material/Schedule'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
 import { listUsers } from '@/api/users'
 import { listNodes } from '@/api/nodes'
 import { listGroups } from '@/api/groups'
 import { topTraffic, trafficHistory, type TrafficHistoryItem, type TrafficRow } from '@/api/traffic'
+import type { Node, User } from '@/api/types'
 import type { M3Tokens } from '@/theme'
 
 const TrafficChart = lazy(() => import('@/components/TrafficChart'))
@@ -43,8 +48,9 @@ function formatBytes(n: number): string {
 interface MetricCardProps {
   labelKey: string
   value: number | string
+  subtitle?: string
   Icon: typeof DnsIcon
-  tone: 'primary' | 'secondary' | 'tertiary'
+  tone: 'primary' | 'secondary' | 'tertiary' | 'error'
   loading: boolean
 }
 
@@ -52,11 +58,12 @@ function toneContainer(md: M3Tokens, tone: MetricCardProps['tone']) {
   switch (tone) {
     case 'secondary': return { bg: md.secondaryContainer, fg: md.onSecondaryContainer }
     case 'tertiary': return { bg: md.tertiaryContainer, fg: md.onTertiaryContainer }
+    case 'error': return { bg: md.errorContainer, fg: md.onErrorContainer }
     default: return { bg: md.primaryContainer, fg: md.onPrimaryContainer }
   }
 }
 
-function MetricCard({ labelKey, value, Icon, tone, loading }: MetricCardProps) {
+function MetricCard({ labelKey, value, subtitle, Icon, tone, loading }: MetricCardProps) {
   const theme = useTheme()
   const md = theme.palette.md
   const t = toneContainer(md, tone)
@@ -71,16 +78,23 @@ function MetricCard({ labelKey, value, Icon, tone, loading }: MetricCardProps) {
         }}>
           <Icon sx={{ fontSize: 28 }} />
         </Box>
-        <Box>
+        <Box sx={{ minWidth: 0 }}>
           <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{tr(labelKey)}</Typography>
           {loading
             ? <CircularProgress size={20} sx={{ mt: 0.5 }} />
-            : <Typography sx={{ fontSize: 32, fontWeight: 500, lineHeight: 1.1, mt: 0.25 }}>{value}</Typography>}
+            : <>
+                <Typography sx={{ fontSize: 32, fontWeight: 500, lineHeight: 1.1, mt: 0.25 }}>{value}</Typography>
+                {subtitle && (
+                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: 0.5 }}>{subtitle}</Typography>
+                )}
+              </>}
         </Box>
       </CardContent>
     </Card>
   )
 }
+
+const EXPIRING_WINDOW_DAYS = 7
 
 export default function DashboardView() {
   const theme = useTheme()
@@ -88,8 +102,9 @@ export default function DashboardView() {
   const { t } = useTranslation('admin')
 
   const [loading, setLoading] = useState(true)
-  const [userCount, setUserCount] = useState(0)
-  const [nodeCount, setNodeCount] = useState(0)
+  const [users, setUsers] = useState<User[]>([])
+  const [userTotal, setUserTotal] = useState(0)
+  const [nodes, setNodes] = useState<Node[]>([])
   const [groupCount, setGroupCount] = useState(0)
   const [topUsers, setTopUsers] = useState<TrafficRow[]>([])
   const [trend, setTrend] = useState<TrafficHistoryItem[]>([])
@@ -99,15 +114,19 @@ export default function DashboardView() {
     let cancelled = false
     async function load() {
       try {
+        // Fetch a big enough page for client-side aggregation. Typical
+        // self-host scale fits in one page; if you grow past 500 users
+        // we should add a dedicated /dashboard summary endpoint.
         const [u, n, g, top] = await Promise.all([
-          listUsers({ page: 1, page_size: 1 }),
+          listUsers({ page: 1, page_size: 500 }),
           listNodes(),
           listGroups(),
           topTraffic(5).catch(() => []),
         ])
         if (cancelled) return
-        setUserCount(u.total)
-        setNodeCount(n.length)
+        setUsers(u.items)
+        setUserTotal(u.total)
+        setNodes(n)
         setGroupCount(g.items.length)
         setTopUsers(top)
       } finally {
@@ -132,19 +151,164 @@ export default function DashboardView() {
     return () => { cancelled = true }
   }, [])
 
+  // Derived aggregates — memoized so a re-render doesn't recompute the
+  // same filters/counts over the (potentially 500-entry) user list.
+  const stats = useMemo(() => {
+    const now = Date.now()
+    let enabled = 0
+    let disabled = 0
+    let emergency = 0
+    const expiring: User[] = []
+    const windowMs = EXPIRING_WINDOW_DAYS * 86400000
+    for (const u of users) {
+      if (u.enabled) enabled++; else disabled++
+      if (u.emergency_until && new Date(u.emergency_until).getTime() > now) emergency++
+      if (u.expire_at) {
+        const exp = new Date(u.expire_at).getTime()
+        const diff = exp - now
+        if (diff >= 0 && diff <= windowMs) expiring.push(u)
+      }
+    }
+    expiring.sort((a, b) => {
+      // Soonest first — that's the order an admin scanning the list cares about.
+      return new Date(a.expire_at!).getTime() - new Date(b.expire_at!).getTime()
+    })
+    return { enabled, disabled, emergency, expiring: expiring.slice(0, 5) }
+  }, [users])
+
+  const nodeAlerts = useMemo(() => {
+    // Only enabled nodes are probed; surface anything that isn't ok so
+    // the admin sees actual issues, not a wall of green dots.
+    return nodes
+      .filter(n => n.enabled && n.health_state && n.health_state !== 'ok')
+      .slice(0, 5)
+  }, [nodes])
+
+  const healthyCount = useMemo(() => {
+    return nodes.filter(n => n.enabled && n.health_state === 'ok').length
+  }, [nodes])
+  const enabledNodeCount = nodes.filter(n => n.enabled).length
+
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: { xs: 2, sm: 3 } }}>
       <Typography variant="h4" sx={{ mb: 3 }}>{t('dashboard.title')}</Typography>
 
+      {/* Stat tiles — bigger numbers now carry a subtitle (e.g., 健康/总数) so
+          a glance tells the admin "everything fine" vs "8/12 healthy". */}
       <Box sx={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
         gap: 2,
         mb: 3,
       }}>
-        <MetricCard labelKey="dashboard.metric.users" value={userCount} Icon={GroupIcon} tone="primary" loading={loading} />
-        <MetricCard labelKey="dashboard.metric.nodes" value={nodeCount} Icon={DnsIcon} tone="tertiary" loading={loading} />
-        <MetricCard labelKey="dashboard.metric.groups" value={groupCount} Icon={WorkspacesIcon} tone="secondary" loading={loading} />
+        <MetricCard
+          labelKey="dashboard.metric.users"
+          value={userTotal}
+          subtitle={loading ? undefined : t('dashboard.metric.users_breakdown', {
+            enabled: stats.enabled,
+            disabled: stats.disabled,
+            defaultValue: `${stats.enabled} 启用 · ${stats.disabled} 停用`,
+          })}
+          Icon={GroupIcon} tone="primary" loading={loading}
+        />
+        <MetricCard
+          labelKey="dashboard.metric.nodes"
+          value={enabledNodeCount}
+          subtitle={loading ? undefined : t('dashboard.metric.nodes_breakdown', {
+            healthy: healthyCount,
+            total: enabledNodeCount,
+            defaultValue: `${healthyCount} / ${enabledNodeCount} 健康`,
+          })}
+          Icon={DnsIcon}
+          tone={nodeAlerts.length > 0 ? 'error' : 'tertiary'}
+          loading={loading}
+        />
+        <MetricCard
+          labelKey="dashboard.metric.groups"
+          value={groupCount}
+          Icon={WorkspacesIcon} tone="secondary" loading={loading}
+        />
+        <MetricCard
+          labelKey="dashboard.metric.emergency_active"
+          value={stats.emergency}
+          subtitle={loading ? undefined : t('dashboard.metric.emergency_active_hint', { defaultValue: '正在使用紧急访问窗口' })}
+          Icon={ScheduleIcon}
+          tone={stats.emergency > 0 ? 'tertiary' : 'secondary'}
+          loading={loading}
+        />
+      </Box>
+
+      {/* Alerts row — only renders cards that have actual content, so a
+          fully-healthy panel doesn't carry dead UI weight. */}
+      <Box sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+        gap: 2,
+        mb: 3,
+      }}>
+        <AlertCard
+          title={t('dashboard.alerts.node_health', { defaultValue: '节点健康警报' })}
+          icon={<WarningAmberIcon />}
+          emptyLabel={t('dashboard.alerts.node_health_empty', { defaultValue: '所有节点工作正常 ✓' })}
+          empty={nodeAlerts.length === 0 && !loading}
+          loading={loading}
+          to="/admin/nodes"
+          md={md}
+        >
+          {nodeAlerts.map(n => (
+            <Box key={n.id} sx={{
+              display: 'flex', alignItems: 'center', gap: 1.5,
+              py: 1, borderBottom: `1px solid ${md.outlineVariant}`,
+              '&:last-child': { borderBottom: 0 },
+            }}>
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: healthColor(md, n.health_state || '') }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontSize: 14, fontWeight: 500 }}>{n.display_name}</Typography>
+                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                  {n.panel_name} · {t(`admin:nodes.health.${n.health_state}`, { defaultValue: n.health_state })}
+                </Typography>
+              </Box>
+            </Box>
+          ))}
+        </AlertCard>
+
+        <AlertCard
+          title={t('dashboard.alerts.expiring_soon', { defaultValue: '即将到期（7 天内）' })}
+          icon={<ScheduleIcon />}
+          emptyLabel={t('dashboard.alerts.expiring_empty', { defaultValue: '7 天内无到期用户 ✓' })}
+          empty={stats.expiring.length === 0 && !loading}
+          loading={loading}
+          to="/admin/users"
+          md={md}
+        >
+          {stats.expiring.map(u => {
+            const diffDays = Math.ceil((new Date(u.expire_at!).getTime() - Date.now()) / 86400000)
+            const chipColor = diffDays <= 1 ? md.error : diffDays <= 3 ? md.tertiary : md.onSurfaceVariant
+            return (
+              <Box key={u.id} sx={{
+                display: 'flex', alignItems: 'center', gap: 1.5,
+                py: 1, borderBottom: `1px solid ${md.outlineVariant}`,
+                '&:last-child': { borderBottom: 0 },
+              }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {u.display_name || u.upn}
+                  </Typography>
+                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                    {new Date(u.expire_at!).toLocaleDateString()}
+                  </Typography>
+                </Box>
+                <Chip
+                  size="small"
+                  label={diffDays <= 0
+                    ? t('dashboard.alerts.expiring_today', { defaultValue: '今日' })
+                    : t('dashboard.alerts.expiring_in_days', { days: diffDays, defaultValue: `${diffDays} 天后` })}
+                  sx={{ bgcolor: 'transparent', color: chipColor, border: `1px solid ${chipColor}`, fontWeight: 500 }}
+                />
+              </Box>
+            )
+          })}
+        </AlertCard>
       </Box>
 
       {/* 7-day traffic trend */}
@@ -209,4 +373,51 @@ export default function DashboardView() {
       </Card>
     </Box>
   )
+}
+
+interface AlertCardProps {
+  title: string
+  icon: React.ReactNode
+  emptyLabel: string
+  empty: boolean
+  loading: boolean
+  to: string
+  md: M3Tokens
+  children: React.ReactNode
+}
+
+function AlertCard({ title, icon, emptyLabel, empty, loading, to, md, children }: AlertCardProps) {
+  const { t } = useTranslation('admin')
+  return (
+    <Card sx={{ p: 2.5, bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: md.onSurface }}>
+          {icon}
+          <Typography variant="h6">{title}</Typography>
+        </Box>
+        <MuiLink component={RouterLink} to={to} underline="hover" sx={{ fontSize: 13, color: md.primary }}>
+          {t('dashboard.traffic.view_all')} →
+        </MuiLink>
+      </Box>
+      {loading ? (
+        <Box sx={{ display: 'grid', placeItems: 'center', py: 3 }}><CircularProgress size={20} /></Box>
+      ) : empty ? (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1.5, color: md.onSurfaceVariant, fontSize: 14 }}>
+          <CheckCircleIcon sx={{ fontSize: 18, color: '#22c55e' }} />
+          {emptyLabel}
+        </Box>
+      ) : (
+        <Box>{children}</Box>
+      )}
+    </Card>
+  )
+}
+
+function healthColor(md: M3Tokens, state: string): string {
+  switch (state) {
+    case 'panel_unreachable': return md.error
+    case 'inbound_missing': return '#f97316'
+    case 'inbound_disabled': return '#9ca3af'
+    default: return md.outlineVariant
+  }
 }
