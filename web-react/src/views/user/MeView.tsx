@@ -444,20 +444,43 @@ export default function MeView() {
         )
       })()}
 
-      {/* Modular 2-column layout below the hero. Mobile collapses to single
-          column with a usage-first order; desktop pairs cards by topic. */}
+      {/* Two-column layout below the hero. Each column is an independent
+          flex stack so a tall card on one side doesn't open a gap on the
+          other (grid-template-rows would force row alignment by max
+          height).
+          On mobile (xs) the column wrappers switch to `display: contents`
+          which removes them from the layout tree, so all 6 cards become
+          direct children of THIS outer flex-column. Each card then uses
+          its `order` to land in the desired mobile sequence:
+            sub → usage → quick → emerg → trend → other
+          On md+ the columns become real flex containers again, and order
+          resets so cards follow DOM source order inside each column. */}
       <Box sx={{
-        display: 'grid',
-        gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1.5fr) minmax(0, 1fr)' },
-        gridTemplateAreas: {
-          xs: `"usage" "sub" "emerg" "trend" "other" "quick"`,
-          md: `"sub usage" "trend emerg" "other quick"`,
-        },
+        display: 'flex',
+        flexDirection: { xs: 'column', md: 'row' },
         gap: { xs: 2, sm: 3 },
-        alignItems: 'start',
+        // alignItems means different things in row vs column:
+        //   row (md+):    vertical alignment — flex-start so cards keep
+        //                 their natural height, don't grow to match a
+        //                 tall sibling
+        //   column (xs):  horizontal alignment — stretch so every card
+        //                 fills the viewport width. Without this the
+        //                 right-column cards (usage / quick) shrink to
+        //                 their content size and look narrower than the
+        //                 wider-content sub-url card.
+        alignItems: { xs: 'stretch', md: 'flex-start' },
       }}>
 
-      <Box sx={{ gridArea: 'sub' }}>
+      {/* Left column */}
+      <Box sx={{
+        display: { xs: 'contents', md: 'flex' },
+        flexDirection: 'column',
+        gap: { xs: 2, sm: 3 },
+        flex: { md: 1.5 },
+        minWidth: 0,
+        width: { xs: '100%', md: 'auto' },
+      }}>
+      <Box sx={{ order: { xs: 1, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
       {/* Sub URL — masked by default for screenshot/screen-share safety.
           Click the eye icon to reveal both the URL text AND the QR code.
           Copy still works while masked (clipboard is private). */}
@@ -536,20 +559,55 @@ export default function MeView() {
           </Box>
         </Box>
       </Card>
+      </Box>{/* end sub url order wrapper */}
 
-      </Box>
+      <Box sx={{ order: { xs: 5, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
+      {/* Traffic trend chart — open by default so the user sees their usage
+          shape without an extra click. Click the row to collapse. */}
+      <Accordion defaultExpanded sx={{
+        bgcolor: md.surfaceContainerLow,
+        border: `1px solid ${md.outlineVariant}`,
+        borderRadius: '12px !important',
+        '&:before': { display: 'none' },
+        boxShadow: 'none',
+        // MUI default adds 16px top/bottom margin when the Accordion is
+        // expanded (its built-in spacing assumption). That fights the
+        // parent flex's `gap: 3`, making left col (which has 2 Accordions)
+        // look more spaced than right col (pure Cards). Force margin: 0
+        // so spacing is owned entirely by the column's gap.
+        m: '0 !important',
+        '&.Mui-expanded': { m: '0 !important' },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 2.5, sm: 3 }, py: 1 }}>
+          <Typography sx={{ fontWeight: 500 }}>{t('trend.title')}</Typography>
+        </AccordionSummary>
+        <AccordionDetails sx={{ px: { xs: 2.5, sm: 3 }, pt: 0, pb: { xs: 2.5, sm: 3 } }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+            <Select size="small" value={trendPeriod}
+              onChange={e => setTrendPeriod(e.target.value as TrafficHistoryPeriod)}
+              sx={{ height: 36, minWidth: 90 }}>
+              <MenuItem value="day">D</MenuItem>
+              <MenuItem value="week">W</MenuItem>
+              <MenuItem value="month">M</MenuItem>
+            </Select>
+            <Select size="small" value={trendDays}
+              onChange={e => setTrendDays(Number(e.target.value))}
+              sx={{ height: 36, minWidth: 130 }}>
+              <MenuItem value={7}>{t('trend.range_7')}</MenuItem>
+              <MenuItem value={30}>{t('trend.range_30')}</MenuItem>
+              <MenuItem value={90}>{t('trend.range_90')}</MenuItem>
+            </Select>
+          </Box>
+          <Suspense fallback={<Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>}>
+            {trendBusy
+              ? <Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>
+              : <TrafficChart items={trendItems} height={280} />}
+          </Suspense>
+        </AccordionDetails>
+      </Accordion>
+      </Box>{/* end trend order wrapper */}
 
-      <Box sx={{ gridArea: 'usage' }}>
-      {/* Usage panel — 流量 + 到期 with progress bars */}
-      <UsagePanel
-        limitBytes={profile.traffic_limit_bytes}
-        usage={usage}
-        expireAt={profile.expire_at ?? null}
-        md={md}
-      />
-      </Box>
-
-      <Box sx={{ gridArea: 'other' }}>
+      <Box sx={{ order: { xs: 6, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
       {/* Other clients (excludes the hero, which is shown above). When no
           client matches the visitor's platform, this falls back to the full
           list so the user portal still surfaces all import targets. */}
@@ -619,50 +677,48 @@ export default function MeView() {
           </Accordion>
         )
       })()}
+      </Box>{/* end other clients order wrapper */}
 
-      </Box>
+      </Box>{/* end left col */}
 
-      <Box sx={{ gridArea: 'trend' }}>
-      {/* Traffic trend chart — open by default so the user sees their usage
-          shape without an extra click. Click the row to collapse. */}
-      <Accordion defaultExpanded sx={{
-        bgcolor: md.surfaceContainerLow,
-        border: `1px solid ${md.outlineVariant}`,
-        borderRadius: '12px !important',
-        '&:before': { display: 'none' },
-        boxShadow: 'none',
+      {/* Right column */}
+      <Box sx={{
+        display: { xs: 'contents', md: 'flex' },
+        flexDirection: 'column',
+        gap: { xs: 2, sm: 3 },
+        flex: { md: 1 },
+        minWidth: 0,
+        width: { xs: '100%', md: 'auto' },
       }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 2.5, sm: 3 }, py: 1 }}>
-          <Typography sx={{ fontWeight: 500 }}>{t('trend.title')}</Typography>
-        </AccordionSummary>
-        <AccordionDetails sx={{ px: { xs: 2.5, sm: 3 }, pt: 0, pb: { xs: 2.5, sm: 3 } }}>
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
-            <Select size="small" value={trendPeriod}
-              onChange={e => setTrendPeriod(e.target.value as TrafficHistoryPeriod)}
-              sx={{ height: 36, minWidth: 90 }}>
-              <MenuItem value="day">D</MenuItem>
-              <MenuItem value="week">W</MenuItem>
-              <MenuItem value="month">M</MenuItem>
-            </Select>
-            <Select size="small" value={trendDays}
-              onChange={e => setTrendDays(Number(e.target.value))}
-              sx={{ height: 36, minWidth: 130 }}>
-              <MenuItem value={7}>{t('trend.range_7')}</MenuItem>
-              <MenuItem value={30}>{t('trend.range_30')}</MenuItem>
-              <MenuItem value={90}>{t('trend.range_90')}</MenuItem>
-            </Select>
+
+      <Box sx={{ order: { xs: 2, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
+      {/* Usage panel — 流量 + 到期 with progress bars */}
+      <UsagePanel
+        limitBytes={profile.traffic_limit_bytes}
+        usage={usage}
+        expireAt={profile.expire_at ?? null}
+        md={md}
+      />
+      </Box>{/* end usage order wrapper */}
+
+      <Box sx={{ order: { xs: 3, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
+      {/* Quick links */}
+      {quickLinks.length > 0 && (
+        <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+          <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('links.title')}</Typography>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {quickLinks.map(l => (
+              <Button key={l.url} size="small" variant="outlined"
+                onClick={() => l.new_window ? window.open(l.url, '_blank') : (window.location.href = l.url)}>
+                {l.label}
+              </Button>
+            ))}
           </Box>
-          <Suspense fallback={<Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>}>
-            {trendBusy
-              ? <Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>
-              : <TrafficChart items={trendItems} height={280} />}
-          </Suspense>
-        </AccordionDetails>
-      </Accordion>
+        </Card>
+      )}
+      </Box>{/* end quick links order wrapper */}
 
-      </Box>
-
-      <Box sx={{ gridArea: 'emerg' }}>
+      <Box sx={{ order: { xs: 4, md: 0 }, width: { xs: '100%', md: 'auto' } }}>
       {/* Emergency access */}
       {profile.emergency_access?.enabled && (() => {
         const ea = profile.emergency_access
@@ -743,28 +799,11 @@ export default function MeView() {
         </Card>
         )
       })()}
+      </Box>{/* end emergency order wrapper */}
 
-      </Box>
+      </Box>{/* end right col */}
 
-      <Box sx={{ gridArea: 'quick' }}>
-      {/* Quick links */}
-      {quickLinks.length > 0 && (
-        <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
-          <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('links.title')}</Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {quickLinks.map(l => (
-              <Button key={l.url} size="small" variant="outlined"
-                onClick={() => l.new_window ? window.open(l.url, '_blank') : (window.location.href = l.url)}>
-                {l.label}
-              </Button>
-            ))}
-          </Box>
-        </Card>
-      )}
-
-      </Box>
-
-      </Box>{/* end modular grid */}
+      </Box>{/* end two-col flex */}
 
       {/* Change password dialog */}
       <Dialog open={pwdOpen} onClose={() => !pwdBusy && setPwdOpen(false)}
