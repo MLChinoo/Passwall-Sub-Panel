@@ -771,35 +771,45 @@ export default function MeView() {
         } as const
         return (
         <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.tertiaryContainer, color: md.onTertiaryContainer }}>
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
-            <EmergencyIcon sx={{ mt: 0.25 }} />
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{t('emergency.title')}</Typography>
-              <Typography variant="body2" sx={{ mb: 1.25 }}>{emergencyStatusText()}</Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', columnGap: 2, rowGap: 0.5 }}>
-                <Box sx={metaSx}>
-                  <AccessTimeIcon />
-                  {t('emergency.meta_duration', {
-                    hours: ea.duration_hours,
-                    defaultValue: `每次 ${ea.duration_hours} 小时`,
-                  })}
-                </Box>
-                {quotaActive && (
+          {/* Header row: on mobile we stack the action button below so the
+              long "Use emergency access" label doesn't squeeze the status
+              text into a 1-2-word-wide column. */}
+          <Box sx={{
+            display: 'flex',
+            alignItems: { xs: 'stretch', sm: 'flex-start' },
+            gap: 2,
+            flexDirection: { xs: 'column', sm: 'row' },
+          }}>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flex: 1, minWidth: 0 }}>
+              <EmergencyIcon sx={{ mt: 0.25, flexShrink: 0 }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{t('emergency.title')}</Typography>
+                <Typography variant="body2" sx={{ mb: 1.25 }}>{emergencyStatusText()}</Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', columnGap: 2, rowGap: 0.5 }}>
                   <Box sx={metaSx}>
-                    <DataUsageIcon />
-                    {t('emergency.meta_quota', {
-                      total: bytesToHuman(ea.quota_bytes),
-                      defaultValue: `每次 ${bytesToHuman(ea.quota_bytes)} 流量`,
+                    <AccessTimeIcon />
+                    {t('emergency.meta_duration', {
+                      hours: ea.duration_hours,
+                      defaultValue: `每次 ${ea.duration_hours} 小时`,
                     })}
                   </Box>
-                )}
-                <Box sx={metaSx}>
-                  <ConfirmationNumberIcon />
-                  {t('emergency.meta_count', {
-                    remaining: ea.remaining,
-                    max: ea.max_count,
-                    defaultValue: `${ea.remaining} / ${ea.max_count} 次可用`,
-                  })}
+                  {quotaActive && (
+                    <Box sx={metaSx}>
+                      <DataUsageIcon />
+                      {t('emergency.meta_quota', {
+                        total: bytesToHuman(ea.quota_bytes),
+                        defaultValue: `每次 ${bytesToHuman(ea.quota_bytes)} 流量`,
+                      })}
+                    </Box>
+                  )}
+                  <Box sx={metaSx}>
+                    <ConfirmationNumberIcon />
+                    {t('emergency.meta_count', {
+                      remaining: ea.remaining,
+                      max: ea.max_count,
+                      defaultValue: `${ea.remaining} / ${ea.max_count} 次可用`,
+                    })}
+                  </Box>
                 </Box>
               </Box>
             </Box>
@@ -810,7 +820,9 @@ export default function MeView() {
               onClick={tryEmergency}
               sx={{
                 bgcolor: md.tertiary, color: md.onTertiary,
-                alignSelf: 'flex-start',
+                alignSelf: { xs: 'stretch', sm: 'flex-start' },
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
                 '&:hover': { bgcolor: md.tertiary },
               }}>
               {t('emergency.use')}

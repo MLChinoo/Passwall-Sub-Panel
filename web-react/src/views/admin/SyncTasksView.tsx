@@ -28,6 +28,7 @@ import DeleteIcon from '@mui/icons-material/DeleteOutline'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import CloseIcon from '@mui/icons-material/Close'
 import ReplayIcon from '@mui/icons-material/Replay'
+import CleaningIcon from '@mui/icons-material/CleaningServices'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -188,7 +189,7 @@ export default function SyncTasksView() {
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button variant="outlined" color="error" onClick={purge}>{t('admin:sync_tasks.purge')}</Button>
+          <Button variant="outlined" color="error" startIcon={<CleaningIcon />} onClick={purge}>{t('admin:sync_tasks.purge')}</Button>
           <Button variant="contained" startIcon={<RefreshIcon />} onClick={() => load()}>
             {t('admin:sync_tasks.refresh')}
           </Button>
