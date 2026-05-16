@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-15
 
-This note tracks the code review findings that were prioritized for the current hardening pass. It intentionally excludes the `material-demo.html` refactor work.
+This note tracks the code review findings that were prioritized for the hardening pass leading up to v2.0.
 
 ## Findings
 

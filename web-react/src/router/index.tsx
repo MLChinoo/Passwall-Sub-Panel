@@ -24,7 +24,6 @@ const SyncTasksView = lazy(() => import('@/views/admin/SyncTasksView'))
 const TrafficView = lazy(() => import('@/views/admin/TrafficView'))
 const SettingsView = lazy(() => import('@/views/admin/SettingsView'))
 const MeView = lazy(() => import('@/views/user/MeView'))
-const MaterialDemoView = lazy(() => import('@/views/MaterialDemoView'))
 
 // All admin pages migrated.
 const PLACEHOLDER_PATHS: string[] = []
@@ -44,7 +43,6 @@ export const router = createBrowserRouter([
   { path: '/sso-callback', element: <SsoCallbackView /> },
   { path: '/sso-no-account', element: <SsoNoAccountView /> },
   { path: '/sso-error', element: <SsoErrorView /> },
-  { path: '/md-demo', element: <MaterialDemoView /> },
   {
     path: '/admin',
     element: <RequireAuth adminOnly />,

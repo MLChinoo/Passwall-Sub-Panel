@@ -1,7 +1,15 @@
 import { useEffect, useRef } from 'react'
 import { Box, useTheme } from '@mui/material'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import type { TrafficHistoryItem } from '@/api/traffic'
+
+// Register only what we actually render: a line chart with axis/tooltip/legend.
+// Pulling the umbrella `echarts` package would ship every chart type and
+// renderer (~1MB) for a single time-series plot.
+echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 interface Props {
   items: TrafficHistoryItem[]

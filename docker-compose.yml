@@ -6,8 +6,10 @@ services:
     image: ghcr.io/kazuhahub/passwall-sub-panel:latest
     container_name: psp
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8788:8788"
+    # Host networking lets PSP reach a 3X-UI panel running on the same host
+    # at 127.0.0.1:<port> without exposing 3X-UI publicly. The listen port is
+    # whatever you set in config.yaml (`listen: ":8788"` by default).
+    network_mode: host
     volumes:
       - ./config:/app/config:ro
       - psp-data:/app/data
@@ -16,8 +18,9 @@ services:
       # PSP_SECRET_KEY decrypts the "enc:..." fields in xui_panels.yaml.
       # Generate with: openssl rand -hex 16
       PSP_SECRET_KEY: ${PSP_SECRET_KEY}
-      # MySQL DSN overrides the one in config.yaml if set.
-      PSP_MYSQL_DSN: ${PSP_MYSQL_DSN}
+      # MySQL DSN overrides the one in config.yaml if set. Leave unset to use
+      # the embedded SQLite at /app/data/panel.db (default).
+      PSP_MYSQL_DSN: ${PSP_MYSQL_DSN:-}
       PSP_JWT_SECRET: ${PSP_JWT_SECRET}
 
 volumes:

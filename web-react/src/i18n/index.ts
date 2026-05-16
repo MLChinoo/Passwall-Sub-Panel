@@ -3,7 +3,6 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
 import zhCommon from '@/locales/zh-CN/common.json'
-import zhDemo from '@/locales/zh-CN/demo.json'
 import zhAppearance from '@/locales/zh-CN/appearance.json'
 import zhLanguage from '@/locales/zh-CN/language.json'
 import zhAuth from '@/locales/zh-CN/auth.json'
@@ -11,7 +10,6 @@ import zhNav from '@/locales/zh-CN/nav.json'
 import zhAdmin from '@/locales/zh-CN/admin.json'
 import zhUser from '@/locales/zh-CN/user.json'
 import enCommon from '@/locales/en-US/common.json'
-import enDemo from '@/locales/en-US/demo.json'
 import enAppearance from '@/locales/en-US/appearance.json'
 import enLanguage from '@/locales/en-US/language.json'
 import enAuth from '@/locales/en-US/auth.json'
@@ -42,7 +40,6 @@ function flatten(obj: Nested, prefix = ''): Record<string, string> {
 const resources = {
   'zh-CN': {
     common: flatten(zhCommon as Nested),
-    demo: flatten(zhDemo as Nested),
     appearance: flatten(zhAppearance as Nested),
     language: flatten(zhLanguage as Nested),
     auth: flatten(zhAuth as Nested),
@@ -52,7 +49,6 @@ const resources = {
   },
   'en-US': {
     common: flatten(enCommon as Nested),
-    demo: flatten(enDemo as Nested),
     appearance: flatten(enAppearance as Nested),
     language: flatten(enLanguage as Nested),
     auth: flatten(enAuth as Nested),
@@ -78,7 +74,7 @@ export const i18nReady = i18n
     supportedLngs: SUPPORTED_LANGUAGES,
     load: 'currentOnly',
     preload: SUPPORTED_LANGUAGES,
-    ns: ['common', 'demo', 'appearance', 'language', 'auth', 'nav', 'admin', 'user'],
+    ns: ['common', 'appearance', 'language', 'auth', 'nav', 'admin', 'user'],
     defaultNS: 'common',
     fallbackNS: 'common',
     // Resources are pre-flattened to dotted keys, so the runtime no longer

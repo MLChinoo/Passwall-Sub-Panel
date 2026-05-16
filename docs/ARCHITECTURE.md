@@ -148,7 +148,7 @@ UUID 重置 → 所有协议密码同步刷新（封装层 `proxyPassword(user, 
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│            Vue 3 + Element Plus  管理后台 SPA             │
+│         React 18 + MUI (Material Design 3) 管理后台 SPA    │
 │                                                           │
 │  /login          [SSO 登录] 或 [本地账号登录]              │
 │  /admin/dashboard        仪表盘                            │
@@ -1354,8 +1354,9 @@ SAML Response 验签通过 →
 | 密码 | `golang.org/x/crypto/bcrypt` | cost=10 |
 | JWT | `github.com/golang-jwt/jwt/v5` | HS256 |
 | AES-GCM | `crypto/aes` 标准库 | 凭证加密 |
-| 前端 | Vue 3 + Vite + Element Plus + Pinia | |
-| 代码编辑器 | Monaco Editor | 规则集/模板 |
+| 前端 | React 18 + Vite + MUI (Material Design 3) + Zustand | v2.0 起从 Vue 3 + Element Plus 全量重写 |
+| 国际化 | i18next + react-i18next | zh-CN / en-US |
+| 图表 | ECharts（按需 import）| 流量趋势 |
 | 前端打包 | `go:embed` 嵌到二进制 | 单二进制部署 |
 
 ---
@@ -1372,7 +1373,7 @@ SAML Response 验签通过 →
 
 ```
 /opt/passwall-sub-panel/
-├── psp                      # 二进制（含 web/dist 嵌入）
+├── psp                      # 二进制（含 internal/web/dist 嵌入）
 ├── config/
 │   ├── config.yaml
 │   ├── rulesets/*.yaml
@@ -1385,13 +1386,20 @@ SAML Response 验签通过 →
 
 ```yaml
 services:
-  panel:
-    image: kazuha/passwall-sub-panel:latest
-    ports: ["8788:8788"]
-    volumes:
-      - ./config:/app/config
-      - ./data:/app/data
+  psp:
+    image: ghcr.io/kazuhahub/passwall-sub-panel:latest
+    container_name: psp
+    network_mode: host          # 默认 host：方便容器内回访宿主机 3X-UI
     restart: unless-stopped
+    volumes:
+      - ./config:/app/config:ro
+      - psp-data:/app/data
+    environment:
+      PSP_CONFIG: /app/config/config.yaml
+      PSP_SECRET_KEY: ${PSP_SECRET_KEY}
+      PSP_JWT_SECRET: ${PSP_JWT_SECRET}
+volumes:
+  psp-data:
 ```
 
 ### 14.4 初次启动
@@ -1405,7 +1413,7 @@ services:
 | # | 决策点 | 选定 | 状态 |
 |---|---|---|---|
 | 1 | 数据库 | MySQL 8.0 + SQLite 双驱动 | ✅ 已实现 |
-| 2 | 前端框架 | Vue 3 + Element Plus + TypeScript | ✅ 已实现 |
+| 2 | 前端框架 | React 18 + MUI + TypeScript（v2.0 起，原 v1 为 Vue 3 + Element Plus） | ✅ 已实现 |
 | 3 | SSO 方案 | SAML + OIDC 双支持 | ✅ 已实现 |
 | 4 | 同步策略 | 异步任务队列 (sync_tasks) | ✅ 已实现 |
 | 5 | 用户标识 | UPN 统一标识（移除 username/source） | ✅ 已实现 |

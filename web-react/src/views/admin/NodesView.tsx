@@ -1011,7 +1011,7 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
               helperText={t('admin:nodes.create_dialog.hy2_obfs_hint', {
                 defaultValue: '3X-UI 把 obfs 存在 streamSettings.finalmask.udp[salamander].settings.password',
               })} />
-            <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               <Box sx={{ flex: '1 1 200px', minWidth: 160 }}>
                 {fieldLabel(t('admin:nodes.create_dialog.hy2_masquerade_type', { defaultValue: '伪装 (Masquerade)' }))}
                 <Select size="small" fullWidth value={form.hy2_masquerade_type} displayEmpty
@@ -1022,17 +1022,18 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                   <MenuItem value="string">string (返回固定内容)</MenuItem>
                 </Select>
               </Box>
-              <TextField size="small"
-                label={
+              <Box sx={{ flex: '2 1 280px' }}>
+                {fieldLabel(
                   form.hy2_masquerade_type === 'proxy' ? 'Upstream URL'
                   : form.hy2_masquerade_type === 'file' ? 'Directory'
                   : form.hy2_masquerade_type === 'string' ? 'Response body'
                   : t('admin:nodes.create_dialog.hy2_masquerade_content', { defaultValue: '内容 / URL / 目录' })
-                }
-                value={form.hy2_masquerade_content}
-                onChange={e => update('hy2_masquerade_content', e.target.value)}
-                disabled={!form.hy2_masquerade_type}
-                sx={{ flex: '2 1 280px' }} />
+                )}
+                <TextField size="small" fullWidth
+                  value={form.hy2_masquerade_content}
+                  onChange={e => update('hy2_masquerade_content', e.target.value)}
+                  disabled={!form.hy2_masquerade_type} />
+              </Box>
             </Box>
             <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
               {t('admin:nodes.create_dialog.hy2_cert_hint', {
