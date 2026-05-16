@@ -637,6 +637,14 @@ func (s *Service) ListUnmanagedInbounds(ctx context.Context) ([]*UnmanagedInboun
 			if !errors.Is(err, domain.ErrNotFound) {
 				return nil, err
 			}
+			// Skip protocols the panel can't actually manage (wireguard, socks,
+			// dokodemo-door, http, etc.). The admin UI offers Claim / Import
+			// against this list, and both flows require a Protocol the
+			// subscription renderer + 3X-UI client adapter understand. Listing
+			// unsupported inbounds here would just produce errors at import time.
+			if crypto.DetectProtocol(inb.Protocol, "") == "" {
+				continue
+			}
 			out = append(out, &UnmanagedInbound{
 				PanelID:     panel.ID,
 				PanelName:   panel.Name,

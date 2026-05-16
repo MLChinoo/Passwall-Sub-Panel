@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type Dispatch, type SetStateAction } from 'react'
 import {
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -1149,7 +1150,35 @@ export default function NodesView() {
   const [tab, setTab] = useTabParam<'managed' | 'unmanaged'>('tab', 'managed', ['managed', 'unmanaged'])
   const [managed, setManaged] = useState<Node[]>([])
   const [unmanaged, setUnmanaged] = useState<UnmanagedInbound[]>([])
+  // Free-text filter on the unmanaged-inbound tab. Matches against panel
+  // name, protocol, remark, port and inbound ID so the operator can find a
+  // specific inbound by whatever piece they remember.
+  const [unmanagedSearch, setUnmanagedSearch] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Distinct values surfaced as Autocomplete suggestions. Picking one is
+  // equivalent to typing it — both flow into unmanagedSearch.
+  const unmanagedSearchOptions = useMemo(() => {
+    const opts = new Set<string>()
+    for (const u of unmanaged) {
+      if (u.PanelName) opts.add(u.PanelName)
+      if (u.Protocol) opts.add(u.Protocol)
+      if (u.Remark) opts.add(u.Remark)
+    }
+    return [...opts].sort()
+  }, [unmanaged])
+
+  const filteredUnmanaged = useMemo(() => {
+    const q = unmanagedSearch.trim().toLowerCase()
+    if (!q) return unmanaged
+    return unmanaged.filter(u =>
+      u.PanelName.toLowerCase().includes(q) ||
+      u.Protocol.toLowerCase().includes(q) ||
+      (u.Remark || '').toLowerCase().includes(q) ||
+      String(u.InboundID) === q ||
+      String(u.Port) === q,
+    )
+  }, [unmanaged, unmanagedSearch])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchBusy, setBatchBusy] = useState<'enable' | 'disable' | 'delete' | ''>('')
   const [enabledBusy, setEnabledBusy] = useState<Record<number, boolean>>({})
@@ -1821,51 +1850,76 @@ export default function NodesView() {
         )}
 
         {tab === 'unmanaged' && (
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
-                  <TableCell>{t('admin:nodes.table.panel_name')}</TableCell>
-                  <TableCell>Inbound ID</TableCell>
-                  <TableCell>Protocol</TableCell>
-                  <TableCell align="right">Port</TableCell>
-                  <TableCell>Remark</TableCell>
-                  <TableCell align="right">Clients</TableCell>
-                  <TableCell align="right">{t('admin:nodes.table.actions')}</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {loading && unmanaged.length === 0 && (
-                  <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6 }}>
-                    <CircularProgress size={24} />
-                  </TableCell></TableRow>
+          <>
+            <Box sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 1.5, borderBottom: `1px solid ${md.outlineVariant}`, flexWrap: 'wrap' }}>
+              <Autocomplete
+                freeSolo
+                size="small"
+                options={unmanagedSearchOptions}
+                value={unmanagedSearch}
+                inputValue={unmanagedSearch}
+                onInputChange={(_, v) => setUnmanagedSearch(v)}
+                onChange={(_, v) => setUnmanagedSearch((v as string) ?? '')}
+                sx={{ width: 320, maxWidth: '100%' }}
+                renderInput={(params) => (
+                  <TextField {...params} placeholder={t('admin:nodes.unmanaged_search_placeholder')} />
                 )}
-                {!loading && unmanaged.length === 0 && (
-                  <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
-                )}
-                {unmanaged.map((u, idx) => (
-                  <TableRow key={`${u.PanelID}-${u.InboundID}-${idx}`} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
-                    <TableCell sx={{ fontWeight: 500 }}>{u.PanelName}</TableCell>
-                    <TableCell sx={{ fontSize: 13 }}>{u.InboundID}</TableCell>
-                    <TableCell sx={{ fontSize: 13 }}>{u.Protocol}</TableCell>
-                    <TableCell align="right" sx={{ fontSize: 13 }}>{u.Port}</TableCell>
-                    <TableCell sx={{ fontSize: 13 }}>{u.Remark}</TableCell>
-                    <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{u.ClientCount}</TableCell>
-                    <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                      {u.ClientCount > 0 && (
-                        <Button size="small" variant="text" onClick={() => startClaim(u)} sx={{ mr: 1 }}>
-                          {t('admin:nodes.claim')}
-                        </Button>
-                      )}
-                      <Button size="small" variant="outlined" onClick={() => startImport(u)}>
-                        {t('admin:nodes.import')}
-                      </Button>
-                    </TableCell>
+              />
+              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                {t('admin:nodes.unmanaged_count', {
+                  shown: filteredUnmanaged.length,
+                  total: unmanaged.length,
+                })}
+              </Typography>
+            </Box>
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
+                    <TableCell>{t('admin:nodes.table.panel_name')}</TableCell>
+                    <TableCell>Inbound ID</TableCell>
+                    <TableCell>Protocol</TableCell>
+                    <TableCell align="right">Port</TableCell>
+                    <TableCell>Remark</TableCell>
+                    <TableCell align="right">Clients</TableCell>
+                    <TableCell align="right">{t('admin:nodes.table.actions')}</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                </TableHead>
+                <TableBody>
+                  {loading && unmanaged.length === 0 && (
+                    <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6 }}>
+                      <CircularProgress size={24} />
+                    </TableCell></TableRow>
+                  )}
+                  {!loading && filteredUnmanaged.length === 0 && (
+                    <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>
+                      {unmanaged.length === 0 ? '—' : t('admin:nodes.unmanaged_filter_empty')}
+                    </TableCell></TableRow>
+                  )}
+                  {filteredUnmanaged.map((u, idx) => (
+                    <TableRow key={`${u.PanelID}-${u.InboundID}-${idx}`} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
+                      <TableCell sx={{ fontWeight: 500 }}>{u.PanelName}</TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>{u.InboundID}</TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>{u.Protocol}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 13 }}>{u.Port}</TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>{u.Remark}</TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{u.ClientCount}</TableCell>
+                      <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                        {u.ClientCount > 0 && (
+                          <Button size="small" variant="text" onClick={() => startClaim(u)} sx={{ mr: 1 }}>
+                            {t('admin:nodes.claim')}
+                          </Button>
+                        )}
+                        <Button size="small" variant="outlined" onClick={() => startImport(u)}>
+                          {t('admin:nodes.import')}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </>
         )}
       </Card>
 
