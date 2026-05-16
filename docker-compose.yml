@@ -1,30 +1,45 @@
+# Zero-clone deploy:
+#   mkdir -p /opt/Passwall-Sub-Panel && cd /opt/Passwall-Sub-Panel
+#   curl -O https://raw.githubusercontent.com/KazuhaHub/Passwall-Sub-Panel/main/docker-compose.yml
+#   docker compose up -d
+#
+# Everything (secrets, MySQL DSN, rulesets, templates, SQLite DB) lives inside
+# the named Docker volumes. First launch auto-generates jwt_secret and
+# encryption_key into the config volume's config.yaml. To change settings:
+#
+#   docker compose exec psp cat /app/config/config.yaml          # inspect
+#   docker compose exec psp sh -c "apk add --no-cache nano && nano /app/config/config.yaml"
+#   docker compose restart psp
+
 services:
   psp:
-    # To build locally: docker compose build
-    # To pull from GHCR:  comment out 'build' and use the image tag directly.
-    build: .
     image: ghcr.io/kazuhahub/passwall-sub-panel:latest
     container_name: psp
     restart: unless-stopped
-    # Host networking lets PSP reach a 3X-UI panel running on the same host
-    # at 127.0.0.1:<port> without exposing 3X-UI publicly. The listen port is
-    # whatever you set in config.yaml (`listen: ":8788"` by default).
+    pull_policy: always
+
+    # Host networking so PSP can reach a co-located 3X-UI at 127.0.0.1:<port>
+    # without extra_hosts gymnastics. The listen port is whatever you set in
+    # config.yaml (`listen: ":8788"` by default).
     network_mode: host
+
     volumes:
-      - ./config:/app/config:ro
-      - psp-data:/app/data
+      - psp-config:/app/config   # config.yaml, rulesets, templates (seeded from image on first run)
+      - psp-data:/app/data       # SQLite panel.db, runtime data
+
     environment:
+      # Where the binary looks for config.yaml inside the container. The
+      # value here matches the named-volume mount point above.
       PSP_CONFIG: /app/config/config.yaml
-      # PSP_JWT_SECRET and PSP_ENCRYPTION_KEY override the same-named fields in
-      # config.yaml. Leave them unset and the panel auto-generates them on first
-      # launch (written back into config.yaml). Inject via env when you want to
-      # ship a config.yaml without baked-in secrets.
-      # Generate with: openssl rand -base64 36
-      PSP_JWT_SECRET: ${PSP_JWT_SECRET:-}
-      PSP_ENCRYPTION_KEY: ${PSP_ENCRYPTION_KEY:-}
-      # MySQL DSN overrides the mysql block in config.yaml. Leave unset to use
-      # the embedded SQLite at /app/data/panel.db (default).
-      PSP_MYSQL_DSN: ${PSP_MYSQL_DSN:-}
+
+      # Reverse-proxy CIDRs allowed to set X-Forwarded-For. Only relevant if
+      # PSP sits behind Nginx/Caddy on a non-loopback address. Default below
+      # covers a local reverse proxy; uncomment and override for other setups.
+      # PSP_TRUSTED_PROXIES: "127.0.0.1,::1"
+
+    # --- Building from source (uncomment to override the GHCR image) -----
+    # build: .
 
 volumes:
+  psp-config:
   psp-data:

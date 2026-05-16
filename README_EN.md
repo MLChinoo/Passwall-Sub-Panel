@@ -136,15 +136,7 @@ data_dir:   "/opt/psp/data"
 
 The fully annotated reference is [`config/config.yaml.example`](config/config.yaml.example).
 
-Sensitive env vars go in `/opt/psp/.env` (chmod 600; systemd reads it):
-
-```bash
-# Optional: override jwt_secret / encryption_key from config.yaml
-PSP_JWT_SECRET=$(openssl rand -base64 36)
-PSP_ENCRYPTION_KEY=$(openssl rand -base64 36)
-# Optional: replace the mysql block in config.yaml when using MySQL
-# PSP_MYSQL_DSN=user:pass@tcp(127.0.0.1:3306)/psp?parseTime=true&charset=utf8mb4&loc=Local
-```
+> You **don't** need to write this file by hand — first launch generates it with random secrets. Hand-write only when you want to control paths or pre-fill a MySQL DSN.
 
 ### 3. Hand off to systemd
 
@@ -173,60 +165,78 @@ When behind Nginx, set "Public Base URL" in the admin "System Settings" to `http
 
 ## Docker Compose Deployment
 
-Best for: 3X-UI already running on the host; you want the PSP container to reach it via `127.0.0.1:<port>` with zero networking gymnastics.
-
-The shipped [`docker-compose.yml`](docker-compose.yml) **defaults to `network_mode: host`**, because:
-- 3X-UI is typically bound to a host-local port (e.g., `127.0.0.1:2053`) and shouldn't be exposed publicly
-- Under host networking, the PSP container behaves as a host process and can hit `http://127.0.0.1:2053` directly
-- Avoids the `extra_hosts: ["host.docker.internal:host-gateway"]` workaround
-
-### 1. Prepare config
+Simplest path — **no repo clone needed**, just grab a `docker-compose.yml` and run it:
 
 ```bash
-git clone https://github.com/KazuhaHub/Passwall-Sub-Panel.git
-cd Passwall-Sub-Panel
-
-mkdir -p config data
-cp local-build/config.yaml.example config/config.yaml
-# Edit config/config.yaml (at minimum set jwt_secret, or leave it for env-var override)
-```
-
-### 2. Prepare `.env`
-
-```bash
-cat > .env <<'EOF'
-PSP_JWT_SECRET=put-the-output-of-openssl-rand-base64-36-here
-PSP_ENCRYPTION_KEY=put-the-output-of-openssl-rand-base64-36-here
-# Fill this line if you want MySQL; leave empty for default SQLite
-PSP_MYSQL_DSN=
-EOF
-chmod 600 .env
-```
-
-> Both secrets can be left blank — the first launch writes random values into `config.yaml` for you. Injecting via `.env` lets you ship `config.yaml` in git / a Docker image without secrets.
-
-### 3. Start
-
-```bash
-# First time: build locally (multi-stage, takes a few minutes)
-docker compose build
-
-# Or pull a prebuilt image from GHCR (comment out `build: .` in docker-compose.yml first)
+mkdir -p /opt/Passwall-Sub-Panel && cd /opt/Passwall-Sub-Panel
+curl -O https://raw.githubusercontent.com/KazuhaHub/Passwall-Sub-Panel/main/docker-compose.yml
 docker compose up -d
-
 docker compose logs -f psp
 ```
 
-The container listens on `:8788` (controlled by `config.yaml`). Because it's on host networking, that port is the host's port — open `http://<host-ip>:8788` directly.
+That's it. The image is pulled from GHCR, `jwt_secret` / `encryption_key` are auto-generated on first launch, and both config + data live in Docker named volumes. Open `http://<host-ip>:8788`; first-time login is `admin / admin`.
 
-### 4. Ports & talking to 3X-UI
+### Default behavior
 
-- **PSP listens on**: whatever `listen: ":8788"` says in `config.yaml`. With host networking this directly occupies the host's port.
-- **Connecting to 3X-UI**: in the admin UI "Servers" page, set the 3X-UI URL to `http://127.0.0.1:<3xui_port>`.
+The shipped [`docker-compose.yml`](docker-compose.yml) is opinionated:
 
-### 5. (Optional) Switching back to a bridge network
+| Item | Default | Why |
+|---|---|---|
+| Network mode | `network_mode: host` | Lets the PSP container reach a co-located 3X-UI at `127.0.0.1:<port>` without `extra_hosts` tricks |
+| Image | `ghcr.io/kazuhahub/passwall-sub-panel:latest`, `pull_policy: always` | Each `up -d` pulls the latest tag |
+| Config | `config.yaml` inside the `psp-config` named volume (auto-generated on first launch) | One file, container-accessible, easy to back up |
+| Data | named volume `psp-data` | SQLite DB + runtime data |
 
-If you want PSP on a custom bridge network (e.g., to peer with a MySQL container), edit `docker-compose.yml`:
+Every operational setting (secrets, MySQL DSN) is stored in `config.yaml` — **no** `.env`, **no** sprawl of `PSP_*` environment variables.
+
+### Changing settings: edit config.yaml
+
+```bash
+# Read it
+docker compose exec psp cat /app/config/config.yaml
+
+# Edit in place (alpine has no editor by default — install one temporarily)
+docker compose exec psp sh -c "apk add --no-cache nano && nano /app/config/config.yaml"
+
+# Restart to pick up changes
+docker compose restart psp
+```
+
+Prefer the file on the host filesystem (e.g., for git backup)? Switch to a bind mount — see below.
+
+### Connecting to 3X-UI
+
+If 3X-UI runs on the same host (e.g., listening on `127.0.0.1:2053`), open the PSP admin "Servers" page and set the 3X-UI URL to `http://127.0.0.1:2053`.
+
+### (Optional) Switch to a bind mount
+
+If you want `config/` to live directly on the host filesystem (e.g., to hand-edit templates):
+
+```yaml
+services:
+  psp:
+    # ... rest unchanged
+    volumes:
+      # - psp-config:/app/config           # comment out the named volume
+      - ./config:/app/config               # bind mount (don't add :ro, PSP needs to write config.yaml)
+      - psp-data:/app/data
+
+volumes:
+  # psp-config:                            # comment out as well
+  psp-data:
+```
+
+Create `config/` on the host before starting:
+
+```bash
+mkdir -p config
+docker compose up -d
+# The container writes config/config.yaml on first launch, and rulesets/templates are seeded into config/.
+```
+
+### (Optional) Switch back to a bridge network
+
+If host networking isn't an option (e.g., need a custom bridge to share with a MySQL container):
 
 ```yaml
 services:
@@ -236,10 +246,23 @@ services:
     ports:
       - "127.0.0.1:8788:8788"      # enable port mapping
     extra_hosts:
-      - "host.docker.internal:host-gateway"  # so the container can reach the host
+      - "host.docker.internal:host-gateway"
 ```
 
 Then set the 3X-UI URL in the admin UI to `http://host.docker.internal:<3xui_port>`.
+
+### (Optional) Build the image locally
+
+If you don't want the GHCR prebuilt (custom patches, no network access to GHCR):
+
+```yaml
+services:
+  psp:
+    # image: ghcr.io/kazuhahub/passwall-sub-panel:latest    # comment out
+    build: .                                                # use the multi-stage Dockerfile
+```
+
+Then `git clone` the repo and run `docker compose build && docker compose up -d` from the repo root.
 
 ## Configuration
 
@@ -258,15 +281,14 @@ Then set the 3X-UI URL in the admin UI to `http://host.docker.internal:<3xui_por
 | `data_dir` | no | SQLite DB + runtime data, default `./data` |
 | `mysql.*` | no | Leave empty for embedded SQLite; fill it to switch to MySQL |
 
-Environment-variable overrides (take precedence over config.yaml):
+Day-to-day operation should **only touch config.yaml**. The code keeps a few env-var escape hatches that you'll rarely need:
 
-| Variable | Purpose |
+| Variable | When to use it |
 |---|---|
-| `PSP_CONFIG` | Path to config.yaml |
-| `PSP_JWT_SECRET` | Override `jwt_secret` |
-| `PSP_ENCRYPTION_KEY` | Override `encryption_key` (lets you ship a key-less image) |
-| `PSP_MYSQL_DSN` | Full MySQL DSN, replaces the `mysql` block |
-| `PSP_TRUSTED_PROXIES` | Reverse-proxy CIDR allow-list (default: loopback only; `none` = ignore X-Forwarded-For) |
+| `PSP_CONFIG` | Point the binary at a non-default config.yaml path (Docker image defaults to `/app/config/config.yaml`) |
+| `PSP_TRUSTED_PROXIES` | When a reverse proxy is **not** on loopback, set its CIDR; `none` = disable X-Forwarded-For handling entirely |
+
+`PSP_JWT_SECRET` / `PSP_ENCRYPTION_KEY` / `PSP_MYSQL_DSN` will also override the matching YAML fields, but **avoid them** — they fragment "one file, all settings" into two sources of truth.
 
 ### Admin "System Settings"
 

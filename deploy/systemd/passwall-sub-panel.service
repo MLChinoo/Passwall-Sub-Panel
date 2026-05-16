@@ -9,12 +9,12 @@ Type=simple
 User=psp
 Group=psp
 WorkingDirectory=/opt/psp
-# Place secrets and DSN here (chmod 600):
-#   PSP_JWT_SECRET=...
-#   PSP_ENCRYPTION_KEY=...
-#   PSP_MYSQL_DSN=user:pass@tcp(127.0.0.1:3306)/psp?...
-EnvironmentFile=/opt/psp/.env
-ExecStart=/opt/psp/psp --config /opt/psp/config.yaml
+# All settings live in /opt/psp/config/config.yaml (auto-generated on first
+# launch). An optional /opt/psp/.env can still inject PSP_TRUSTED_PROXIES or
+# override secret YAML fields if you must keep them out of config.yaml.
+# Uncomment the line below if you actually create that file.
+# EnvironmentFile=-/opt/psp/.env
+ExecStart=/opt/psp/psp --config /opt/psp/config/config.yaml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536

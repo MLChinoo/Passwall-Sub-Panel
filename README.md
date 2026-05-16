@@ -136,15 +136,7 @@ data_dir:   "/opt/psp/data"
 
 完整的注释化示例见 [`config/config.yaml.example`](config/config.yaml.example)。
 
-环境敏感变量放 `/opt/psp/.env`（chmod 600，systemd 会读）：
-
-```bash
-# 可选：覆盖 config.yaml 里的 jwt_secret / encryption_key
-PSP_JWT_SECRET=$(openssl rand -base64 36)
-PSP_ENCRYPTION_KEY=$(openssl rand -base64 36)
-# 可选：用 MySQL 时覆盖 config.yaml 里的 dsn
-# PSP_MYSQL_DSN=user:pass@tcp(127.0.0.1:3306)/psp?parseTime=true&charset=utf8mb4&loc=Local
-```
+> 你**完全**不需要写这个文件——首次启动二进制时它会自动生成（含随机 secrets）。手动写只是想精确控制路径或预置 MySQL DSN 时用。
 
 ### 3. systemd 接管
 
@@ -173,73 +165,104 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## Docker Compose 部署
 
-适合：宿主机上已经跑着 3X-UI，希望 PSP 容器能直接以 `127.0.0.1:<port>` 回访 3X-UI。
-
-仓库的 [`docker-compose.yml`](docker-compose.yml) **默认使用 `network_mode: host`**，理由：
-- 3X-UI 通常监听宿主机本地端口（如 `127.0.0.1:2053`），无需对外暴露
-- Host 网络下 PSP 容器即等同于宿主机进程，直接 `http://127.0.0.1:2053` 即可访问 3X-UI
-- 省去 `extra_hosts: ["host.docker.internal:host-gateway"]` 的桥接配置
-
-### 1. 准备配置
+最简方式——**不用 clone 仓库**，下载一份 `docker-compose.yml` 就能跑：
 
 ```bash
-git clone https://github.com/KazuhaHub/Passwall-Sub-Panel.git
-cd Passwall-Sub-Panel
-
-mkdir -p config data
-cp local-build/config.yaml.example config/config.yaml
-# 编辑 config/config.yaml（至少改 jwt_secret，或留空靠环境变量覆盖）
-```
-
-### 2. 准备 `.env`
-
-```bash
-cat > .env <<'EOF'
-PSP_JWT_SECRET=请填 openssl rand -base64 36 的输出
-PSP_ENCRYPTION_KEY=请填 openssl rand -base64 36 的输出
-# 用 MySQL 时填这一行；用默认 SQLite 留空即可
-PSP_MYSQL_DSN=
-EOF
-chmod 600 .env
-```
-
-> 这两个 secret 留空也能跑——首次启动会写到 `config.yaml` 里自动生成。但通过 `.env` 注入可以让 `config.yaml` 入 git / 入镜像而不带密钥。
-
-### 3. 启动
-
-```bash
-# 第一次：本地构建镜像（多阶段，需要几分钟）
-docker compose build
-
-# 或者直接拉 GHCR 上的预构建镜像（编辑 docker-compose.yml 注释掉 build: .）
+mkdir -p /opt/Passwall-Sub-Panel && cd /opt/Passwall-Sub-Panel
+curl -O https://raw.githubusercontent.com/KazuhaHub/Passwall-Sub-Panel/main/docker-compose.yml
 docker compose up -d
-
 docker compose logs -f psp
 ```
 
-容器内 PSP 监听 `:8788`（由 `config.yaml` 控制）。因为是 host 网络，浏览器直接访问 `http://<host-ip>:8788`。
+完事。镜像从 GHCR 拉，`jwt_secret` / `encryption_key` 首启自动生成，config 和 data 都在 Docker 命名 volume 里。访问 `http://<host-ip>:8788`，首登 `admin / admin`。
 
-### 4. 关键端口与 3X-UI 联通
+### 默认行为说明
 
-- **PSP 监听** —— `config.yaml` 里的 `listen: ":8788"` 决定。Host 模式下这个端口直接占用宿主机。
-- **3X-UI 联通** —— 在管理后台「服务器」里添加 3X-UI，URL 填 `http://127.0.0.1:<3xui_port>`。
+仓库 [`docker-compose.yml`](docker-compose.yml) 的关键决策：
 
-### 5. （可选）切回桥接网络
+| 项 | 默认 | 原因 |
+|---|---|---|
+| 网络模式 | `network_mode: host` | 让 PSP 容器以 `127.0.0.1:<port>` 直访同宿主机的 3X-UI，无需 `extra_hosts` |
+| 镜像 | `ghcr.io/kazuhahub/passwall-sub-panel:latest`，`pull_policy: always` | 每次 `up -d` 自动取最新 |
+| 配置 | 命名 volume `psp-config` 里的 `config.yaml`（首启自动生成）| 单文件、容器外可访问、备份只要 `docker volume` 一行 |
+| 数据 | 命名 volume `psp-data` | SQLite 数据库 + 运行时数据 |
 
-如果你需要把 PSP 装进自定义 bridge 网络（比如和外部 MySQL 容器联网），把 `docker-compose.yml` 改成：
+所有运维设置（含 secrets、MySQL DSN）都改 `config.yaml`——**不用** `.env`、**不用** 一堆 `PSP_*` 环境变量。
+
+### 改配置：编辑 config.yaml
+
+```bash
+# 查看
+docker compose exec psp cat /app/config/config.yaml
+
+# 在线编辑（alpine 镜像没自带 vim，临时装一个）
+docker compose exec psp sh -c "apk add --no-cache nano && nano /app/config/config.yaml"
+
+# 改完重启生效
+docker compose restart psp
+```
+
+想要在宿主机文件系统里管理 config.yaml（比如 git 备份），见下节"切回 bind mount"。
+
+### 3X-UI 联通
+
+宿主机上跑着 3X-UI（比如监听 `127.0.0.1:2053`）→ 登录 PSP 后，「服务器」页面 URL 填 `http://127.0.0.1:2053`。
+
+### （可选）切回 bind mount
+
+想直接在宿主机文件系统里管理 `config/`（比如手编 templates）：
 
 ```yaml
 services:
   psp:
-    # ... 其他配置不变
+    # ... 其他不变
+    volumes:
+      # - psp-config:/app/config           # 注释掉命名 volume
+      - ./config:/app/config               # 改用 bind mount（不要加 :ro，PSP 要写 config.yaml）
+      - psp-data:/app/data
+
+volumes:
+  # psp-config:                            # 也注释掉
+  psp-data:
+```
+
+第一次启动前手动建 `config/` 目录：
+
+```bash
+mkdir -p config
+docker compose up -d
+# config/config.yaml 由容器写入，rulesets/templates 会被首启复制进来
+```
+
+### （可选）切回桥接网络
+
+如果不能用 host 网络（比如和外部 MySQL 容器走自定义 bridge）：
+
+```yaml
+services:
+  psp:
+    # ... 其他不变
     # network_mode: host           # 注释掉
     ports:
       - "127.0.0.1:8788:8788"      # 启用端口映射
     extra_hosts:
-      - "host.docker.internal:host-gateway"  # 容器内访问 3X-UI 用 host.docker.internal
+      - "host.docker.internal:host-gateway"
 ```
 
-然后管理后台里 3X-UI URL 改成 `http://host.docker.internal:<3xui_port>`。
+然后「服务器」页面里 3X-UI URL 改成 `http://host.docker.internal:<3xui_port>`。
+
+### （可选）本地构建镜像
+
+不想用 GHCR 上的预构建版（自定义代码、网络拉不到 GHCR）：
+
+```yaml
+services:
+  psp:
+    # image: ghcr.io/kazuhahub/passwall-sub-panel:latest    # 注释掉
+    build: .                                                # 用仓库根的 Dockerfile
+```
+
+然后 `git clone` 仓库后在仓库根目录 `docker compose build && docker compose up -d`。
 
 ## 配置
 
@@ -258,15 +281,14 @@ services:
 | `data_dir` | 否 | SQLite 数据库与运行时数据，默认 `./data` |
 | `mysql.*` | 否 | 留空 = 用嵌入 SQLite；填了即切到 MySQL |
 
-环境变量覆盖（优先于 config.yaml）：
+日常运维**只改 config.yaml**。代码里保留几个环境变量做应急逃生口，绝大多数人用不到：
 
-| 变量 | 用途 |
+| 变量 | 何时才用 |
 |---|---|
-| `PSP_CONFIG` | 指定 config.yaml 路径 |
-| `PSP_JWT_SECRET` | 覆盖 `jwt_secret` |
-| `PSP_ENCRYPTION_KEY` | 覆盖 `encryption_key`（用于零密钥镜像部署） |
-| `PSP_MYSQL_DSN` | 整个 MySQL DSN，覆盖 `mysql` 块 |
-| `PSP_TRUSTED_PROXIES` | 反向代理 CIDR 白名单（默认仅 loopback；`none` = 忽略 X-Forwarded-For） |
+| `PSP_CONFIG` | 改 config.yaml 文件路径（Docker 镜像里默认指 `/app/config/config.yaml`） |
+| `PSP_TRUSTED_PROXIES` | 反向代理**不在** loopback 时填代理 CIDR；`none` = 忽略所有 X-Forwarded-For |
+
+`PSP_JWT_SECRET` / `PSP_ENCRYPTION_KEY` / `PSP_MYSQL_DSN` 也仍然能覆盖对应 yaml 字段，但**不推荐**——会让"一个 config.yaml 看到所有配置"的心智模型破掉。
 
 ### 管理后台「系统设置」
 
