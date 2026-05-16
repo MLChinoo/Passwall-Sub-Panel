@@ -590,9 +590,11 @@ function MailTab() {
     setSaving(true)
     try {
       const payload: MailSettings = { ...mail }
-      // If admin didn't elect to change password, drop the field so backend
-      // keeps the existing one. has_smtp_password tells us there IS one.
-      if (!changePwd) delete payload.smtp_password
+      // Drop the password only when we're in "keep existing" mode (there IS
+      // an existing one AND user didn't click "change"). On a fresh setup
+      // has_smtp_password is false, the input is shown, and dropping the
+      // field would lose the new value the admin just typed.
+      if (mail.has_smtp_password && !changePwd) delete payload.smtp_password
       const saved = await putMailSettings(payload)
       setMail(saved)
       setChangePwd(false)
@@ -1453,7 +1455,10 @@ function SamlPanel() {
         ...cfg,
         sp: {
           entity_id: cfg.sp.entity_id, acs_url: cfg.sp.acs_url, cert_pem: cfg.sp.cert_pem,
-          key_pem: changeKey ? keyPem : '',
+          // Send empty only in "keep existing" mode (there is a stored key
+          // and the admin didn't click "change"). On a fresh setup keyPem
+          // holds the value the admin just pasted; it must reach the backend.
+          key_pem: (cfg.sp.has_key_pem && !changeKey) ? '' : keyPem,
         },
       })
       setCfg(normalizeSAML(res.config))
@@ -1632,7 +1637,13 @@ function OidcPanel() {
     if (firstKey) { pushSnack(t(`admin:${firstKey}`), 'warning'); return }
     setSaving(true)
     try {
-      const res = await putOIDC({ ...cfg, client_secret: changeSecret ? secret : '' })
+      // Send empty only when keeping the existing secret (one is stored AND
+      // admin didn't click "change"). Fresh setup has no stored secret, so
+      // `secret` holds the value the admin just typed; it must be forwarded.
+      const res = await putOIDC({
+        ...cfg,
+        client_secret: (cfg.has_client_secret && !changeSecret) ? '' : secret,
+      })
       setCfg(normalizeOIDC(res.config))
       setChangeSecret(false); setSecret('')
       if (res.reload_error) pushSnack(t('settings.sso.reload_error', { error: res.reload_error }), 'warning')

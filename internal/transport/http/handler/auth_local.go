@@ -56,7 +56,7 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 		LoginMode: "dual",
 		SiteTitle: "Kazuha Hub Passwall",
 		AppTitle:  "Passwall",
-		IconURL:   "/images/HeadPicture.png",
+		// IconURL deliberately blank — frontend has a built-in fallback.
 	}
 	s, err := h.settings.Load(c.Request.Context(), defaults)
 	if err != nil {

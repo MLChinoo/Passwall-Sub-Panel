@@ -64,11 +64,14 @@ type settingsDTO struct {
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
+	// Leave IconURL / Logo URLs blank intentionally — the frontend has a
+	// built-in DEFAULT_ICON fallback (see web-react/src/stores/site.ts).
+	// Filling them here would persist a panel-shipped path as if the admin
+	// had picked it, making it impossible to fall back to the bundled icon.
 	return ports.UISettings{
 		LoginMode:   "dual",
 		SiteTitle:   "Kazuha Hub Passwall",
 		AppTitle:    "Passwall",
-		IconURL:     "/images/HeadPicture.png",
 		EmailDomain: "psp.local",
 	}
 }
@@ -204,9 +207,9 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 	if s.AppTitle == "" {
 		s.AppTitle = "Passwall"
 	}
-	if s.IconURL == "" {
-		s.IconURL = "/images/HeadPicture.png"
-	}
+	// IconURL intentionally left as the admin set it (possibly empty); the
+	// frontend has a built-in fallback. Forcing a default here would prevent
+	// admins from clearing a stale icon back to the bundled default.
 	if s.SubPath == "" {
 		s.SubPath = "sub"
 	}

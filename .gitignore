@@ -33,6 +33,10 @@ config/xui_panels.yaml
 config/saml.yaml
 config/saml-sp.crt
 config/saml-sp.key
+# Rulesets / templates released by the binary on first run (see
+# internal/seed/). Canonical sources live in internal/seed/files/.
+config/rulesets/
+config/templates/
 
 # Frontend dependencies and build output
 node_modules/

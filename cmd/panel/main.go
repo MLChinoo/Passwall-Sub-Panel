@@ -17,6 +17,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/app"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/seed"
 )
 
 func ensureDirs(cfg *config.Config) {
@@ -40,6 +41,13 @@ func main() {
 		log.Fatalf("load config %s: %v", cfgPath, err)
 	}
 	ensureDirs(cfg)
+
+	// Release baked-in default rulesets / templates into ConfigDir when
+	// they're missing. Lets a fresh systemd / Docker bind-mount deploy run
+	// without manual file copying. Idempotent: existing files are preserved.
+	if err := seed.Ensure(cfg.ConfigDir); err != nil {
+		log.Fatalf("seed defaults into %s: %v", cfg.ConfigDir, err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

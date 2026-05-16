@@ -22,15 +22,13 @@ COPY --from=web-builder /web/dist/ ./internal/web/dist/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/psp ./cmd/panel
 
 # Stage 3 — minimal runtime.
+# Default rulesets and templates are embedded into the binary (see
+# internal/seed/) and released into /app/config on first start, so no
+# `/app/defaults/` baking or entrypoint shim is needed.
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=go-builder /out/psp /app/psp
-# Baked-in defaults live in /app/defaults/ and are copied into /app/config/
-# by the entrypoint on first launch (handles the empty bind-mount case).
-COPY config/ /app/defaults/
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh /app/psp && mkdir -p /app/config /app/data
+RUN chmod +x /app/psp && mkdir -p /app/config /app/data
 EXPOSE 8788
-ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["/app/psp"]
+ENTRYPOINT ["/app/psp"]

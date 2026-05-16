@@ -108,6 +108,8 @@
       "tab_oidc": "OIDC / OAuth2",
       "saved": "已保存",
       "reload_error": "已保存到数据库，但重新加载失败：{{error}}",
+      "allow_auto_create": "允许通过 SSO 自动创建账户",
+      "allow_auto_create_hint": "关闭后，未在面板中预先创建的账户首次 SSO 登录会被跳转到\"联系管理员\"页；IdP 管理员组不受影响。",
       "saml": {
         "enabled": "启用 SAML 2.0",
         "mode": "配置模式",
