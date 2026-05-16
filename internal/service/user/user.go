@@ -217,26 +217,39 @@ type EnsureSSOInput struct {
 	// (the closed-deployment default) only IdP admins get an account; every
 	// other unknown UPN is bounced to /sso-no-account.
 	AllowAutoCreate    bool
+	// RevokeAdminOnLogin: when true, a panel admin who is NOT in any IdP
+	// admin group is demoted back to user on this login. Off by default.
+	// See applyRoleFromSSO for the full role-policy matrix.
+	RevokeAdminOnLogin bool
 	DefaultGroupSlug   string
 	DefaultExpireDays  int
 	DefaultLimitBytes  int64
 	DefaultResetPeriod domain.ResetPeriod
 }
 
-// applyRoleFromSSO implements the promote-only role policy used at every
-// SSO login.
+// applyRoleFromSSO computes the role to persist after an SSO login.
 //
+// Promotion (always on):
 //   - IdP admin-group hit + current role is not admin -> promote to admin.
-//   - IdP admin-group miss                            -> role unchanged.
-//   - IdP admin-group hit + current role IS admin     -> role unchanged.
 //
-// Returns the role to persist and whether anything actually changed (so
-// the caller can skip the Update round-trip on no-ops). Extracted as a
-// pure function so the invariant — "SSO can promote but never demote" —
-// is unit-testable without standing up the whole user.Service.
-func applyRoleFromSSO(current domain.Role, idpIsAdmin bool) (domain.Role, bool) {
+// Revocation (gated by revokeAdmin):
+//   - IdP admin-group miss + current role IS admin + revokeAdmin -> demote to user.
+//     Lets admins make IdP membership authoritative for admin rights. Operator
+//     is never demoted by this path — it's a panel-only role and the IdP has
+//     no concept of it.
+//
+// Default (revokeAdmin = false, historical behaviour):
+//   - IdP admin-group miss -> role unchanged. Protects operator / admin
+//     status granted manually inside the panel from being clobbered.
+//
+// Returns the role to persist and whether anything actually changed (so the
+// caller can skip the Update round-trip on no-ops).
+func applyRoleFromSSO(current domain.Role, idpIsAdmin, revokeAdmin bool) (domain.Role, bool) {
 	if idpIsAdmin && current != domain.RoleAdmin {
 		return domain.RoleAdmin, true
+	}
+	if !idpIsAdmin && revokeAdmin && current == domain.RoleAdmin {
+		return domain.RoleUser, true
 	}
 	return current, false
 }
@@ -278,7 +291,7 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 		// privilege implications). Role only goes UP via the
 		// promote-only policy.
 		dirty := false
-		if newRole, changed := applyRoleFromSSO(u.Role, in.IsAdmin); changed {
+		if newRole, changed := applyRoleFromSSO(u.Role, in.IsAdmin, in.RevokeAdminOnLogin); changed {
 			u.Role = newRole
 			dirty = true
 		}

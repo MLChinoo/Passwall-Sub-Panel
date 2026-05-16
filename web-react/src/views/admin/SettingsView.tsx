@@ -1719,6 +1719,14 @@ function SamlPanel() {
       <Section title={t('settings.sso.saml.group_section', { defaultValue: '分组解析' })} md={md}>
         <TextField fullWidth label={t('settings.sso.saml.admin_groups')} value={cfg.admin_group_ids.join(', ')}
           onChange={e => patch('admin_group_ids', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
+        <FormControlLabel
+          label={t('settings.sso.revoke_admin_when_not_in_group')}
+          control={<Switch checked={cfg.revoke_admin_when_not_in_group}
+            onChange={(_, c) => patch('revoke_admin_when_not_in_group', c)} />}
+          sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+        <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
+          {t('settings.sso.revoke_admin_when_not_in_group_hint')}
+        </Typography>
         <GroupSlugPicker
           label={t('settings.sso.saml.default_group')}
           value={cfg.default_group_slug}
@@ -1886,6 +1894,14 @@ function OidcPanel() {
         </Pair>
         <TextField fullWidth label={t('settings.sso.oidc.admin_groups')} value={cfg.admin_group_ids.join(', ')}
           onChange={e => patch('admin_group_ids', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
+        <FormControlLabel
+          label={t('settings.sso.revoke_admin_when_not_in_group')}
+          control={<Switch checked={cfg.revoke_admin_when_not_in_group}
+            onChange={(_, c) => patch('revoke_admin_when_not_in_group', c)} />}
+          sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+        <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
+          {t('settings.sso.revoke_admin_when_not_in_group_hint')}
+        </Typography>
         <GroupSlugPicker
           label={t('settings.sso.oidc.default_group')}
           value={cfg.default_group_slug}

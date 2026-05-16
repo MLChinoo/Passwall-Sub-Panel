@@ -176,6 +176,10 @@ export interface SAMLConfig {
   admin_group_ids: string[]
   default_group_slug: string
   allow_auto_create: boolean
+  /** When true, demote a panel admin back to user on the next SSO login if
+   *  the IdP no longer reports them in any admin group. Operator role is
+   *  unaffected. Off by default. */
+  revoke_admin_when_not_in_group: boolean
   new_user_defaults: {
     expire_days: number
     traffic_limit_bytes: number
@@ -235,6 +239,9 @@ export interface OIDCConfig {
   admin_group_ids: string[]
   default_group_slug: string
   allow_auto_create: boolean
+  /** See SAMLConfig.revoke_admin_when_not_in_group — same opt-in demote
+   *  policy when the IdP no longer reports the user in any admin group. */
+  revoke_admin_when_not_in_group: boolean
   new_user_defaults: {
     expire_days: number
     traffic_limit_bytes: number

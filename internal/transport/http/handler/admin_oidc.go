@@ -38,31 +38,33 @@ type oidcAttrDTO struct {
 }
 
 type oidcConfigDTO struct {
-	Enabled          bool           `json:"enabled"`
-	IssuerURL        string         `json:"issuer_url"`
-	ClientID         string         `json:"client_id"`
-	HasClientSecret  bool           `json:"has_client_secret"`
-	RedirectURL      string         `json:"redirect_url"`
-	Scopes           []string       `json:"scopes"`
-	AttributeMapping oidcAttrDTO    `json:"attribute_mapping"`
-	AdminGroupIDs    []string       `json:"admin_group_ids"`
-	DefaultGroupSlug string         `json:"default_group_slug"`
-	AllowAutoCreate  bool           `json:"allow_auto_create"`
-	NewUserDefaults  samlNewUserDTO `json:"new_user_defaults"`
+	Enabled                   bool           `json:"enabled"`
+	IssuerURL                 string         `json:"issuer_url"`
+	ClientID                  string         `json:"client_id"`
+	HasClientSecret           bool           `json:"has_client_secret"`
+	RedirectURL               string         `json:"redirect_url"`
+	Scopes                    []string       `json:"scopes"`
+	AttributeMapping          oidcAttrDTO    `json:"attribute_mapping"`
+	AdminGroupIDs             []string       `json:"admin_group_ids"`
+	DefaultGroupSlug          string         `json:"default_group_slug"`
+	AllowAutoCreate           bool           `json:"allow_auto_create"`
+	RevokeAdminWhenNotInGroup bool           `json:"revoke_admin_when_not_in_group"`
+	NewUserDefaults           samlNewUserDTO `json:"new_user_defaults"`
 }
 
 type oidcUpdateRequest struct {
-	Enabled          bool           `json:"enabled"`
-	IssuerURL        string         `json:"issuer_url"`
-	ClientID         string         `json:"client_id"`
-	ClientSecret     string         `json:"client_secret"`
-	RedirectURL      string         `json:"redirect_url"`
-	Scopes           []string       `json:"scopes"`
-	AttributeMapping oidcAttrDTO    `json:"attribute_mapping"`
-	AdminGroupIDs    []string       `json:"admin_group_ids"`
-	DefaultGroupSlug string         `json:"default_group_slug"`
-	AllowAutoCreate  bool           `json:"allow_auto_create"`
-	NewUserDefaults  samlNewUserDTO `json:"new_user_defaults"`
+	Enabled                   bool           `json:"enabled"`
+	IssuerURL                 string         `json:"issuer_url"`
+	ClientID                  string         `json:"client_id"`
+	ClientSecret              string         `json:"client_secret"`
+	RedirectURL               string         `json:"redirect_url"`
+	Scopes                    []string       `json:"scopes"`
+	AttributeMapping          oidcAttrDTO    `json:"attribute_mapping"`
+	AdminGroupIDs             []string       `json:"admin_group_ids"`
+	DefaultGroupSlug          string         `json:"default_group_slug"`
+	AllowAutoCreate           bool           `json:"allow_auto_create"`
+	RevokeAdminWhenNotInGroup bool           `json:"revoke_admin_when_not_in_group"`
+	NewUserDefaults           samlNewUserDTO `json:"new_user_defaults"`
 }
 
 func (h *AdminOIDCHandler) Get(c *gin.Context) {
@@ -102,9 +104,10 @@ func (h *AdminOIDCHandler) Put(c *gin.Context) {
 			DisplayName: req.AttributeMapping.DisplayName,
 			Groups:      req.AttributeMapping.Groups,
 		},
-		AdminGroupIDs:    req.AdminGroupIDs,
-		DefaultGroupSlug: req.DefaultGroupSlug,
-		AllowAutoCreate:  req.AllowAutoCreate,
+		AdminGroupIDs:             req.AdminGroupIDs,
+		DefaultGroupSlug:          req.DefaultGroupSlug,
+		AllowAutoCreate:           req.AllowAutoCreate,
+		RevokeAdminWhenNotInGroup: req.RevokeAdminWhenNotInGroup,
 		NewUserDefaults: config.SAMLNewUserDefaults{
 			ExpireDays:         req.NewUserDefaults.ExpireDays,
 			TrafficLimitBytes:  req.NewUserDefaults.TrafficLimitBytes,
@@ -154,9 +157,10 @@ func toOIDCDTO(c *config.OIDCConfig) oidcConfigDTO {
 			DisplayName: c.AttributeMapping.DisplayName,
 			Groups:      c.AttributeMapping.Groups,
 		},
-		AdminGroupIDs:    c.AdminGroupIDs,
-		DefaultGroupSlug: c.DefaultGroupSlug,
-		AllowAutoCreate:  c.AllowAutoCreate,
+		AdminGroupIDs:             c.AdminGroupIDs,
+		DefaultGroupSlug:          c.DefaultGroupSlug,
+		AllowAutoCreate:           c.AllowAutoCreate,
+		RevokeAdminWhenNotInGroup: c.RevokeAdminWhenNotInGroup,
 		NewUserDefaults: samlNewUserDTO{
 			ExpireDays:         c.NewUserDefaults.ExpireDays,
 			TrafficLimitBytes:  c.NewUserDefaults.TrafficLimitBytes,
