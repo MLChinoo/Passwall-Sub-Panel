@@ -67,6 +67,8 @@
       "login_mode_local_only": "Local only",
       "disallow_user_local_login": "Block local login for users",
       "disallow_user_password_change": "Disallow user password changes",
+      "allow_user_personal_rules": "Let users edit their personal rules",
+      "allow_user_personal_rules_hint": "Once disabled, users can still see their personal rules on the self-service page but cannot save changes. Admins are unaffected and can still edit any user's rules manually.",
       "jwt_issuer": "JWT issuer",
       "jwt_access_ttl_minutes": "Access token TTL (min)",
       "jwt_refresh_ttl_minutes": "Refresh token TTL (min)",
@@ -142,6 +144,9 @@
       "tpl_save": "Save template",
       "tpl_reset": "Reset to default",
       "tpl_missing_hint": "This template hasn't been initialised yet. Click \"Reset to default\" to load the default content.",
+      "tpl_vars_button": "Available variables",
+      "tpl_vars_title": "Template variables",
+      "tpl_vars_hint": "Uses Go template syntax — {{.FieldName}} for substitution, {{if .FieldName}}...{{end}} for conditional rendering.",
       "reset_confirm_title": "Reset to default template?",
       "reset_confirm_body": "The current template will be overwritten by the default. Any customizations will be lost.",
       "reset_confirm_ok": "Reset",
@@ -171,7 +176,9 @@
         "level": "Level",
         "level_info": "Notice",
         "level_warning": "Important",
-        "level_danger": "Urgent"
+        "level_danger": "Urgent",
+        "popup": "Show as a popup (on first site visit)",
+        "popup_hint": "Users can dismiss with \"Got it\" or check \"Don't show again\". The dismissed state is stored only in the user's browser; updates to the announcement content trigger the popup again."
       }
     },
     "subscription": {

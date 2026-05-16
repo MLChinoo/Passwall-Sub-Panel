@@ -67,6 +67,8 @@
       "login_mode_local_only": "仅本地",
       "disallow_user_local_login": "禁止用户本地登录",
       "disallow_user_password_change": "禁止用户修改密码",
+      "allow_user_personal_rules": "允许用户编辑个人规则",
+      "allow_user_personal_rules_hint": "关闭后用户仍可在自助页查看个人规则，但无法保存修改。管理端不受影响，可继续手动为指定用户编辑。",
       "jwt_issuer": "JWT Issuer",
       "jwt_access_ttl_minutes": "Access Token 有效期（分钟）",
       "jwt_refresh_ttl_minutes": "Refresh Token 有效期（分钟）",
@@ -196,6 +198,9 @@
       "tpl_save": "保存模板",
       "tpl_reset": "重置为默认",
       "tpl_missing_hint": "该模板尚未初始化。点击\"重置为默认\"加载默认内容。",
+      "tpl_vars_button": "可用变量",
+      "tpl_vars_title": "模板可用变量",
+      "tpl_vars_hint": "使用 Go template 语法 — {{.字段名}} 取值，{{if .字段名}}...{{end}} 控制是否渲染。",
       "reset_confirm_title": "重置为默认模板？",
       "reset_confirm_body": "当前模板将被默认模板覆盖，自定义内容会丢失。",
       "reset_confirm_ok": "重置",
@@ -225,7 +230,9 @@
         "level": "级别",
         "level_info": "普通通知",
         "level_warning": "重要通知",
-        "level_danger": "紧急通知"
+        "level_danger": "紧急通知",
+        "popup": "以弹窗形式展示（首次进入网站时弹窗）",
+        "popup_hint": "用户可点击\"我知道了\"关闭，或勾选\"不再提醒\"。提示状态仅保存在用户浏览器本地；公告内容更新后会再次弹出。"
       }
     },
     "subscription": {
