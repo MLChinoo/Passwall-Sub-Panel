@@ -25,7 +25,7 @@
 
 ## Introduction
 
-Passwall Sub Panel is a proxy subscription management system built with Go + Vue 3. It integrates with [3X-UI](https://github.com/MHSanaei/3x-ui) panels to provide complete user management, subscription generation, traffic monitoring, and more.
+Passwall Sub Panel is a proxy subscription management system built with Go + React. It integrates with [3X-UI](https://github.com/MHSanaei/3x-ui) panels to provide complete user management, subscription generation, traffic monitoring, and more.
 
 **Use case**: Small teams, friend groups, personal use. Not an enterprise-level proxy service system.
 
@@ -72,7 +72,7 @@ git clone https://github.com/KazuhaHub/Passwall-Sub-Panel.git
 cd Passwall-Sub-Panel
 
 # Build frontend
-cd web
+cd web-react
 npm install
 npm run build
 cd ..
@@ -192,7 +192,7 @@ GET/POST   /api/admin/sub-logs        # Subscription logs
 | Layer | Technology |
 |---|---|
 | Backend | Go 1.21+, Gin, GORM |
-| Frontend | Vue 3, TypeScript, Element Plus |
+| Frontend | React 18, TypeScript, MUI (Material Design 3) |
 | Database | MySQL 8.0 / SQLite |
 | Auth | JWT, SAML 2.0, OIDC |
 

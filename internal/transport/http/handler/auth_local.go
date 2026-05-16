@@ -69,11 +69,18 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 	if !ssoEnabled && (mode == "sso_redirect" || mode == "sso_first" || mode == "dual") {
 		mode = "local_only"
 	}
+	// Reflect the active mode in the booleans so the frontend can render off
+	// a single source of truth without re-implementing the mode rules.
+	//   local_only   → hide SSO buttons even if providers are configured
+	//   sso_redirect → still expose SSO so the redirect target is reachable;
+	//                  frontend bypasses the form entirely via login_mode
+	localShown := mode != "sso_redirect"
+	ssoShown := ssoEnabled && mode != "local_only"
 	c.JSON(http.StatusOK, gin.H{
-		"local":         true,
-		"sso":           ssoEnabled,
-		"saml":          samlEnabled,
-		"oidc":          oidcEnabled,
+		"local":         localShown,
+		"sso":           ssoShown,
+		"saml":          ssoShown && samlEnabled,
+		"oidc":          ssoShown && oidcEnabled,
 		"login_mode":    mode,
 		"site_title":    s.SiteTitle,
 		"app_title":     s.AppTitle,
@@ -81,7 +88,27 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 		"logo_url":      s.LogoURL,
 		"logo_url_dark": s.LogoURLDark,
 		"footer_text":   s.FooterText,
+		"theme_color":   s.ThemeColor,
 	})
+}
+
+// disabledReasonMessage produces a user-facing explanation for why a login
+// attempt was rejected on a disabled account. Reasons that the panel exempts
+// (traffic_exceeded / expired) never reach this code path — they're allowed
+// through VerifyLocalPassword — so they intentionally aren't listed.
+func disabledReasonMessage(reason domain.AutoDisabledReason) string {
+	switch reason {
+	case domain.DisabledManual:
+		return "账号已被管理员停用，请联系管理员。"
+	case domain.DisabledBlockedClient:
+		return "账号因使用了被禁的客户端而停用，请联系管理员。"
+	case domain.DisabledPendingApproval:
+		return "账号正在等待管理员审核，请稍后再试。"
+	case domain.DisabledPendingDelete:
+		return "账号已被标记为待删除，请联系管理员。"
+	default:
+		return "账号已被停用，请联系管理员。"
+	}
 }
 
 type loginRequest struct {
@@ -112,9 +139,19 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrUnauthorized):
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		case errors.Is(err, domain.ErrForbidden):
-			c.JSON(http.StatusForbidden, gin.H{"error": "account disabled"})
+			// u is non-nil here so the message can name the actual reason —
+			// otherwise the user just sees "Account disabled" and has no idea
+			// whether to wait, contact the admin, or check their quota.
+			reason := domain.DisabledNone
+			if u != nil {
+				reason = u.AutoDisabledReason
+			}
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":  disabledReasonMessage(reason),
+				"reason": string(reason),
+			})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
@@ -123,7 +160,7 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 	// Non-admin local-login lock is controlled by DisallowUserLocalLogin.
 	// /login/local itself stays reachable so admins always have a break-glass path.
 	if u.Role != domain.RoleAdmin && h.localLoginDisallowedForUsers(c) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "local login is restricted to administrators; please use SSO"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Local login is restricted to administrators; please use SSO"})
 		return
 	}
 	access, refresh, err := h.auth.IssueTokens(u)

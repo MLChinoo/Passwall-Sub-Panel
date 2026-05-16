@@ -1,0 +1,891 @@
+{
+  "dashboard": {
+    "title": "Dashboard",
+    "metric": {
+      "users": "Total users",
+      "nodes": "Total nodes",
+      "groups": "Total groups"
+    },
+    "trend_title": "Last 7-day traffic trend",
+    "traffic": {
+      "title": "Traffic leaderboard (current period)",
+      "view_all": "View all",
+      "table": {
+        "rank": "#",
+        "upn": "UPN",
+        "period_used": "Period",
+        "today_used": "Today"
+      },
+      "empty": "No traffic data yet (the first 5-minute collection window hasn't completed)."
+    }
+  },
+  "settings": {
+    "title": "System settings",
+    "tab_general": "General",
+    "tab_brand": "Brand",
+    "tab_subscription": "Subscription",
+    "tab_portal": "User portal",
+    "tab_mail": "Mail",
+    "tab_sso": "SSO",
+    "save": "Save",
+    "saved": "Saved",
+    "feature_pending": "This tab is being migrated to React + MUI (next iteration). Use the Vue version meanwhile.",
+    "general": {
+      "section_login": "Login",
+      "section_security": "Security",
+      "section_runtime": "Runtime tunables",
+      "login_mode": "Login mode",
+      "login_mode_dual": "Local + SSO (default)",
+      "login_mode_sso_first": "SSO first",
+      "login_mode_sso_redirect": "Force SSO (auto-redirect)",
+      "login_mode_local_only": "Local only",
+      "disallow_user_local_login": "Block local login for users",
+      "disallow_user_password_change": "Disallow user password changes",
+      "jwt_issuer": "JWT issuer",
+      "jwt_access_ttl_minutes": "Access token TTL (min)",
+      "jwt_refresh_ttl_minutes": "Refresh token TTL (min)",
+      "sub_per_ip_per_min": "Subscription rate limit (req/min/IP)",
+      "login_per_ip_per_min": "Login rate limit (req/min/IP)",
+      "cron_traffic_pull_minutes": "Traffic poll interval (min)",
+      "cron_reconcile_minutes": "Reconcile interval (min)",
+      "audit_retention_days": "Audit log retention (days)",
+      "sync_task_retention_days": "Sync task retention (days)",
+      "emergency_section": "Emergency access",
+      "emergency_access_enabled": "Allow user emergency access",
+      "emergency_access_hours": "Duration (hours)",
+      "emergency_access_max_count": "Max count",
+      "emergency_access_quota_gb": "Per-window traffic quota (GB)",
+      "emergency_access_quota_gb_hint": "0 = unlimited; once exceeded the panel ends the window early and re-disables the user"
+    },
+    "brand": {
+      "section_text": "Site text",
+      "section_assets": "Assets",
+      "section_theme": "Theme color",
+      "section_email": "Email",
+      "site_title": "Site title",
+      "app_title": "App title",
+      "footer_text": "Footer text",
+      "icon_url": "Favicon URL",
+      "logo_url": "Light-mode logo URL",
+      "logo_url_dark": "Dark-mode logo URL",
+      "email_domain": "Default email domain",
+      "sub_base_url": "Subscription base URL (required)",
+      "asset_hint": "Leave Logo / Icon blank to use built-in defaults.",
+      "theme_color": "System default theme color (HEX)",
+      "theme_color_hint": "Used as the default for every user. Users can still override via the palette in the top bar. Leave blank to fall back to the built-in default.",
+      "theme_color_clear": "Clear"
+    },
+    "mail": {
+      "section_smtp": "SMTP server",
+      "section_sender": "Sender",
+      "section_thresholds": "Reminder thresholds",
+      "section_test": "Send test email",
+      "section_templates": "Email templates",
+      "enabled": "Enable email reminders",
+      "smtp_host": "SMTP host",
+      "smtp_port": "Port",
+      "smtp_username": "Username",
+      "smtp_password": "Password",
+      "encryption": "Encryption",
+      "encryption_none": "None",
+      "encryption_starttls": "STARTTLS",
+      "encryption_tls": "TLS",
+      "from_email": "From email",
+      "from_name": "From display name",
+      "expire_before_days": "Notify N days before expiry",
+      "traffic_remain_percent": "Notify when traffic < N% remaining",
+      "test_to": "Test recipient",
+      "test_send": "Send test",
+      "test_sent": "Sent",
+      "saved": "Saved",
+      "password_kept": "Password saved (kept unchanged)",
+      "password_change": "Change",
+      "kind": {
+        "expire_before": "Expiry reminder",
+        "expired": "Expired",
+        "traffic_low": "Traffic low",
+        "traffic_exhausted": "Traffic exhausted",
+        "account_disabled": "Account disabled",
+        "account_enabled": "Account enabled",
+        "announcement": "Global announcement"
+      },
+      "tpl_subject": "Subject",
+      "tpl_body": "Body",
+      "tpl_enabled": "Enable this template",
+      "tpl_preview": "Preview",
+      "tpl_save": "Save template",
+      "tpl_reset": "Reset to default",
+      "tpl_missing_hint": "This template hasn't been initialised yet. Click \"Reset to default\" to load the default content.",
+      "reset_confirm_title": "Reset to default template?",
+      "reset_confirm_body": "The current template will be overwritten by the default. Any customizations will be lost.",
+      "reset_confirm_ok": "Reset",
+      "reset_done": "Reset to default template",
+      "preview_title": "Preview: {{kind}}",
+      "preview_subject": "Subject",
+      "preview_body": "Body",
+      "preview_close": "Close"
+    },
+    "portal": {
+      "section_quick_links": "Quick links",
+      "section_announcement": "Site-wide announcement",
+      "add_link": "Add link",
+      "delete_link": "Delete",
+      "no_links": "No quick links yet — click below to add one.",
+      "link_table": {
+        "label": "Label",
+        "url": "URL",
+        "new_window": "New window",
+        "enabled": "Enabled",
+        "sort": "Sort"
+      },
+      "announcement": {
+        "enabled": "Show site-wide announcement",
+        "title": "Title",
+        "content": "Content",
+        "level": "Level",
+        "level_info": "Info",
+        "level_warning": "Warning",
+        "level_danger": "Danger"
+      }
+    },
+    "subscription": {
+      "section_basic": "Basic",
+      "section_protection": "Abuse protection",
+      "section_clients": "Client detection rules",
+      "section_imports": "One-click import clients",
+      "add_rule": "Add rule",
+      "add_client": "Add client",
+      "delete_row": "Delete",
+      "no_rules": "No rules yet — click below to add one.",
+      "no_clients": "No clients yet — click below to add one.",
+      "client_field": {
+        "name": "Name",
+        "platforms": "Supported platforms",
+        "render_format": "Render format",
+        "import_url_template": "Import URL template",
+        "install_url": "Download / install URL",
+        "enabled": "Enabled",
+        "sort": "Sort",
+        "recommended_for": "Recommended hero for these platforms",
+        "recommended_for_empty": "Pick supported platforms first"
+      },
+      "platform": {
+        "windows": "Windows",
+        "macos": "macOS",
+        "linux": "Linux",
+        "android": "Android",
+        "ios": "iOS",
+        "other": "Other"
+      },
+      "rule_field": {
+        "name": "Name",
+        "keywords": "Keywords (comma-separated, matched against UA)",
+        "render_format": "Render format",
+        "enabled": "Enabled"
+      },
+      "sub_path": "Subscription URL path segment (required)",
+      "sub_import_tutorial_url": "Import tutorial URL (powers the 'View tutorial' button on the user portal; hidden when blank)",
+      "sub_log_retention_days": "Subscription log retention (days)",
+      "sub_update_interval_hours": "Subscription auto-refresh interval hint (hours)",
+      "sub_block_auto_disable": "Auto-disable account on abusive subscription requests",
+      "sub_block_auto_disable_count": "Consecutive failures before auto-disable",
+      "rule_table": {
+        "name": "Name",
+        "keywords": "Keywords",
+        "format": "Format",
+        "enabled": "Enabled"
+      },
+      "client_table": {
+        "name": "Client",
+        "platforms": "Platforms",
+        "format": "Format",
+        "enabled": "Enabled"
+      }
+    }
+  },
+  "traffic": {
+    "title": "Traffic",
+    "poll_now": "Poll now",
+    "poll_done": "Poll complete",
+    "scope_user": "By user",
+    "scope_node": "By node",
+    "node_table": {
+      "name": "Node",
+      "panel": "Server",
+      "region": "Region",
+      "month_used": "This month"
+    },
+    "tab_rank": "Leaderboard",
+    "tab_trend": "Trend",
+    "limit": {
+      "10": "Top 10",
+      "20": "Top 20",
+      "50": "Top 50"
+    },
+    "refresh": "Refresh",
+    "rank_note": "Collection interval comes from system settings (default 5 min).",
+    "rank_table": {
+      "rank": "#",
+      "upn": "UPN",
+      "period_used": "Period",
+      "today_used": "Today",
+      "permanent": "Total"
+    },
+    "trend": {
+      "all_users": "All users",
+      "all_nodes": "All nodes",
+      "search_user": "Search users…",
+      "search_node": "Search nodes…",
+      "period_day": "Day",
+      "period_week": "Week",
+      "period_month": "Month",
+      "range_7": "Last 7 days",
+      "range_30": "Last 30 days",
+      "range_90": "Last 90 days",
+      "summary_total": "Total",
+      "summary_up": "Up",
+      "summary_down": "Down",
+      "summary_range": "Range",
+      "chart_note": "Chart is derived from cumulative snapshot deltas."
+    }
+  },
+  "templates": {
+    "title": "Templates",
+    "subtitle": "A template = client format + bound rule sets. Subscription rendering uses the bindings set here.",
+    "create": "New template",
+    "edit_title": "Edit template",
+    "selection_count": "{{count}} selected",
+    "batch_delete": "Bulk delete",
+    "field": {
+      "slug": "Slug",
+      "name": "Name",
+      "client_type": "Client type",
+      "is_default": "Default",
+      "rule_sets": "Rule sets",
+      "content": "Template content"
+    },
+    "placeholder": {
+      "rule_sets": "Pick rule sets matching this template's proxy groups",
+      "content": "Supports proxies / proxy_groups / rules_common / rules_personal placeholders"
+    },
+    "table": {
+      "slug": "Slug",
+      "name": "Name",
+      "client_type": "Client",
+      "rule_sets": "Rule sets",
+      "coverage": "Targets",
+      "default": "Default",
+      "actions": "Actions"
+    },
+    "status": {
+      "no_binding": "Unbound",
+      "auto_generated": "Auto",
+      "missing_n": "Missing {{n}}",
+      "ok": "OK",
+      "default": "Default"
+    },
+    "hint": {
+      "rule_sets": "Subscription rendering only uses the rule sets bound here.",
+      "auto_groups": "Proxy groups will be auto-generated from the rule targets of the bound rule sets.",
+      "missing_targets": "Rule targets not found in the template's proxy groups: {{names}}",
+      "groups_ok": "Detected {{n}} proxy groups; rule targets match.",
+      "no_binding": "Nothing bound — only nodes, proxy groups, and personal rules will render.",
+      "incomplete": "Template content is too short to analyze."
+    },
+    "validate": {
+      "slug_name_required": "Slug and name are required"
+    },
+    "toast": {
+      "saved": "Saved",
+      "deleted": "Deleted",
+      "batch_deleted": "Deleted {{count}} templates",
+      "batch_partial": "Deleted {{ok}}, {{fail}} failed"
+    },
+    "confirm": {
+      "delete_title": "Delete template",
+      "delete_message": "Delete template {{slug}}?",
+      "batch_delete_title": "Delete templates",
+      "batch_delete_message": "Delete {{count}} templates?"
+    }
+  },
+  "sync_tasks": {
+    "title": "Sync tasks",
+    "pending_count": "Waiting for retry: {{count}}",
+    "purge": "Purge finished",
+    "refresh": "Refresh",
+    "selection_count": "{{count}} selected",
+    "batch_retry": "Bulk retry",
+    "batch_cancel": "Bulk cancel",
+    "filter_status": "Status",
+    "filter_type": "Type",
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "succeeded": "Succeeded",
+      "canceled": "Canceled"
+    },
+    "type": {
+      "user_delete": "User delete",
+      "user_resync": "User resync",
+      "user_push_config": "User push config",
+      "node_create": "Node create",
+      "node_delete": "Node delete",
+      "node_set_enabled": "Node set enabled",
+      "node_update": "Node update"
+    },
+    "table": {
+      "id": "ID",
+      "status": "Status",
+      "type": "Type",
+      "target": "Target",
+      "summary": "Summary",
+      "attempts": "Retries",
+      "next_run": "Next run",
+      "error": "Error",
+      "actions": "Actions"
+    },
+    "action": {
+      "detail": "Detail",
+      "retry": "Retry",
+      "cancel": "Cancel"
+    },
+    "confirm": {
+      "purge_title": "Purge finished tasks",
+      "purge_message": "Purge all non-active (succeeded / canceled) sync task records? Pending / running tasks are unaffected.",
+      "batch_cancel_title": "Cancel tasks",
+      "batch_cancel_message": "Cancel {{count}} selected sync tasks?"
+    },
+    "toast": {
+      "purged": "Purged {{count}} records",
+      "batch_retried": "Retried {{count}} tasks",
+      "batch_canceled": "Canceled {{count}} tasks",
+      "batch_partial": "{{ok}} done, {{fail}} failed"
+    },
+    "detail_title": "Task detail"
+  },
+  "logs": {
+    "title": "Logs",
+    "tab_sub": "Subscription logs",
+    "tab_audit": "Audit logs",
+    "clear_all": "Clear all",
+    "purge_old": "Purge expired",
+    "view_detail": "Details",
+    "sub_table": {
+      "id": "ID",
+      "user": "User",
+      "ip": "IP",
+      "client_type": "Client",
+      "ua": "User-Agent",
+      "at": "Time"
+    },
+    "audit_table": {
+      "id": "ID",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "ip": "IP",
+      "at": "Time"
+    },
+    "filter": {
+      "actor": "Actor",
+      "action": "Action"
+    },
+    "detail": {
+      "before": "Before",
+      "after": "After"
+    },
+    "confirm": {
+      "clear_sub_title": "Clear subscription logs",
+      "clear_sub_message": "Clear all subscription logs? This cannot be undone.",
+      "clear_audit_title": "Clear audit logs",
+      "clear_audit_message": "Clear all audit logs? This cannot be undone."
+    },
+    "toast": {
+      "cleared": "Cleared",
+      "purged": "Purged {{count}} expired logs"
+    }
+  },
+  "rules": {
+    "title": "Rule sets",
+    "subtitle": "Rule sets are reusable snippets — they only participate in subscription rendering when bound to a template.",
+    "create": "New rule set",
+    "edit_title": "Edit rule set",
+    "selection_count": "{{count}} selected",
+    "batch_enable": "Bulk enable",
+    "batch_disable": "Bulk disable",
+    "batch_delete": "Bulk delete",
+    "field": {
+      "slug": "Slug",
+      "name": "Name",
+      "sort": "Sort",
+      "enabled": "Enabled",
+      "proxy_group_order": "Proxy group order",
+      "content": "Rule content"
+    },
+    "placeholder": {
+      "slug": "ad_block",
+      "name": "Ad blocking",
+      "proxy_group_order": "🚀 Proxy\n💬 AI\n🎮 Gaming",
+      "content": "- DOMAIN-SUFFIX,example.com,DIRECT"
+    },
+    "hint": {
+      "proxy_group_order": "Optional; one group name per line. Templates binding this set order their proxy groups by this list first; anything not listed keeps the order of first occurrence in the content."
+    },
+    "table": {
+      "slug": "Slug",
+      "name": "Name",
+      "sort": "Sort",
+      "lines": "Lines",
+      "used_by": "Used by",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "no_usage": "Unused"
+    },
+    "validate": {
+      "slug_name_required": "Slug and name are required"
+    },
+    "toast": {
+      "saved": "Saved",
+      "deleted": "Deleted",
+      "batch_enabled": "Enabled {{count}} rule sets",
+      "batch_disabled": "Disabled {{count}} rule sets",
+      "batch_deleted": "Deleted {{count}} rule sets",
+      "batch_partial": "{{ok}} done, {{fail}} failed"
+    },
+    "confirm": {
+      "delete_title": "Delete rule set",
+      "delete_message": "Delete rule set {{slug}}?{{usage}}",
+      "delete_used_suffix": "\n\nThis rule set is referenced by {{names}}. After deletion those templates will skip it.",
+      "batch_delete_title": "Delete rule sets",
+      "batch_delete_message": "Delete {{count}} rule sets?"
+    }
+  },
+  "nodes": {
+    "title": "Nodes",
+    "subtitle": "Manage 3X-UI inbounds; subscription rendering follows the enabled state set here.",
+    "tab_managed": "Managed",
+    "tab_unmanaged": "Unmanaged inbounds",
+    "create": "New node",
+    "edit_title": "Edit node",
+    "import": "Import",
+    "imported": "Imported",
+    "import_validate": "Address and Region are required",
+    "claim": "Claim",
+    "claim_dialog": {
+      "title": "Claim existing client",
+      "subtitle": "Link an existing 3X-UI client (identified by email) on inbound #{{id}} to a panel user. Common for migrating legacy inbounds.",
+      "user": "Target panel user",
+      "client_email": "Client email (required; must match 3X-UI exactly)",
+      "client_uuid": "Client UUID (optional; leave blank to keep the existing 3X-UI value)",
+      "submit": "Claim",
+      "claimed": "Claimed",
+      "validate_required": "Please pick a user and enter the client email"
+    },
+    "import_dialog": {
+      "title": "Import inbound",
+      "subtitle": "{{panel}} · inbound #{{id}} · {{protocol}}:{{port}}",
+      "display_name": "Display name",
+      "server_address": "Address",
+      "flow": "Flow (optional)",
+      "region": "Region",
+      "tags": "Tags (comma-separated)",
+      "sort_order": "Sort weight"
+    },
+    "edit_inbound": "Edit inbound config",
+    "edit_inbound_dialog": {
+      "title": "Edit inbound config",
+      "load_failed": "Failed to load existing inbound: {{error}}",
+      "unsupported": "Visual editor only supports VLESS / SS-2022 inbounds.",
+      "saved": "Inbound config saved"
+    },
+    "create_dialog": {
+      "title": "New inbound",
+      "title_dynamic": "New inbound ({{protocol}})",
+      "note": "Simplified: VLESS + Reality + TCP only. Other protocols coming next iteration.",
+      "note_multi": "Supports VLESS (TCP / WS / gRPC × None / TLS / Reality) and Shadowsocks 2022. Fields appear based on the selected protocol.",
+      "no_servers": "Please add a 3X-UI server on the Servers page first.",
+      "section_target": "Target",
+      "section_protocol": "Protocol",
+      "section_inbound": "Listening",
+      "section_vless": "VLESS",
+      "section_tcp": "TCP",
+      "section_ws": "WebSocket",
+      "section_grpc": "gRPC",
+      "section_tls": "TLS",
+      "section_reality": "Reality config",
+      "section_ss2022": "Shadowsocks 2022",
+      "section_sniffing": "Sniffing",
+      "section_metadata": "Metadata",
+      "protocol": "Protocol",
+      "panel": "3X-UI server",
+      "listen": "Listen (blank = all)",
+      "port": "Port",
+      "enable": "Enabled",
+      "vless_flow": "VLESS Flow",
+      "vless_network": "Transport (network)",
+      "vless_security": "Transport security",
+      "accept_proxy_protocol": "Accept Proxy Protocol",
+      "tcp_header_type": "TCP header type",
+      "ws_path": "WebSocket Path",
+      "ws_host": "WebSocket Host (header)",
+      "grpc_service_name": "gRPC serviceName",
+      "grpc_authority": "gRPC authority",
+      "grpc_multi_mode": "Multi-mode",
+      "tls_server_name": "TLS serverName",
+      "tls_alpn": "TLS ALPN (comma-separated)",
+      "tls_min_version": "Min version",
+      "tls_max_version": "Max version",
+      "reality_dest": "Reality dest (decoy host:port)",
+      "reality_server_names": "Reality serverNames (comma-separated)",
+      "reality_fingerprint": "Fingerprint",
+      "reality_spider_x": "spiderX path",
+      "reality_keys": "Reality keypair",
+      "gen_keys": "Generate keypair",
+      "private_key": "Private Key",
+      "public_key": "Public Key",
+      "short_ids": "Short IDs (comma-separated)",
+      "ss_method": "Cipher",
+      "ss_password": "Server PSK (base64)",
+      "ss_network": "Network",
+      "ss_network_hint": "Typically tcp,udp",
+      "gen_ss_password": "Generate PSK",
+      "sniffing_enabled": "Enable sniffing",
+      "sniffing_dest_override": "destOverride (comma-separated)",
+      "sniffing_metadata_only": "Metadata only",
+      "sniffing_route_only": "Route only",
+      "validate_required": "Display name / address / region are required",
+      "validate_reality_keys": "Generate or fill in Reality privateKey / publicKey / shortId",
+      "validate_reality_target": "Reality dest and SNI are required",
+      "validate_ss2022": "SS-2022 cipher and PSK are required",
+      "created": "Created",
+      "queued": "Queued for sync"
+    },
+    "feature_pending": "Feature migration in progress (next iteration)",
+    "selection_count": "{{count}} selected",
+    "batch_enable": "Bulk enable",
+    "batch_disable": "Bulk disable",
+    "batch_delete": "Bulk delete",
+    "table": {
+      "id": "ID",
+      "display_name": "Display name",
+      "panel_name": "Server",
+      "server_address": "Address",
+      "region": "Region",
+      "tags": "Tags",
+      "inbound": "Inbound",
+      "sort_order": "Sort",
+      "enabled": "Enabled",
+      "actions": "Actions"
+    },
+    "field": {
+      "display_name": "Display name",
+      "server_address": "Address",
+      "flow": "Flow (optional)",
+      "region": "Region",
+      "tags": "Tags (comma-separated)",
+      "sort_order": "Sort weight"
+    },
+    "action": {
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "validate": {
+      "address_region_required": "Address and Region are required"
+    },
+    "toast": {
+      "saved": "Saved",
+      "deleted": "Deleted",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "batch_enabled": "Enabled {{count}} nodes",
+      "batch_disabled": "Disabled {{count}} nodes",
+      "batch_deleted": "Deleted {{count}} nodes",
+      "batch_partial": "{{ok}} done, {{fail}} failed"
+    },
+    "confirm": {
+      "delete_title": "Delete node",
+      "delete_message": "Delete node {{name}}? This removes the corresponding inbound from 3X-UI.",
+      "batch_delete_title": "Delete nodes",
+      "batch_delete_message": "Delete {{count}} nodes?"
+    }
+  },
+  "users": {
+    "title": "Users",
+    "create": "New user",
+    "edit_title": "Edit user",
+    "result_title": "User created",
+    "search_placeholder": "Search UPN / email / remark…",
+    "filter_group_all": "All groups",
+    "refresh": "Refresh",
+    "field": {
+      "upn": "UPN",
+      "email": "Email",
+      "display_name": "Display name",
+      "password": "Initial password (auto-generated if blank)",
+      "group": "Group",
+      "role": "Role",
+      "expire_days": "Validity (days, 0 = permanent)",
+      "expire_at": "Expires at",
+      "expire_mode_date": "Expires at",
+      "expire_mode_permanent": "Permanent",
+      "traffic_limit_gb": "Traffic limit (GB, 0 = unlimited)",
+      "period_used_gb": "Period used (GB)",
+      "emergency_used_count": "Emergency access used {{count}} time(s)",
+      "emergency_window_until": "Active until {{time}} ({{hours}}h remaining)",
+      "emergency_window_used_with_quota": "Window used {{used}} / {{quota}} GB",
+      "emergency_window_used_unlimited": "Window used {{used}} GB (unlimited)",
+      "traffic_reset_period": "Reset period",
+      "remark": "Remark"
+    },
+    "role": {
+      "admin": "Admin",
+      "user": "User"
+    },
+    "reset_period": {
+      "never": "Never",
+      "monthly": "Monthly",
+      "quarterly": "Quarterly"
+    },
+    "table": {
+      "upn": "UPN",
+      "display_name": "Display name",
+      "group": "Group",
+      "role": "Role",
+      "traffic": "Traffic",
+      "expire": "Expires",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "expired": "Expired",
+      "expiring_soon": "in {{days}} day(s)",
+      "expired_days": "expired {{days}}d ago",
+      "today": "today",
+      "permanent": "Permanent",
+      "unlimited": "Unlimited",
+      "traffic_exhausted": "Traffic exhausted",
+      "blocked": "Blocked",
+      "pending_approval": "Pending approval",
+      "pending_delete": "Pending delete",
+      "manual_disabled": "Manually disabled",
+      "emergency_active": "Emergency active"
+    },
+    "action": {
+      "edit": "Edit",
+      "renew": "Renew 30 days",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete"
+    },
+    "result": {
+      "intro": "User {{upn}} created. Record the initial password — this is shown only once.",
+      "password_label": "Initial password",
+      "sub_url_label": "Subscription URL",
+      "copy": "Copy"
+    },
+    "reason": {
+      "enable_title": "Enable user",
+      "disable_title": "Disable user",
+      "enable_placeholder": "Enable reason (optional)",
+      "disable_placeholder": "Disable reason (optional)"
+    },
+    "validate": {
+      "upn_required": "UPN is required",
+      "group_required": "Group is required",
+      "demote_self": "You are demoting the currently signed-in admin account to a regular user. After saving you will lose admin access. Continue?"
+    },
+    "toast": {
+      "saved": "Saved",
+      "deleted": "Deleted",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "renewed": "Renewed by {{days}} days",
+      "renew_permanent_skip": "Permanent accounts don't need quick renewal; edit the user to set an expiry first.",
+      "copied": "Copied"
+    },
+    "confirm": {
+      "delete_title": "Delete user",
+      "delete_message": "Delete user {{upn}}? This removes their client from every 3X-UI inbound.",
+      "demote_title": "Confirm demotion",
+      "reset_credentials_title": "Reset credentials",
+      "reset_credentials_message": "Resetting {{upn}}'s credentials immediately invalidates the old subscription URL and forces existing connections to drop. Continue?",
+      "batch_delete_title": "Delete users",
+      "batch_delete_message": "Delete {{names}}{{suffix}}? This removes their clients from every 3X-UI inbound."
+    },
+    "more_menu": {
+      "copy_sub": "Copy subscription URL",
+      "personal_rules": "Personal rules",
+      "reset_credentials": "Reset credentials",
+      "reset_emergency": "Reset emergency-access count"
+    },
+    "batch": {
+      "selected": "{{count}} selected",
+      "enable": "Bulk enable",
+      "disable": "Bulk disable",
+      "renew": "Bulk renew 30d",
+      "delete": "Bulk delete",
+      "more": "More",
+      "no_renewable": "None of the selected users have a renewable expiry.",
+      "renewed_with_skip": "Renewed {{count}} users, skipped {{skipped}} permanent ones",
+      "renewed_partial": "Renewed {{ok}} users, {{fail}} failed",
+      "enable_partial": "Enabled {{ok}} users, {{fail}} failed",
+      "disable_partial": "Disabled {{ok}} users, {{fail}} failed",
+      "enabled_count": "Enabled {{count}} users",
+      "disabled_count": "Disabled {{count}} users",
+      "delete_partial": "Deleted {{ok}} users, {{fail}} failed",
+      "deleted_count": "Deleted {{count}} users",
+      "emergency_partial": "Reset {{ok}} users, {{fail}} failed",
+      "emergency_count": "Reset emergency count for {{count}} users"
+    },
+    "rules": {
+      "title": "Personal rules — {{upn}}",
+      "placeholder": "One rule per line; mihomo / sing-box syntax",
+      "saved": "Personal rules saved",
+      "reset": "Revert",
+      "save": "Save"
+    },
+    "reconcile": {
+      "trigger": "Reconcile",
+      "result_title": "Reconcile result",
+      "summary_no_fix": "Scanned {{scanned}} nodes/users — everything is consistent.",
+      "summary_fixed": "Scanned {{scanned}} nodes/users, auto-fixed {{fixed}} issues.",
+      "issues_title": "Unresolved issues"
+    },
+    "credentials": {
+      "result": "Reset OK! New UUID: {{uuid}}",
+      "emergency_reset": "Emergency-access count reset"
+    }
+  },
+  "groups": {
+    "title": "Groups",
+    "create": "New group",
+    "edit_title": "Edit group",
+    "selection_count": "{{count}} selected",
+    "batch_delete": "Delete selected",
+    "field": {
+      "slug": "Slug",
+      "name": "Name",
+      "match_all": "Match all nodes",
+      "tags": "tag_filter",
+      "remark": "Remark"
+    },
+    "placeholder": {
+      "tags": "region:TW, tag:reality"
+    },
+    "hint": {
+      "tags": "Comma-separated, AND-combined. Supports region:XX / tag:YY / server:ZZ"
+    },
+    "table": {
+      "name": "Name",
+      "slug": "Slug",
+      "tag_filter": "tag_filter",
+      "members": "Members",
+      "remark": "Remark",
+      "actions": "Actions"
+    },
+    "tag": {
+      "all": "All nodes"
+    },
+    "action": {
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "validate": {
+      "slug_required": "Slug is required",
+      "name_required": "Name is required"
+    },
+    "warn": {
+      "has_members": "This group still has {{count}} member(s); move them out first."
+    },
+    "toast": {
+      "created": "Created",
+      "updated": "Updated",
+      "deleted": "Deleted",
+      "resync_partial": "Partial member resync failure: {{count}}",
+      "batch_deleted": "Deleted {{count}} groups",
+      "batch_partial": "Deleted {{ok}} groups, {{fail}} failed"
+    },
+    "confirm": {
+      "delete_title": "Delete group",
+      "delete_message": "Delete group {{name}}?",
+      "batch_delete_title": "Delete groups",
+      "batch_delete_message": "Delete {{names}}{{suffix}}?"
+    }
+  },
+  "servers": {
+    "title": "Servers (3X-UI)",
+    "subtitle": "Inbounds (nodes) are attached to a server. New nodes pick from this list.",
+    "create": "New server",
+    "edit_title": "Edit {{name}}",
+    "selection_count": "{{count}} selected",
+    "batch_test": "Test selected",
+    "batch_delete": "Delete selected",
+    "field": {
+      "name": "Server name",
+      "url": "URL",
+      "api_token": "API Token",
+      "username": "Username",
+      "password": "Password",
+      "remark": "Remark"
+    },
+    "placeholder": {
+      "name": "default / us-west / ...",
+      "url": "https://3x-ui.example.com:54321",
+      "api_token": "3X-UI API Token (recommended)",
+      "username": "admin (only when using password login)",
+      "password": "API Token preferred; password as fallback"
+    },
+    "hint": {
+      "name": "Display name; the internal reference uses the database ID.",
+      "configured": "Configured (kept unchanged)",
+      "unconfigured": "Not configured",
+      "change": "Change"
+    },
+    "table": {
+      "name": "Server name",
+      "url": "URL",
+      "status": "Status",
+      "remark": "Remark",
+      "actions": "Actions"
+    },
+    "status": {
+      "checking": "Checking",
+      "ok": "Connected",
+      "ok_count": "Connected ({{count}})",
+      "fail": "Connection failed",
+      "unconfigured": "No credentials",
+      "unknown": "Not checked"
+    },
+    "action": {
+      "test": "Test",
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "validate": {
+      "url_required": "URL is required",
+      "name_required": "Server name is required",
+      "credentials_required": "Please configure an API token or username/password first."
+    },
+    "toast": {
+      "saved": "Saved",
+      "created": "Created",
+      "deleted": "Deleted",
+      "test_ok": "Connected. 3X-UI has {{count}} inbound(s).",
+      "batch_tested": "Tested {{count}} servers",
+      "batch_deleted": "Deleted {{count}} servers",
+      "batch_partial": "Deleted {{ok}} servers, {{fail}} failed"
+    },
+    "confirm": {
+      "delete_title": "Delete server",
+      "delete_message": "Delete server {{name}}? The server must have no nodes referencing it.",
+      "batch_delete_title": "Delete servers",
+      "batch_delete_message": "Delete {{names}}{{suffix}}? These servers must have no nodes referencing them."
+    }
+  }
+}

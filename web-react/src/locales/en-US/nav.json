@@ -1,0 +1,18 @@
+{
+  "admin": {
+    "dashboard": "Dashboard",
+    "users": "Users",
+    "servers": "Servers",
+    "nodes": "Nodes",
+    "groups": "Groups",
+    "rules": "Rule sets",
+    "templates": "Templates",
+    "traffic": "Traffic",
+    "logs": "Logs",
+    "sync_tasks": "Sync tasks",
+    "settings": "Settings"
+  },
+  "user": {
+    "me": "My subscription"
+  }
+}

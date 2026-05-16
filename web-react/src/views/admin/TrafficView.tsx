@@ -1,0 +1,368 @@
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import {
+  Autocomplete,
+  Box,
+  Button,
+  Card,
+  CircularProgress,
+  MenuItem,
+  Select,
+  Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Tabs,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+  useTheme,
+} from '@mui/material'
+import { useTranslation } from 'react-i18next'
+
+import { listUsers } from '@/api/users'
+import { listNodes } from '@/api/nodes'
+import {
+  nodeTrafficHistory,
+  pollTrafficNow,
+  topNodes,
+  topTraffic,
+  trafficHistory,
+  userTrafficHistory,
+  type NodeTrafficRow,
+  type TrafficHistoryPeriod,
+  type TrafficHistoryResponse,
+  type TrafficRow,
+} from '@/api/traffic'
+import type { Node, User } from '@/api/types'
+import { pushSnack } from '@/components/SnackbarHost'
+import { useTabParam } from '@/hooks/useTabParam'
+
+const TrafficChart = lazy(() => import('@/components/TrafficChart'))
+
+function bytesToHuman(n: number) {
+  if (n === 0) return '0'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n, u = 0
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++ }
+  return `${v.toFixed(2)} ${units[u]}`
+}
+
+function dateString(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function daysAgo(n: number) {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - n)
+  return d
+}
+
+export default function TrafficView() {
+  const theme = useTheme()
+  const md = theme.palette.md
+  const { t } = useTranslation('admin')
+
+  const [tab, setTab] = useTabParam<'trend' | 'rank'>('tab', 'trend', ['trend', 'rank'])
+  const [scope, setScope] = useTabParam<'user' | 'node'>('scope', 'user', ['user', 'node'])
+  const [items, setItems] = useState<TrafficRow[]>([])
+  const [nodeItems, setNodeItems] = useState<NodeTrafficRow[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [nodes, setNodes] = useState<Node[]>([])
+  const [history, setHistory] = useState<TrafficHistoryResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [chartLoading, setChartLoading] = useState(false)
+  const [pollLoading, setPollLoading] = useState(false)
+
+  const [limit, setLimit] = useState(20)
+  const [selectedUserId, setSelectedUserId] = useState<number>(0)
+  const [selectedNodeId, setSelectedNodeId] = useState<number>(0)
+  const [period, setPeriod] = useState<TrafficHistoryPeriod>('day')
+  const [rangeDays, setRangeDays] = useState(30)
+
+  const historyItems = history?.items ?? []
+  const summary = useMemo(() => {
+    let total = 0, up = 0, down = 0
+    for (const it of historyItems) { total += it.total_bytes; up += it.up_bytes; down += it.down_bytes }
+    return { total, up, down }
+  }, [historyItems])
+
+  useEffect(() => {
+    void Promise.all([loadRank(), loadUsers(), loadNodes(), loadHistory()])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => { void loadRank()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limit, scope])
+
+  useEffect(() => { void loadHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, selectedUserId, selectedNodeId, period, rangeDays])
+
+  async function loadRank() {
+    setLoading(true)
+    try {
+      if (scope === 'node') {
+        setNodeItems(await topNodes(limit))
+      } else {
+        setItems(await topTraffic(limit))
+      }
+    } finally { setLoading(false) }
+  }
+
+  async function loadUsers() {
+    const res = await listUsers({ page: 1, page_size: 200 })
+    setUsers(res.items)
+  }
+
+  async function loadNodes() {
+    try { setNodes(await listNodes()) } catch { /* toasted by client */ }
+  }
+
+  async function loadHistory() {
+    setChartLoading(true)
+    try {
+      const params = {
+        period, since: dateString(daysAgo(rangeDays - 1)), until: dateString(new Date()),
+      }
+      let res: TrafficHistoryResponse
+      if (scope === 'node') {
+        res = await nodeTrafficHistory(selectedNodeId > 0 ? { ...params, node_id: selectedNodeId } : params)
+      } else {
+        res = selectedUserId > 0
+          ? await userTrafficHistory(selectedUserId, params)
+          : await trafficHistory(params)
+      }
+      setHistory(res)
+    } finally { setChartLoading(false) }
+  }
+
+  async function pollNow() {
+    setPollLoading(true)
+    try {
+      await pollTrafficNow()
+      pushSnack(t('traffic.poll_done'), 'success')
+      await Promise.all([loadRank(), loadHistory()])
+    } finally { setPollLoading(false) }
+  }
+
+  function userLabel(u: User) {
+    return u.display_name ? `${u.display_name} (${u.upn})` : u.upn
+  }
+
+  function nodeLabel(n: Node) {
+    return `${n.display_name} · ${n.region}`
+  }
+
+  return (
+    <Box sx={{ p: 3 }}>
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2, mb: 1 }}>
+        <Typography variant="h4">{t('traffic.title')}</Typography>
+        <Button variant="contained" disabled={pollLoading} onClick={pollNow}
+          startIcon={pollLoading ? <CircularProgress size={14} color="inherit" /> : null}>
+          {t('traffic.poll_now')}
+        </Button>
+      </Box>
+
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mt: 2, mb: 2, borderBottom: `1px solid ${md.outlineVariant}` }}>
+        <Tabs value={tab} onChange={(_, v) => setTab(v)}>
+          <Tab value="trend" label={t('traffic.tab_trend')} />
+          <Tab value="rank" label={t('traffic.tab_rank')} />
+        </Tabs>
+        <ToggleButtonGroup value={scope} exclusive size="small"
+          onChange={(_, v) => v && setScope(v as 'user' | 'node')}
+          sx={{ mb: 1, '& .MuiToggleButton-root': { px: 2, height: 36 } }}>
+          <ToggleButton value="user">{t('traffic.scope_user')}</ToggleButton>
+          <ToggleButton value="node">{t('traffic.scope_node')}</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+
+      {tab === 'rank' && (
+        <>
+          <Box sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Select size="small" value={limit} onChange={e => setLimit(Number(e.target.value))} sx={{ width: 140, height: 40 }}>
+              <MenuItem value={10}>{t('traffic.limit.10')}</MenuItem>
+              <MenuItem value={20}>{t('traffic.limit.20')}</MenuItem>
+              <MenuItem value={50}>{t('traffic.limit.50')}</MenuItem>
+            </Select>
+            <Button variant="outlined" onClick={loadRank} disabled={loading}>{t('traffic.refresh')}</Button>
+            <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, ml: 1 }}>
+              {t('traffic.rank_note')}
+            </Typography>
+          </Box>
+          <Card sx={{ bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', overflow: 'hidden' }}>
+            <TableContainer>
+              <Table>
+                {scope === 'user' ? (
+                  <>
+                    <TableHead>
+                      <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
+                        <TableCell sx={{ width: 60 }}>{t('traffic.rank_table.rank')}</TableCell>
+                        <TableCell>{t('traffic.rank_table.upn')}</TableCell>
+                        <TableCell align="right">{t('traffic.rank_table.period_used')}</TableCell>
+                        <TableCell align="right">{t('traffic.rank_table.today_used')}</TableCell>
+                        <TableCell align="right">{t('traffic.rank_table.permanent')}</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {loading && items.length === 0 && (
+                        <TableRow><TableCell colSpan={5} sx={{ textAlign: 'center', py: 6 }}><CircularProgress size={24} /></TableCell></TableRow>
+                      )}
+                      {!loading && items.length === 0 && (
+                        <TableRow><TableCell colSpan={5} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
+                      )}
+                      {items.map((r, i) => (
+                        <TableRow key={r.user_id} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}>
+                          <TableCell sx={{ color: md.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</TableCell>
+                          <TableCell sx={{ fontWeight: 500 }}>{r.upn}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.period_used_bytes)}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.today_used_bytes)}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.permanent_total_bytes)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                ) : (
+                  <>
+                    <TableHead>
+                      <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
+                        <TableCell sx={{ width: 60 }}>{t('traffic.rank_table.rank')}</TableCell>
+                        <TableCell>{t('traffic.node_table.name')}</TableCell>
+                        <TableCell>{t('traffic.node_table.panel')}</TableCell>
+                        <TableCell>{t('traffic.node_table.region')}</TableCell>
+                        <TableCell align="right">{t('traffic.node_table.month_used')}</TableCell>
+                        <TableCell align="right">{t('traffic.rank_table.today_used')}</TableCell>
+                        <TableCell align="right">{t('traffic.rank_table.permanent')}</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {loading && nodeItems.length === 0 && (
+                        <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6 }}><CircularProgress size={24} /></TableCell></TableRow>
+                      )}
+                      {!loading && nodeItems.length === 0 && (
+                        <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
+                      )}
+                      {nodeItems.map((r, i) => (
+                        <TableRow key={r.node_id} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}>
+                          <TableCell sx={{ color: md.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</TableCell>
+                          <TableCell sx={{ fontWeight: 500 }}>{r.display_name}</TableCell>
+                          <TableCell sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{r.panel_name}</TableCell>
+                          <TableCell sx={{ fontSize: 13 }}>{r.region}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.period_used_bytes)}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.today_used_bytes)}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 13 }}>{bytesToHuman(r.permanent_total_bytes)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
+              </Table>
+            </TableContainer>
+          </Card>
+        </>
+      )}
+
+      {tab === 'trend' && (
+        <>
+          <Box sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            {scope === 'user' ? (
+              (() => {
+                // Build a sentinel "all users" option so Autocomplete can model
+                // it the same way as a real user pick. id=0 → server returns
+                // the all-users history.
+                const allOpt = { id: 0, label: t('traffic.trend.all_users') }
+                const opts = [allOpt, ...users.map(u => ({ id: u.id, label: userLabel(u) }))]
+                const selected = opts.find(o => o.id === selectedUserId) ?? allOpt
+                return (
+                  <Autocomplete
+                    size="small"
+                    options={opts}
+                    value={selected}
+                    onChange={(_, v) => setSelectedUserId(v?.id ?? 0)}
+                    isOptionEqualToValue={(a, b) => a.id === b.id}
+                    disableClearable
+                    sx={{ width: 280 }}
+                    renderInput={(params) => <TextField {...params} placeholder={t('traffic.trend.search_user')} />}
+                  />
+                )
+              })()
+            ) : (
+              (() => {
+                const allOpt = { id: 0, label: t('traffic.trend.all_nodes') }
+                const opts = [allOpt, ...nodes.map(n => ({ id: n.id, label: nodeLabel(n) }))]
+                const selected = opts.find(o => o.id === selectedNodeId) ?? allOpt
+                return (
+                  <Autocomplete
+                    size="small"
+                    options={opts}
+                    value={selected}
+                    onChange={(_, v) => setSelectedNodeId(v?.id ?? 0)}
+                    isOptionEqualToValue={(a, b) => a.id === b.id}
+                    disableClearable
+                    sx={{ width: 280 }}
+                    renderInput={(params) => <TextField {...params} placeholder={t('traffic.trend.search_node')} />}
+                  />
+                )
+              })()
+            )}
+            <ToggleButtonGroup value={period} exclusive size="small"
+              onChange={(_, v) => v && setPeriod(v as TrafficHistoryPeriod)}
+              sx={{ '& .MuiToggleButton-root': { px: 2, height: 40 } }}>
+              <ToggleButton value="day">{t('traffic.trend.period_day')}</ToggleButton>
+              <ToggleButton value="week">{t('traffic.trend.period_week')}</ToggleButton>
+              <ToggleButton value="month">{t('traffic.trend.period_month')}</ToggleButton>
+            </ToggleButtonGroup>
+            <Select size="small" value={rangeDays} onChange={e => setRangeDays(Number(e.target.value))}
+              sx={{ width: 140, height: 40 }}>
+              <MenuItem value={7}>{t('traffic.trend.range_7')}</MenuItem>
+              <MenuItem value={30}>{t('traffic.trend.range_30')}</MenuItem>
+              <MenuItem value={90}>{t('traffic.trend.range_90')}</MenuItem>
+            </Select>
+            <Button variant="outlined" onClick={loadHistory} disabled={chartLoading}>{t('traffic.refresh')}</Button>
+          </Box>
+
+          <Box sx={{
+            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: 1.5, mb: 2,
+          }}>
+            <SummaryTile label={t('traffic.trend.summary_total')} value={bytesToHuman(summary.total)} md={md} />
+            <SummaryTile label={t('traffic.trend.summary_up')} value={bytesToHuman(summary.up)} md={md} />
+            <SummaryTile label={t('traffic.trend.summary_down')} value={bytesToHuman(summary.down)} md={md} />
+            <SummaryTile label={t('traffic.trend.summary_range')} value={`${history?.since || '-'} → ${history?.until || '-'}`} md={md} small />
+          </Box>
+
+          <Card sx={{ bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', p: 2 }}>
+            <Suspense fallback={<Box sx={{ height: 360, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>}>
+              {chartLoading
+                ? <Box sx={{ height: 360, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>
+                : <TrafficChart items={historyItems} height={360} />}
+            </Suspense>
+            <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: 1.5 }}>
+              {t('traffic.trend.chart_note')}
+            </Typography>
+          </Card>
+        </>
+      )}
+    </Box>
+  )
+}
+
+interface TileProps { label: string; value: string; md: { onSurfaceVariant: string; outlineVariant: string; surface: string }; small?: boolean }
+function SummaryTile({ label, value, md, small }: TileProps) {
+  return (
+    <Box sx={{ p: 2, borderRadius: 2, border: `1px solid ${md.outlineVariant}`, bgcolor: md.surface }}>
+      <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.5 }}>{label}</Typography>
+      <Typography sx={{ fontSize: small ? 13 : 18, fontWeight: 500, fontVariantNumeric: 'tabular-nums', wordBreak: 'break-all' }}>
+        {value}
+      </Typography>
+    </Box>
+  )
+}

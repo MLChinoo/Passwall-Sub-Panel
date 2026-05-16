@@ -34,15 +34,21 @@ type userRow struct {
 	TrafficLimitBytes   int64
 	TrafficResetPeriod  string `gorm:"size:16;default:never"`
 	TrafficPeriodStart  *time.Time
+	LifetimeUpBytes     int64 `gorm:"default:0"`
+	LifetimeDownBytes   int64 `gorm:"default:0"`
+	LifetimeTotalBytes  int64 `gorm:"default:0"`
+	LifetimeBaselineAt  *time.Time
 	DisplayName         string `gorm:"size:128"`
 	Remark              string `gorm:"size:255"`
 	Enabled             bool   `gorm:"not null"`
 	AutoDisabledReason  string `gorm:"size:32"`
 	DisableDetail       string `gorm:"type:text"`
 	BlockViolationCount int    `gorm:"default:0"`
-	EmergencyUsedCount  int
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	EmergencyUsedCount     int
+	EmergencyUntil         *time.Time
+	EmergencyBaselineBytes int64 `gorm:"default:0"`
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 func (userRow) TableName() string { return "users" }
@@ -63,15 +69,21 @@ func (r *userRow) toDomain() *domain.User {
 		TrafficLimitBytes:   r.TrafficLimitBytes,
 		TrafficResetPeriod:  domain.ResetPeriod(r.TrafficResetPeriod),
 		TrafficPeriodStart:  r.TrafficPeriodStart,
+		LifetimeUpBytes:     r.LifetimeUpBytes,
+		LifetimeDownBytes:   r.LifetimeDownBytes,
+		LifetimeTotalBytes:  r.LifetimeTotalBytes,
+		LifetimeBaselineAt:  r.LifetimeBaselineAt,
 		DisplayName:         r.DisplayName,
 		Remark:              r.Remark,
 		Enabled:             r.Enabled,
 		AutoDisabledReason:  domain.AutoDisabledReason(r.AutoDisabledReason),
 		DisableDetail:       r.DisableDetail,
-		BlockViolationCount: r.BlockViolationCount,
-		EmergencyUsedCount:  r.EmergencyUsedCount,
-		CreatedAt:           r.CreatedAt,
-		UpdatedAt:           r.UpdatedAt,
+		BlockViolationCount:    r.BlockViolationCount,
+		EmergencyUsedCount:     r.EmergencyUsedCount,
+		EmergencyUntil:         r.EmergencyUntil,
+		EmergencyBaselineBytes: r.EmergencyBaselineBytes,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
 }
 
@@ -91,15 +103,21 @@ func userFromDomain(u *domain.User) *userRow {
 		TrafficLimitBytes:   u.TrafficLimitBytes,
 		TrafficResetPeriod:  string(u.TrafficResetPeriod),
 		TrafficPeriodStart:  u.TrafficPeriodStart,
+		LifetimeUpBytes:     u.LifetimeUpBytes,
+		LifetimeDownBytes:   u.LifetimeDownBytes,
+		LifetimeTotalBytes:  u.LifetimeTotalBytes,
+		LifetimeBaselineAt:  u.LifetimeBaselineAt,
 		DisplayName:         u.DisplayName,
 		Remark:              u.Remark,
 		Enabled:             u.Enabled,
 		AutoDisabledReason:  string(u.AutoDisabledReason),
 		DisableDetail:       u.DisableDetail,
-		BlockViolationCount: u.BlockViolationCount,
-		EmergencyUsedCount:  u.EmergencyUsedCount,
-		CreatedAt:           u.CreatedAt,
-		UpdatedAt:           u.UpdatedAt,
+		BlockViolationCount:    u.BlockViolationCount,
+		EmergencyUsedCount:     u.EmergencyUsedCount,
+		EmergencyUntil:         u.EmergencyUntil,
+		EmergencyBaselineBytes: u.EmergencyBaselineBytes,
+		CreatedAt:              u.CreatedAt,
+		UpdatedAt:              u.UpdatedAt,
 	}
 }
 
@@ -141,53 +159,71 @@ func groupFromDomain(g *domain.Group) *groupRow {
 }
 
 type nodeRow struct {
-	ID            int64  `gorm:"primaryKey;autoIncrement"`
-	PanelID       int64  `gorm:"not null;index;uniqueIndex:uk_panel_inbound,priority:1"`
-	PanelName     string `gorm:"size:64;index"`
-	InboundID     int    `gorm:"not null;uniqueIndex:uk_panel_inbound,priority:2"`
-	DisplayName   string `gorm:"size:255;not null"`
-	ServerAddress string `gorm:"size:255"`
-	Flow          string `gorm:"size:64"`
-	Region        string `gorm:"size:16;not null"`
-	Tags          jsonStrings
-	SortOrder     int  `gorm:"default:0"`
-	Enabled       bool `gorm:"default:true"`
-	CreatedAt     time.Time
+	ID                    int64  `gorm:"primaryKey;autoIncrement"`
+	PanelID               int64  `gorm:"not null;index;uniqueIndex:uk_panel_inbound,priority:1"`
+	PanelName             string `gorm:"size:64;index"`
+	InboundID             int    `gorm:"not null;uniqueIndex:uk_panel_inbound,priority:2"`
+	DisplayName           string `gorm:"size:255;not null"`
+	ServerAddress         string `gorm:"size:255"`
+	Flow                  string `gorm:"size:64"`
+	Region                string `gorm:"size:16;not null"`
+	Tags                  jsonStrings
+	SortOrder             int   `gorm:"default:0"`
+	Enabled               bool  `gorm:"default:true"`
+	LifetimeUpBytes       int64 `gorm:"default:0"`
+	LifetimeDownBytes     int64 `gorm:"default:0"`
+	LifetimeTotalBytes    int64 `gorm:"default:0"`
+	LastTrafficUpBytes    int64 `gorm:"default:0"`
+	LastTrafficDownBytes  int64 `gorm:"default:0"`
+	LastTrafficTotalBytes int64 `gorm:"default:0"`
+	CreatedAt             time.Time
 }
 
 func (nodeRow) TableName() string { return "nodes" }
 
 func (r *nodeRow) toDomain() *domain.Node {
 	return &domain.Node{
-		ID:            r.ID,
-		PanelID:       r.PanelID,
-		PanelName:     r.PanelName,
-		InboundID:     r.InboundID,
-		DisplayName:   r.DisplayName,
-		ServerAddress: r.ServerAddress,
-		Flow:          r.Flow,
-		Region:        r.Region,
-		Tags:          []string(r.Tags),
-		SortOrder:     r.SortOrder,
-		Enabled:       r.Enabled,
-		CreatedAt:     r.CreatedAt,
+		ID:                    r.ID,
+		PanelID:               r.PanelID,
+		PanelName:             r.PanelName,
+		InboundID:             r.InboundID,
+		DisplayName:           r.DisplayName,
+		ServerAddress:         r.ServerAddress,
+		Flow:                  r.Flow,
+		Region:                r.Region,
+		Tags:                  []string(r.Tags),
+		SortOrder:             r.SortOrder,
+		Enabled:               r.Enabled,
+		LifetimeUpBytes:       r.LifetimeUpBytes,
+		LifetimeDownBytes:     r.LifetimeDownBytes,
+		LifetimeTotalBytes:    r.LifetimeTotalBytes,
+		LastTrafficUpBytes:    r.LastTrafficUpBytes,
+		LastTrafficDownBytes:  r.LastTrafficDownBytes,
+		LastTrafficTotalBytes: r.LastTrafficTotalBytes,
+		CreatedAt:             r.CreatedAt,
 	}
 }
 
 func nodeFromDomain(n *domain.Node) *nodeRow {
 	return &nodeRow{
-		ID:            n.ID,
-		PanelID:       n.PanelID,
-		PanelName:     n.PanelName,
-		InboundID:     n.InboundID,
-		DisplayName:   n.DisplayName,
-		ServerAddress: n.ServerAddress,
-		Flow:          n.Flow,
-		Region:        n.Region,
-		Tags:          jsonStrings(n.Tags),
-		SortOrder:     n.SortOrder,
-		Enabled:       n.Enabled,
-		CreatedAt:     n.CreatedAt,
+		ID:                    n.ID,
+		PanelID:               n.PanelID,
+		PanelName:             n.PanelName,
+		InboundID:             n.InboundID,
+		DisplayName:           n.DisplayName,
+		ServerAddress:         n.ServerAddress,
+		Flow:                  n.Flow,
+		Region:                n.Region,
+		Tags:                  jsonStrings(n.Tags),
+		SortOrder:             n.SortOrder,
+		Enabled:               n.Enabled,
+		LifetimeUpBytes:       n.LifetimeUpBytes,
+		LifetimeDownBytes:     n.LifetimeDownBytes,
+		LifetimeTotalBytes:    n.LifetimeTotalBytes,
+		LastTrafficUpBytes:    n.LastTrafficUpBytes,
+		LastTrafficDownBytes:  n.LastTrafficDownBytes,
+		LastTrafficTotalBytes: n.LastTrafficTotalBytes,
+		CreatedAt:             n.CreatedAt,
 	}
 }
 
@@ -245,6 +281,56 @@ func (r *trafficRow) toDomain() *domain.TrafficSnapshot {
 	return &domain.TrafficSnapshot{
 		ID:         r.ID,
 		UserID:     r.UserID,
+		UpBytes:    r.UpBytes,
+		DownBytes:  r.DownBytes,
+		TotalBytes: r.TotalBytes,
+		CapturedAt: r.CapturedAt,
+	}
+}
+
+type clientTrafficRow struct {
+	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	UserID      int64  `gorm:"not null;index:idx_client_time,priority:1"`
+	PanelID     int64  `gorm:"not null;index:idx_client_time,priority:2"`
+	InboundID   int    `gorm:"not null;index:idx_client_time,priority:3"`
+	ClientEmail string `gorm:"size:255;not null;index:idx_client_time,priority:4"`
+	UpBytes     int64
+	DownBytes   int64
+	TotalBytes  int64
+	CapturedAt  time.Time `gorm:"not null;index:idx_client_time,priority:5"`
+}
+
+func (clientTrafficRow) TableName() string { return "client_traffic_snapshots" }
+
+func (r *clientTrafficRow) toDomain() *domain.ClientTrafficSnapshot {
+	return &domain.ClientTrafficSnapshot{
+		ID:          r.ID,
+		UserID:      r.UserID,
+		PanelID:     r.PanelID,
+		InboundID:   r.InboundID,
+		ClientEmail: r.ClientEmail,
+		UpBytes:     r.UpBytes,
+		DownBytes:   r.DownBytes,
+		TotalBytes:  r.TotalBytes,
+		CapturedAt:  r.CapturedAt,
+	}
+}
+
+type nodeTrafficRow struct {
+	ID         int64 `gorm:"primaryKey;autoIncrement"`
+	NodeID     int64 `gorm:"not null;index:idx_node_time,priority:1"`
+	UpBytes    int64
+	DownBytes  int64
+	TotalBytes int64
+	CapturedAt time.Time `gorm:"not null;index:idx_node_time,priority:2"`
+}
+
+func (nodeTrafficRow) TableName() string { return "node_traffic_snapshots" }
+
+func (r *nodeTrafficRow) toDomain() *domain.NodeTrafficSnapshot {
+	return &domain.NodeTrafficSnapshot{
+		ID:         r.ID,
+		NodeID:     r.NodeID,
 		UpBytes:    r.UpBytes,
 		DownBytes:  r.DownBytes,
 		TotalBytes: r.TotalBytes,
@@ -378,10 +464,12 @@ type uiSettingsRow struct {
 	EmergencyAccessEnabled     bool
 	EmergencyAccessHours       int
 	EmergencyAccessMaxCount    int
+	EmergencyAccessQuotaGB     int
 	// Subscription settings
 	SubPath                  string                 `gorm:"size:128;default:'sub'"`
 	SubClientRules           jsonSubRules           `gorm:"type:json"`
 	SubImportClients         jsonSubImportClients   `gorm:"type:json"`
+	SubImportTutorialURL     string                 `gorm:"size:512"`
 	SubLogRetentionDays      int                    `gorm:"default:7"`
 	SubBlockAutoDisable      bool                   `gorm:"default:false"`
 	SubBlockAutoDisableCount int                    `gorm:"default:3"`
@@ -389,6 +477,7 @@ type uiSettingsRow struct {
 	QuickLinks               jsonQuickLinks         `gorm:"type:json"`
 	GlobalAnnouncement       jsonGlobalAnnouncement `gorm:"type:json"`
 	FooterText               string                 `gorm:"size:255"`
+	ThemeColor               string                 `gorm:"size:16"`
 	UpdatedAt                time.Time
 }
 
@@ -836,6 +925,8 @@ func EnsureSchema(db *gorm.DB) error {
 		&nodeRow{},
 		&ownershipRow{},
 		&trafficRow{},
+		&clientTrafficRow{},
+		&nodeTrafficRow{},
 		&auditRow{},
 		&subLogRow{},
 		&syncTaskRow{},
@@ -848,6 +939,31 @@ func EnsureSchema(db *gorm.DB) error {
 		&samlConfigRow{},
 		&oidcConfigRow{},
 	); err != nil {
+		return err
+	}
+	return backfillTrafficCounterNulls(db)
+}
+
+func backfillTrafficCounterNulls(db *gorm.DB) error {
+	if err := db.Exec(`
+UPDATE users
+SET
+	lifetime_up_bytes = COALESCE(lifetime_up_bytes, 0),
+	lifetime_down_bytes = COALESCE(lifetime_down_bytes, 0),
+	lifetime_total_bytes = COALESCE(lifetime_total_bytes, 0)
+`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+UPDATE nodes
+SET
+	lifetime_up_bytes = COALESCE(lifetime_up_bytes, 0),
+	lifetime_down_bytes = COALESCE(lifetime_down_bytes, 0),
+	lifetime_total_bytes = COALESCE(lifetime_total_bytes, 0),
+	last_traffic_up_bytes = COALESCE(last_traffic_up_bytes, 0),
+	last_traffic_down_bytes = COALESCE(last_traffic_down_bytes, 0),
+	last_traffic_total_bytes = COALESCE(last_traffic_total_bytes, 0)
+`).Error; err != nil {
 		return err
 	}
 	return nil

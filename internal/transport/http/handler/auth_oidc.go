@@ -37,7 +37,7 @@ func NewAuthOIDCHandler(oidcSvc *auth.OIDCService, authSvc *auth.Service, userSv
 
 func (h *AuthOIDCHandler) Login(c *gin.Context) {
 	if !h.oidc.Enabled() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "oidc not enabled"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Oidc not enabled"})
 		return
 	}
 	state, err := auth.RandomState()
@@ -113,7 +113,7 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_error&description="+url.QueryEscape(err.Error()))
 		return
 	}
-	if !u.Enabled {
+	if !u.Enabled && !allowDisabledEmergencyLogin(u.AutoDisabledReason) {
 		errorCode := "account_disabled"
 		errorDesc := "您的账号已被停用，请联系管理员。"
 		if u.AutoDisabledReason == domain.DisabledPendingApproval {

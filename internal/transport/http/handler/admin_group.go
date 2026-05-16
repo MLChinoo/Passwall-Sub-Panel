@@ -82,7 +82,7 @@ func (h *AdminGroupHandler) List(c *gin.Context) {
 func (h *AdminGroupHandler) Get(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	g, err := h.group.Get(c.Request.Context(), id)
@@ -123,7 +123,7 @@ func (h *AdminGroupHandler) Create(c *gin.Context) {
 func (h *AdminGroupHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	g, err := h.group.Get(c.Request.Context(), id)
@@ -175,7 +175,7 @@ func (h *AdminGroupHandler) Update(c *gin.Context) {
 func (h *AdminGroupHandler) UpdateLayout(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req updateLayoutRequest
@@ -199,7 +199,7 @@ func (h *AdminGroupHandler) UpdateLayout(c *gin.Context) {
 func (h *AdminGroupHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	if err := h.group.Delete(c.Request.Context(), id); err != nil {

@@ -83,7 +83,7 @@ func (h *AdminServersHandler) Create(c *gin.Context) {
 		return
 	}
 	if _, err := h.repo.GetByName(c.Request.Context(), req.Name); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "server name already exists"})
+		c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
 		return
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -104,7 +104,7 @@ func (h *AdminServersHandler) Create(c *gin.Context) {
 	if err := h.pool.Add(p); err != nil {
 		// DB succeeded but pool wiring failed; rollback so they stay in sync.
 		_ = h.repo.Delete(c.Request.Context(), p.ID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "register in pool: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Register in pool: " + err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, toServerDTO(p))
@@ -113,7 +113,7 @@ func (h *AdminServersHandler) Create(c *gin.Context) {
 func (h *AdminServersHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	existing, err := h.repo.GetByID(c.Request.Context(), id)
@@ -150,18 +150,18 @@ func (h *AdminServersHandler) Update(c *gin.Context) {
 	}
 	if req.Name != nil {
 		if err := h.nodes.UpdatePanelName(c.Request.Context(), id, existing.Name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "sync node server name: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sync node server name: " + err.Error()})
 			return
 		}
 		if err := h.ownership.UpdatePanelName(c.Request.Context(), id, existing.Name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "sync ownership server name: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sync ownership server name: " + err.Error()})
 			return
 		}
 	}
 	// Re-register in the pool: remove old client, add fresh one with updated creds.
 	_ = h.pool.Remove(id)
 	if err := h.pool.Add(existing); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "re-register in pool: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Re-register in pool: " + err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, toServerDTO(existing))
@@ -186,7 +186,7 @@ func (h *AdminServersHandler) Test(c *gin.Context) {
 	}
 	client, err := h.pool.Get(req.ID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "server not registered in pool: " + err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "Server not registered in pool: " + err.Error()})
 		return
 	}
 	inbounds, err := client.ListInbounds(c.Request.Context())
@@ -203,7 +203,7 @@ func (h *AdminServersHandler) Test(c *gin.Context) {
 func (h *AdminServersHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	// Refuse if any node still references this server.
@@ -215,7 +215,7 @@ func (h *AdminServersHandler) Delete(c *gin.Context) {
 	for _, n := range all {
 		if n.PanelID == id {
 			c.JSON(http.StatusConflict, gin.H{
-				"error": "server still has nodes attached; delete or reassign them first",
+				"error": "Server still has nodes attached; delete or reassign them first",
 			})
 			return
 		}
@@ -245,7 +245,7 @@ func toServerDTO(p *domain.XUIPanel) serverDTO {
 func mapServerError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	case errors.Is(err, domain.ErrValidation):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:

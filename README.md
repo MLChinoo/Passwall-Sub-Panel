@@ -25,7 +25,7 @@
 
 ## 简介
 
-Passwall Sub Panel 是一个基于 Go + Vue 3 的代理订阅管理系统，通过与 [3X-UI](https://github.com/MHSanaei/3x-ui) 面板集成，提供完整的用户管理、订阅生成、流量监控等功能。
+Passwall Sub Panel 是一个基于 Go + React 的代理订阅管理系统，通过与 [3X-UI](https://github.com/MHSanaei/3x-ui) 面板集成，提供完整的用户管理、订阅生成、流量监控等功能。
 
 **适用场景**：小型团队、朋友圈、个人使用，不是企业级机场系统。
 
@@ -72,7 +72,7 @@ git clone https://github.com/KazuhaHub/Passwall-Sub-Panel.git
 cd Passwall-Sub-Panel
 
 # 构建前端
-cd web
+cd web-react
 npm install
 npm run build
 cd ..
@@ -192,7 +192,7 @@ GET/POST   /api/admin/sub-logs        # 订阅日志
 | 层 | 技术 |
 |---|---|
 | 后端 | Go 1.21+, Gin, GORM |
-| 前端 | Vue 3, TypeScript, Element Plus |
+| 前端 | React 18, TypeScript, MUI (Material Design 3) |
 | 数据库 | MySQL 8.0 / SQLite |
 | 认证 | JWT, SAML 2.0, OIDC |
 

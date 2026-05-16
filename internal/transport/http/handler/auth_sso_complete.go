@@ -31,14 +31,14 @@ func NewAuthSSOCompleteHandler(authSvc *auth.Service, userSvc *user.Service) *Au
 func (h *AuthSSOCompleteHandler) Complete(c *gin.Context) {
 	accessToken, err := c.Cookie(CookieAccessToken)
 	if err != nil || accessToken == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no sso session"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No sso session"})
 		return
 	}
 	refreshToken, _ := c.Cookie(CookieRefreshToken)
 
 	claims, err := h.auth.Verify(accessToken)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
 		return
 	}
 
@@ -50,10 +50,10 @@ func (h *AuthSSOCompleteHandler) Complete(c *gin.Context) {
 	liveUser, err := h.user.Get(c.Request.Context(), claims.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "account no longer exists"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Account no longer exists"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth lookup failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Auth lookup failed"})
 		return
 	}
 

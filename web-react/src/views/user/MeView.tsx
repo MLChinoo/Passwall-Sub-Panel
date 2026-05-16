@@ -1,0 +1,934 @@
+import { lazy, Suspense, useEffect, useState, type FormEvent, type MouseEvent } from 'react'
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Avatar,
+  Box,
+  Button,
+  Card,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  Select,
+  MenuItem,
+  TextField,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import KeyIcon from '@mui/icons-material/VpnKey'
+import LockIcon from '@mui/icons-material/Lock'
+import RuleIcon from '@mui/icons-material/Rule'
+import EmergencyIcon from '@mui/icons-material/MedicalServices'
+import AccessTimeIcon from '@mui/icons-material/AccessTime'
+import DataUsageIcon from '@mui/icons-material/DataUsage'
+import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumberOutlined'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
+import MoreVertIcon from '@mui/icons-material/MoreVert'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import LaunchIcon from '@mui/icons-material/Launch'
+import DownloadIcon from '@mui/icons-material/Download'
+import StarIcon from '@mui/icons-material/Star'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
+import VisibilityIcon from '@mui/icons-material/Visibility'
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import { QRCodeSVG } from 'qrcode.react'
+import { useTranslation } from 'react-i18next'
+
+import {
+  changeMyPassword,
+  getMyProfile,
+  getMyRules,
+  resetMyCredentials,
+  updateMyRules,
+  useEmergencyAccess,
+  type MeProfile,
+} from '@/api/me'
+import type { M3Tokens } from '@/theme'
+import {
+  getMyTrafficHistory,
+  getMyUsage,
+  type TrafficHistoryItem,
+  type TrafficHistoryPeriod,
+  type UsageReport,
+} from '@/api/traffic'
+
+const TrafficChart = lazy(() => import('@/components/TrafficChart'))
+import { confirm } from '@/components/ConfirmHost'
+import { pushSnack } from '@/components/SnackbarHost'
+
+function bytesToHuman(n: number) {
+  if (n === 0) return '0'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n, u = 0
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++ }
+  return `${v.toFixed(2)} ${units[u]}`
+}
+
+// Coarse user-agent platform detection: returns one of the values used in
+// SubImportClient.recommended_for so the user portal can pick the right hero
+// client without manual priority juggling. Order matters — iPad/iPhone must
+// be checked before "mac" (some iPads claim macOS in their UA), and Android
+// before "linux" (Android UAs contain "Linux"). Returns null when nothing
+// matches (curl, exotic platforms) so the hero just doesn't render.
+function detectPlatform(): string | null {
+  const ua = (navigator.userAgent || '').toLowerCase()
+  if (/iphone|ipad|ipod/.test(ua)) return 'ios'
+  if (/android/.test(ua)) return 'android'
+  if (/windows/.test(ua)) return 'windows'
+  if (/mac os x|macintosh/.test(ua)) return 'macos'
+  if (/linux/.test(ua)) return 'linux'
+  return null
+}
+
+// Keep the protocol + host visible so the user has SOME context the link is
+// theirs; mask everything after the last `/` (token + path-specific bits).
+function maskUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.protocol}//${u.host}/${'•'.repeat(16)}`
+  } catch {
+    // Fall back if the URL isn't parseable for some reason.
+    return '•'.repeat(Math.min(40, url.length))
+  }
+}
+
+export default function MeView() {
+  const theme = useTheme()
+  const md = theme.palette.md
+  const { t } = useTranslation('user')
+
+  const [profile, setProfile] = useState<MeProfile | null>(null)
+  const [usage, setUsage] = useState<UsageReport | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const [pwdOpen, setPwdOpen] = useState(false)
+  const [pwdBusy, setPwdBusy] = useState(false)
+  const [pwdOld, setPwdOld] = useState('')
+  const [pwdNew, setPwdNew] = useState('')
+  const [pwdConfirm, setPwdConfirm] = useState('')
+
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [rulesText, setRulesText] = useState('')
+  const [rulesSaved, setRulesSaved] = useState('')
+  const [rulesBusy, setRulesBusy] = useState(false)
+
+  const [trendItems, setTrendItems] = useState<TrafficHistoryItem[]>([])
+  const [trendBusy, setTrendBusy] = useState(false)
+  const [trendPeriod, setTrendPeriod] = useState<TrafficHistoryPeriod>('day')
+  const [trendDays, setTrendDays] = useState(7)
+
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
+  // Sub URL is sensitive credential material — keep masked by default so a
+  // casual screenshot / screen-share doesn't leak it. Copy still works
+  // without revealing. Auto-hides on profile reload so a "reset credentials"
+  // action doesn't accidentally re-expose the old URL.
+  const [subUrlRevealed, setSubUrlRevealed] = useState(false)
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
+
+  useEffect(() => { void load() }, [])
+  useEffect(() => { void loadTrend()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendPeriod, trendDays])
+
+  async function loadTrend() {
+    setTrendBusy(true)
+    try {
+      const since = new Date()
+      since.setHours(0, 0, 0, 0)
+      since.setDate(since.getDate() - (trendDays - 1))
+      const sinceStr = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`
+      const today = new Date()
+      const untilStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+      const res = await getMyTrafficHistory({ period: trendPeriod, since: sinceStr, until: untilStr })
+      setTrendItems(res.items)
+    } catch { /* ignore */ }
+    finally { setTrendBusy(false) }
+  }
+
+  async function tryEmergency() {
+    setEmergencyBusy(true)
+    try {
+      const res = await useEmergencyAccess()
+      // Backend returns 200 only on success (forbidden / quota-reached come
+      // back as HTTP errors and throw above).
+      const until = res.extended_until ?? res.until
+      pushSnack(t('emergency.granted', { until: until ? new Date(until).toLocaleString() : '' }), 'success')
+      // Optimistic merge: the response carries the freshly-incremented
+      // counts, so update the badge immediately. A subsequent load() refetches
+      // the full profile (and would over-write this) — without the optimistic
+      // step the user sees the old "remaining" until the GET completes.
+      setProfile(prev => prev ? {
+        ...prev,
+        expire_at: res.extended_until ?? res.until ?? prev.expire_at,
+        emergency_access: prev.emergency_access ? {
+          ...prev.emergency_access,
+          used_count: res.used_count ?? prev.emergency_access.used_count,
+          remaining: res.remaining ?? prev.emergency_access.remaining,
+          max_count: res.max_count ?? prev.emergency_access.max_count,
+          available: false,
+          status: 'active',
+          emergency_until: res.emergency_until ?? prev.emergency_access.emergency_until,
+        } : prev.emergency_access,
+      } : prev)
+      await load()
+    } catch (e) {
+      const msg = (e as { message?: string }).message ?? t('emergency.no_quota')
+      pushSnack(msg, 'warning')
+    } finally { setEmergencyBusy(false) }
+  }
+
+  async function load() {
+    setLoading(true)
+    try {
+      const [p, u] = await Promise.all([
+        getMyProfile(),
+        getMyUsage().catch(() => null),
+      ])
+      setProfile(p); setUsage(u)
+      // Always re-mask on reload — e.g., after "重置凭证" the URL changed and
+      // leaving the old reveal flag on would briefly display the new URL.
+      setSubUrlRevealed(false)
+    } finally { setLoading(false) }
+  }
+
+  async function copy(text: string) {
+    try { await navigator.clipboard.writeText(text); pushSnack(t('common.copied'), 'success') }
+    catch { /* ignore */ }
+  }
+
+  async function reset() {
+    const ok = await confirm({
+      title: t('sub.reset'),
+      message: t('sub.reset_warn'),
+      destructive: true,
+      confirmText: t('sub.reset'),
+    })
+    if (!ok) return
+    const r = await resetMyCredentials()
+    pushSnack(t('sub.reset_ok', { uuid: r.uuid }), 'success')
+    await load()
+  }
+
+  function openPwd() {
+    setPwdOld(''); setPwdNew(''); setPwdConfirm(''); setPwdOpen(true)
+  }
+  async function submitPwd(e: FormEvent) {
+    e.preventDefault()
+    if (pwdNew !== pwdConfirm) { pushSnack(t('password.mismatch'), 'warning'); return }
+    setPwdBusy(true)
+    try {
+      await changeMyPassword(pwdOld, pwdNew)
+      pushSnack(t('password.saved'), 'success')
+      setPwdOpen(false)
+    } finally { setPwdBusy(false) }
+  }
+
+  async function openRules() {
+    setRulesOpen(true); setRulesBusy(true)
+    try {
+      const text = await getMyRules()
+      setRulesText(text); setRulesSaved(text)
+    } finally { setRulesBusy(false) }
+  }
+  async function saveRules() {
+    setRulesBusy(true)
+    try {
+      const text = rulesText.trim()
+      await updateMyRules(text)
+      setRulesText(text); setRulesSaved(text)
+      pushSnack(t('rules.saved'), 'success')
+      setRulesOpen(false)
+    } finally { setRulesBusy(false) }
+  }
+
+  if (loading) {
+    return <Box sx={{ p: 3, display: 'grid', placeItems: 'center', minHeight: 400 }}><CircularProgress /></Box>
+  }
+  if (!profile) return null
+
+  const announcement = profile.global_announcement
+  const importClients = (profile.sub_import_clients || [])
+    .filter(c => c.enabled)
+    .slice()
+    .sort((a, b) => (a.sort || 0) - (b.sort || 0))
+  const quickLinks = (profile.quick_links || [])
+    .filter(l => l.enabled)
+    .slice()
+    .sort((a, b) => (a.sort || 0) - (b.sort || 0))
+
+  function announcementStyle(level: string) {
+    if (level === 'danger') {
+      return { bg: md.errorContainer, fg: md.onErrorContainer, Icon: ErrorOutlineIcon }
+    }
+    if (level === 'warning') {
+      // M3 has no built-in warning role for the baseline-purple palette;
+      // hard-code an amber pair that adapts roughly to light vs dark.
+      const isDark = theme.palette.mode === 'dark'
+      return {
+        bg: isDark ? '#3F2E00' : '#FFF8E1',
+        fg: isDark ? '#FFE49A' : '#7A5C00',
+        Icon: WarningAmberIcon,
+      }
+    }
+    return { bg: md.primaryContainer, fg: md.onPrimaryContainer, Icon: InfoOutlinedIcon }
+  }
+
+  function buildImportURL(c: { import_url_template: string }): string {
+    const subUrl = profile?.sub_url || ''
+    const profileName = profile?.display_name || profile?.upn || 'Passwall'
+    return c.import_url_template
+      .replaceAll('{{ sub_url_encoded }}', encodeURIComponent(subUrl))
+      .replaceAll('{{ sub_url }}', subUrl)
+      .replaceAll('{{ profile_name_encoded }}', encodeURIComponent(profileName))
+      .replaceAll('{{ profile_name }}', profileName)
+  }
+
+  function emergencyStatusText(): string {
+    const emergency = profile?.emergency_access
+    if (!emergency) return ''
+    const status = emergency.status || (emergency.available ? 'available' : emergency.remaining <= 0 ? 'no_quota' : 'not_eligible')
+    if (status === 'available') {
+      return t('emergency.status_available', {
+        hours: emergency.duration_hours,
+        defaultValue: `账号到期或流量超限后，可临时恢复 ${emergency.duration_hours} 小时连接。`,
+      })
+    }
+    if (status === 'active') {
+      const until = emergency.emergency_until ? new Date(emergency.emergency_until).toLocaleString() : ''
+      return t('emergency.status_active', {
+        until,
+        defaultValue: until ? `紧急访问已开启，有效期至 ${until}。` : '紧急访问已开启。',
+      })
+    }
+    if (status === 'no_quota') {
+      return t('emergency.status_no_quota', { defaultValue: '紧急访问次数已用完。' })
+    }
+    if (status === 'not_eligible') {
+      return t('emergency.status_not_eligible', { defaultValue: '当前账号未到期且未超流量，暂不能使用紧急访问。' })
+    }
+    if (status === 'disabled') {
+      return t('emergency.status_disabled', { defaultValue: '紧急访问未开启。' })
+    }
+    if (status === 'invalid_settings') {
+      return t('emergency.status_invalid_settings', { defaultValue: '紧急访问设置不完整，请联系管理员。' })
+    }
+    return t('emergency.status_unavailable', { defaultValue: '当前暂不能使用紧急访问。' })
+  }
+
+  return (
+    <Box sx={{ p: { xs: 2, sm: 3 }, maxWidth: 1200, mx: 'auto' }}>
+      {announcement?.enabled && announcement.title && (() => {
+        const s = announcementStyle(announcement.level)
+        return (
+          <Box sx={{
+            p: 2, mb: 2, borderRadius: 2,
+            bgcolor: s.bg, color: s.fg,
+            display: 'flex', gap: 1.5, alignItems: 'flex-start',
+          }}>
+            <s.Icon sx={{ flexShrink: 0, mt: 0.25 }} />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{announcement.title}</Typography>
+              {announcement.content && (
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{announcement.content}</Typography>
+              )}
+            </Box>
+          </Box>
+        )
+      })()}
+
+      {/* Compact header — avatar + identity + kebab menu */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
+        <Avatar sx={{ width: 48, height: 48, bgcolor: md.primary, color: md.onPrimary, fontSize: 18, fontWeight: 500 }}>
+          {(profile.display_name || profile.upn).charAt(0).toUpperCase()}
+        </Avatar>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="h6" sx={{ fontWeight: 500, lineHeight: 1.2 }}>
+            {profile.display_name || profile.upn}
+          </Typography>
+          <Typography variant="body2" sx={{ color: md.onSurfaceVariant, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {profile.upn}{profile.email ? ` · ${profile.email}` : ''}
+          </Typography>
+        </Box>
+        {/* Kebab is only worth rendering when 修改密码 is actually available
+            (local accounts where admin allows it). 个人规则 + 重置凭证 both
+            live inside the Sub URL card now — they affect the subscription
+            content directly so co-locating makes the consequence obvious. */}
+        {profile.can_change_password && (<>
+          <IconButton onClick={(e: MouseEvent<HTMLElement>) => setMenuAnchor(e.currentTarget)}>
+            <MoreVertIcon />
+          </IconButton>
+          <Menu open={!!menuAnchor} anchorEl={menuAnchor} onClose={() => setMenuAnchor(null)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            PaperProps={{ sx: { mt: 1, minWidth: 200 } }}>
+            <MenuItem onClick={() => { setMenuAnchor(null); openPwd() }}>
+              <ListItemIcon><LockIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary={t('actions.change_password')} />
+            </MenuItem>
+          </Menu>
+        </>)}
+      </Box>
+
+      {/* HERO — pick the client whose recommended_for covers the visitor's
+          detected platform. Falls back to nothing if no client is configured
+          for this OS (or detection fails entirely). */}
+      {(() => {
+        const platform = detectPlatform()
+        const hero = platform
+          ? importClients.find(c => c.recommended_for?.includes(platform))
+          : undefined
+        if (!hero) return null
+        return (
+          <Card sx={{ p: { xs: 2.5, sm: 3 }, mb: { xs: 2, sm: 3 }, bgcolor: md.primaryContainer, color: md.onPrimaryContainer }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+              <StarIcon sx={{ fontSize: 18 }} />
+              <Typography sx={{ fontSize: 12, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                {t('import.recommended_label', { defaultValue: '推荐客户端' })}
+              </Typography>
+            </Box>
+            <Typography sx={{ fontWeight: 500, mb: 0.5, fontSize: { xs: 20, sm: 24 }, lineHeight: 1.2 }}>
+              {hero.name}
+            </Typography>
+            <Typography variant="body2" sx={{ mb: 2, opacity: 0.85 }}>
+              {hero.platforms.map(p => t(`import.platform_${p}`, { defaultValue: p })).join(' · ')}
+            </Typography>
+            {/* On mobile pack the three buttons into a 2-col grid (导入 +
+                安装 on row 1, 查看教程 spans row 2) instead of stacking each
+                full-width — saves ~2 vertical button-heights. Desktop keeps
+                the inline row with comfortable large buttons. */}
+            <Box sx={{
+              display: { xs: 'grid', sm: 'flex' },
+              gridTemplateColumns: { xs: '1fr 1fr', sm: 'none' },
+              gap: { xs: 1, sm: 1.5 },
+              flexWrap: 'wrap',
+            }}>
+              <Button size={isMobile ? 'medium' : 'large'} variant="contained"
+                startIcon={<LaunchIcon />}
+                onClick={() => { window.location.href = buildImportURL(hero) }}
+                sx={{ bgcolor: md.primary, color: md.onPrimary, '&:hover': { bgcolor: md.primary } }}>
+                {t('import.import')}
+              </Button>
+              <Button size={isMobile ? 'medium' : 'large'} variant="outlined"
+                startIcon={<DownloadIcon />}
+                onClick={() => window.open(hero.install_url, '_blank')}
+                sx={{ borderColor: md.onPrimaryContainer, color: md.onPrimaryContainer,
+                  '&:hover': { borderColor: md.onPrimaryContainer, bgcolor: 'rgba(0,0,0,.06)' } }}>
+                {t('import.install')}
+              </Button>
+              {profile.sub_import_tutorial_url && (
+                <Button size={isMobile ? 'medium' : 'large'} variant="outlined"
+                  startIcon={<HelpOutlineIcon />}
+                  onClick={() => window.open(profile.sub_import_tutorial_url, '_blank', 'noopener,noreferrer')}
+                  sx={{
+                    borderColor: md.onPrimaryContainer, color: md.onPrimaryContainer,
+                    gridColumn: { xs: '1 / -1', sm: 'auto' },
+                    '&:hover': { borderColor: md.onPrimaryContainer, bgcolor: 'rgba(0,0,0,.06)' },
+                  }}>
+                  {t('import.tutorial')}
+                </Button>
+              )}
+            </Box>
+          </Card>
+        )
+      })()}
+
+      {/* Modular 2-column layout below the hero. Mobile collapses to single
+          column with a usage-first order; desktop pairs cards by topic. */}
+      <Box sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1.5fr) minmax(0, 1fr)' },
+        gridTemplateAreas: {
+          xs: `"usage" "sub" "emerg" "trend" "other" "quick"`,
+          md: `"sub usage" "trend emerg" "other quick"`,
+        },
+        gap: { xs: 2, sm: 3 },
+        alignItems: 'start',
+      }}>
+
+      <Box sx={{ gridArea: 'sub' }}>
+      {/* Sub URL — masked by default for screenshot/screen-share safety.
+          Click the eye icon to reveal both the URL text AND the QR code.
+          Copy still works while masked (clipboard is private). */}
+      <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+        <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{t('sub.title')}</Typography>
+        <Typography variant="body2" sx={{ mb: 2 }}>{t('sub.intro')}</Typography>
+        <Box sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', sm: 'auto 1fr' },
+          gap: 2.5, alignItems: 'stretch',
+        }}>
+          <Box sx={{
+            justifySelf: { xs: 'center', sm: 'auto' },
+            p: 1.5, borderRadius: 2, bgcolor: '#fff',
+            border: `1px solid ${md.outlineVariant}`, lineHeight: 0,
+            position: 'relative',
+            cursor: subUrlRevealed ? 'default' : 'pointer',
+          }}
+            onClick={() => { if (!subUrlRevealed) setSubUrlRevealed(true) }}>
+            <Box sx={{
+              filter: subUrlRevealed ? 'none' : 'blur(8px)',
+              transition: 'filter .2s',
+            }}>
+              <QRCodeSVG value={profile.sub_url} size={isMobile ? 160 : 140} level="M" />
+            </Box>
+            {!subUrlRevealed && (
+              <Box sx={{
+                position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+                bgcolor: 'rgba(255,255,255,0.6)', borderRadius: 2,
+              }}>
+                <VisibilityIcon sx={{ color: md.onSurfaceVariant }} />
+              </Box>
+            )}
+          </Box>
+          <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{
+              display: 'flex', alignItems: 'center', gap: 1, p: 1.5,
+              bgcolor: md.surfaceContainerHighest, borderRadius: 1.5,
+              fontSize: 13,
+            }}>
+              <Box sx={{ flex: 1, wordBreak: 'break-all', fontFamily: 'inherit' }}>
+                {subUrlRevealed ? profile.sub_url : maskUrl(profile.sub_url)}
+              </Box>
+              <IconButton size="small" onClick={() => setSubUrlRevealed(v => !v)}
+                aria-label={subUrlRevealed ? t('sub.hide', { defaultValue: '隐藏' }) : t('sub.reveal', { defaultValue: '显示' })}>
+                {subUrlRevealed ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+              </IconButton>
+              <IconButton size="small" onClick={() => copy(profile.sub_url)} aria-label={t('sub.copy')}>
+                <ContentCopyIcon fontSize="small" />
+              </IconButton>
+            </Box>
+            <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: md.onSurfaceVariant }}>
+              {subUrlRevealed
+                ? t('sub.qr_hint', { defaultValue: '在手机客户端扫描左侧二维码可直接导入。' })
+                : t('sub.masked_hint', { defaultValue: '订阅链接已隐藏 — 点击 👁 显示完整 URL 与二维码。复制按钮无需先显示。' })}
+            </Typography>
+            {/* Actions sit in the QR-row's right column, below the hint —
+                this fills the whitespace that's there anyway (the QR is
+                taller than URL + hint stacked) instead of adding a footer
+                band. No borderTop so the card height stays compact. */}
+            <Box sx={{
+              mt: 'auto', pt: 2,
+              display: 'flex', justifyContent: 'flex-end', gap: 0.5, mr: -1,
+            }}>
+              <Button size="small" variant="text"
+                startIcon={<RuleIcon fontSize="small" />}
+                onClick={openRules}>
+                {t('actions.personal_rules')}
+              </Button>
+              <Button size="small" color="error" variant="text"
+                startIcon={<KeyIcon fontSize="small" />}
+                onClick={() => void reset()}>
+                {t('sub.reset')}
+              </Button>
+            </Box>
+          </Box>
+        </Box>
+      </Card>
+
+      </Box>
+
+      <Box sx={{ gridArea: 'usage' }}>
+      {/* Usage panel — 流量 + 到期 with progress bars */}
+      <UsagePanel
+        limitBytes={profile.traffic_limit_bytes}
+        usage={usage}
+        expireAt={profile.expire_at ?? null}
+        md={md}
+      />
+      </Box>
+
+      <Box sx={{ gridArea: 'other' }}>
+      {/* Other clients (excludes the hero, which is shown above). When no
+          client matches the visitor's platform, this falls back to the full
+          list so the user portal still surfaces all import targets. */}
+      {(() => {
+        const platform = detectPlatform()
+        const heroName = platform
+          ? importClients.find(c => c.recommended_for?.includes(platform))?.name
+          : undefined
+        const others = heroName ? importClients.filter(c => c.name !== heroName) : importClients
+        if (others.length === 0) return null
+        return (
+          // Collapsed by default — the hero card above already gives most
+          // users what they need; "更多客户端" is a fallback they only open
+          // when they want a different client.
+          <Accordion sx={{
+            bgcolor: md.surfaceContainerLow,
+            border: `1px solid ${md.outlineVariant}`,
+            borderRadius: '12px !important',
+            '&:before': { display: 'none' },
+            boxShadow: 'none',
+          }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 2.5, sm: 3 }, py: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap', width: '100%' }}>
+                <Typography sx={{ fontWeight: 500 }}>
+                  {heroName ? t('import.others_title', { defaultValue: '更多客户端' }) : t('import.title')}
+                </Typography>
+                {/* Tutorial link only shown here when there's no hero card —
+                    otherwise it's already in the hero so we don't double up.
+                    stopPropagation so the Accordion doesn't toggle when the
+                    button is clicked. */}
+                {!heroName && profile.sub_import_tutorial_url && (
+                  <Button size="small" variant="outlined"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      window.open(profile.sub_import_tutorial_url, '_blank', 'noopener,noreferrer')
+                    }}>
+                    {t('import.tutorial')}
+                  </Button>
+                )}
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails sx={{ px: { xs: 2.5, sm: 3 }, pt: 0, pb: { xs: 2.5, sm: 3 } }}>
+              {!heroName && (
+                <Typography variant="body2" sx={{ mb: 2 }}>{t('import.intro')}</Typography>
+              )}
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 2, mt: 1.5 }}>
+                {others.map(c => (
+                  <Box key={c.name} sx={{ p: 2, borderRadius: 2, border: `1px solid ${md.outlineVariant}`, bgcolor: md.surface }}>
+                    <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{c.name}</Typography>
+                    <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 1.5 }}>
+                      {c.platforms.map(p => t(`import.platform_${p}`, { defaultValue: p })).join(' · ')}
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Button size="small" variant="contained"
+                        onClick={() => { window.location.href = buildImportURL(c) }}>
+                        {t('import.import')}
+                      </Button>
+                      <Button size="small" variant="outlined"
+                        onClick={() => window.open(c.install_url, '_blank')}>
+                        {t('import.install')}
+                      </Button>
+                    </Box>
+                  </Box>
+                ))}
+              </Box>
+            </AccordionDetails>
+          </Accordion>
+        )
+      })()}
+
+      </Box>
+
+      <Box sx={{ gridArea: 'trend' }}>
+      {/* Traffic trend chart — open by default so the user sees their usage
+          shape without an extra click. Click the row to collapse. */}
+      <Accordion defaultExpanded sx={{
+        bgcolor: md.surfaceContainerLow,
+        border: `1px solid ${md.outlineVariant}`,
+        borderRadius: '12px !important',
+        '&:before': { display: 'none' },
+        boxShadow: 'none',
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 2.5, sm: 3 }, py: 1 }}>
+          <Typography sx={{ fontWeight: 500 }}>{t('trend.title')}</Typography>
+        </AccordionSummary>
+        <AccordionDetails sx={{ px: { xs: 2.5, sm: 3 }, pt: 0, pb: { xs: 2.5, sm: 3 } }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+            <Select size="small" value={trendPeriod}
+              onChange={e => setTrendPeriod(e.target.value as TrafficHistoryPeriod)}
+              sx={{ height: 36, minWidth: 90 }}>
+              <MenuItem value="day">D</MenuItem>
+              <MenuItem value="week">W</MenuItem>
+              <MenuItem value="month">M</MenuItem>
+            </Select>
+            <Select size="small" value={trendDays}
+              onChange={e => setTrendDays(Number(e.target.value))}
+              sx={{ height: 36, minWidth: 130 }}>
+              <MenuItem value={7}>{t('trend.range_7')}</MenuItem>
+              <MenuItem value={30}>{t('trend.range_30')}</MenuItem>
+              <MenuItem value={90}>{t('trend.range_90')}</MenuItem>
+            </Select>
+          </Box>
+          <Suspense fallback={<Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>}>
+            {trendBusy
+              ? <Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>
+              : <TrafficChart items={trendItems} height={280} />}
+          </Suspense>
+        </AccordionDetails>
+      </Accordion>
+
+      </Box>
+
+      <Box sx={{ gridArea: 'emerg' }}>
+      {/* Emergency access */}
+      {profile.emergency_access?.enabled && (() => {
+        const ea = profile.emergency_access
+        const quotaActive = (ea.quota_bytes ?? 0) > 0
+        const windowActive = !!ea.emergency_until && new Date(ea.emergency_until) > new Date()
+        const usedPct = quotaActive ? Math.min(100, (ea.used_bytes / ea.quota_bytes) * 100) : 0
+        const metaSx = {
+          display: 'inline-flex', alignItems: 'center', gap: 0.5,
+          fontSize: 12, opacity: 0.78,
+          '& .MuiSvgIcon-root': { fontSize: 14 },
+        } as const
+        return (
+        <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.tertiaryContainer, color: md.onTertiaryContainer }}>
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+            <EmergencyIcon sx={{ mt: 0.25 }} />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={{ fontWeight: 500, mb: 0.5 }}>{t('emergency.title')}</Typography>
+              <Typography variant="body2" sx={{ mb: 1.25 }}>{emergencyStatusText()}</Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', columnGap: 2, rowGap: 0.5 }}>
+                <Box sx={metaSx}>
+                  <AccessTimeIcon />
+                  {t('emergency.meta_duration', {
+                    hours: ea.duration_hours,
+                    defaultValue: `每次 ${ea.duration_hours} 小时`,
+                  })}
+                </Box>
+                {quotaActive && (
+                  <Box sx={metaSx}>
+                    <DataUsageIcon />
+                    {t('emergency.meta_quota', {
+                      total: bytesToHuman(ea.quota_bytes),
+                      defaultValue: `每次 ${bytesToHuman(ea.quota_bytes)} 流量`,
+                    })}
+                  </Box>
+                )}
+                <Box sx={metaSx}>
+                  <ConfirmationNumberIcon />
+                  {t('emergency.meta_count', {
+                    remaining: ea.remaining,
+                    max: ea.max_count,
+                    defaultValue: `${ea.remaining} / ${ea.max_count} 次可用`,
+                  })}
+                </Box>
+              </Box>
+            </Box>
+            <Button
+              variant="contained"
+              disabled={emergencyBusy || ea.remaining <= 0 || !ea.available}
+              startIcon={emergencyBusy ? <CircularProgress size={14} color="inherit" /> : null}
+              onClick={tryEmergency}
+              sx={{
+                bgcolor: md.tertiary, color: md.onTertiary,
+                alignSelf: 'flex-start',
+                '&:hover': { bgcolor: md.tertiary },
+              }}>
+              {t('emergency.use')}
+            </Button>
+          </Box>
+          {windowActive && quotaActive && (
+            <Box sx={{ mt: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography variant="caption" sx={{ opacity: 0.82, fontVariantNumeric: 'tabular-nums' }}>
+                  {bytesToHuman(ea.used_bytes)} / {bytesToHuman(ea.quota_bytes)}
+                </Typography>
+                <Typography variant="caption" sx={{ opacity: 0.82, fontVariantNumeric: 'tabular-nums' }}>
+                  {usedPct.toFixed(0)}%
+                </Typography>
+              </Box>
+              <Box sx={{ height: 6, borderRadius: 3, bgcolor: 'rgba(0,0,0,0.12)', overflow: 'hidden' }}>
+                <Box sx={{
+                  height: '100%', width: `${usedPct}%`,
+                  bgcolor: md.tertiary, borderRadius: 3,
+                  transition: 'width .4s ease',
+                }} />
+              </Box>
+            </Box>
+          )}
+        </Card>
+        )
+      })()}
+
+      </Box>
+
+      <Box sx={{ gridArea: 'quick' }}>
+      {/* Quick links */}
+      {quickLinks.length > 0 && (
+        <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+          <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('links.title')}</Typography>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {quickLinks.map(l => (
+              <Button key={l.url} size="small" variant="outlined"
+                onClick={() => l.new_window ? window.open(l.url, '_blank') : (window.location.href = l.url)}>
+                {l.label}
+              </Button>
+            ))}
+          </Box>
+        </Card>
+      )}
+
+      </Box>
+
+      </Box>{/* end modular grid */}
+
+      {/* Change password dialog */}
+      <Dialog open={pwdOpen} onClose={() => !pwdBusy && setPwdOpen(false)}
+        PaperProps={{ sx: { borderRadius: 4, bgcolor: md.surfaceContainerHigh, width: 440, maxWidth: '90vw' } }}>
+        <DialogTitle sx={{ pt: 3 }}>{t('password.title')}</DialogTitle>
+        <DialogContent>
+          <Box component="form" id="pwd-form" onSubmit={submitPwd} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: 1 }}>
+            <TextField required fullWidth type="password" label={t('password.old')}
+              value={pwdOld} onChange={e => setPwdOld(e.target.value)} autoComplete="current-password" />
+            <TextField required fullWidth type="password" label={t('password.new')}
+              value={pwdNew} onChange={e => setPwdNew(e.target.value)} autoComplete="new-password" />
+            <TextField required fullWidth type="password" label={t('password.confirm')}
+              value={pwdConfirm} onChange={e => setPwdConfirm(e.target.value)} autoComplete="new-password"
+              error={pwdConfirm.length > 0 && pwdConfirm !== pwdNew}
+              helperText={pwdConfirm.length > 0 && pwdConfirm !== pwdNew ? t('password.mismatch') : ''} />
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setPwdOpen(false)} disabled={pwdBusy} variant="text">{t('common.cancel')}</Button>
+          <Button type="submit" form="pwd-form" variant="contained" disabled={pwdBusy}
+            startIcon={pwdBusy ? <CircularProgress size={16} color="inherit" /> : null}>
+            {t('common.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Personal rules dialog */}
+      <Dialog open={rulesOpen} onClose={() => !rulesBusy && setRulesOpen(false)}
+        PaperProps={{ sx: { borderRadius: 4, bgcolor: md.surfaceContainerHigh, width: 600, maxWidth: '95vw' } }}>
+        <DialogTitle sx={{ pt: 3 }}>{t('rules.title')}</DialogTitle>
+        <DialogContent>
+          {rulesBusy
+            ? <Box sx={{ display: 'grid', placeItems: 'center', py: 4 }}><CircularProgress size={24} /></Box>
+            : <TextField fullWidth multiline minRows={10} maxRows={20}
+                value={rulesText} onChange={e => setRulesText(e.target.value)}
+                placeholder={t('rules.placeholder')}
+                sx={{ '& textarea': { fontSize: 13 } }} />}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setRulesOpen(false)} disabled={rulesBusy} variant="text">{t('common.cancel')}</Button>
+          <Button onClick={saveRules}
+            disabled={rulesBusy || rulesText.trim() === rulesSaved.trim()}
+            variant="contained"
+            startIcon={rulesBusy ? <CircularProgress size={16} color="inherit" /> : null}>
+            {t('common.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
+}
+
+interface UsagePanelProps {
+  limitBytes: number
+  usage: UsageReport | null
+  expireAt: string | null
+  md: M3Tokens
+}
+
+function UsagePanel({ limitBytes, usage, expireAt, md }: UsagePanelProps) {
+  const { t } = useTranslation('user')
+  const limitGB = limitBytes / 1024 / 1024 / 1024
+  const usedBytes = usage?.period_used_bytes ?? 0
+  const todayBytes = usage?.today_used_bytes ?? 0
+  const isUnlimited = limitGB === 0
+  const usagePercent = isUnlimited ? 0 : Math.min(100, (usedBytes / limitBytes) * 100)
+  const usageColor = usagePercent >= 90 ? md.error : usagePercent >= 70 ? md.tertiary : md.primary
+
+  // Expiry — derive remaining days + a progress relative to a 30-day window.
+  let expireRemainingDays: number | null = null
+  let expireDateStr = ''
+  let expireExpired = false
+  if (expireAt) {
+    const d = new Date(expireAt)
+    expireDateStr = d.toLocaleDateString()
+    const diffDays = Math.ceil((d.getTime() - Date.now()) / 86400000)
+    expireRemainingDays = diffDays
+    expireExpired = diffDays < 0
+  }
+  const expirePercent = expireRemainingDays === null
+    ? 0
+    : Math.max(0, Math.min(100, (expireRemainingDays / 30) * 100))
+  const expireColor = expireExpired
+    ? md.error
+    : (expireRemainingDays !== null && expireRemainingDays <= 7) ? md.tertiary : md.primary
+
+  return (
+    <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+      <Typography sx={{ fontWeight: 500, mb: 2.5, fontSize: 16 }}>
+        {t('profile.usage_section', { defaultValue: '我的用量' })}
+      </Typography>
+
+      {/* Period traffic with progress — single "X.XX / Y GB" line keeps used
+          and total side-by-side with one unit so the comparison reads at a
+          glance, instead of mixing a big "used" number with a small "limit"
+          fraction. */}
+      <Box sx={{ mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', mb: 1 }}>
+          <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
+            {t('profile.traffic_used')}
+          </Typography>
+          <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
+            {isUnlimited
+              ? t('profile.unlimited')
+              : `${usagePercent.toFixed(1)}%`}
+          </Typography>
+        </Box>
+        <Box sx={{ mb: 1 }}>
+          <Typography sx={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+            {isUnlimited
+              ? bytesToHuman(usedBytes)
+              : `${(usedBytes / 1024 / 1024 / 1024).toFixed(2)} / ${limitGB.toFixed(0)} GB`}
+          </Typography>
+        </Box>
+        {!isUnlimited && (
+          <Box sx={{ height: 8, borderRadius: 4, bgcolor: md.surfaceContainerHighest, overflow: 'hidden' }}>
+            <Box sx={{
+              height: '100%', width: `${usagePercent}%`,
+              bgcolor: usageColor, borderRadius: 4,
+              transition: 'width .4s ease',
+            }} />
+          </Box>
+        )}
+      </Box>
+
+      {/* Today + Expire side-by-side */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 3 }}>
+        <Box>
+          <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, mb: 0.5 }}>
+            {t('profile.today_used')}
+          </Typography>
+          <Typography sx={{ fontSize: 18, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+            {bytesToHuman(todayBytes)}
+          </Typography>
+        </Box>
+        <Box>
+          <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
+              {t('profile.expire')}
+            </Typography>
+            {expireRemainingDays !== null && (
+              <Typography sx={{ fontSize: 12, color: expireColor, fontVariantNumeric: 'tabular-nums' }}>
+                {expireExpired
+                  ? t('profile.expired_days', { days: Math.abs(expireRemainingDays) })
+                  : expireRemainingDays === 0
+                    ? t('profile.today')
+                    : t('profile.expire_in', { days: expireRemainingDays })}
+              </Typography>
+            )}
+          </Box>
+          <Typography sx={{ fontSize: 18, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+            {expireAt ? expireDateStr : t('profile.expire_permanent')}
+          </Typography>
+          {expireAt && (
+            <Box sx={{ height: 6, borderRadius: 3, bgcolor: md.surfaceContainerHighest, overflow: 'hidden', mt: 1 }}>
+              <Box sx={{
+                height: '100%', width: `${expirePercent}%`,
+                bgcolor: expireColor, borderRadius: 3,
+                transition: 'width .4s ease',
+              }} />
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </Card>
+  )
+}

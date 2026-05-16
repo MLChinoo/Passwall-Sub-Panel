@@ -1,0 +1,564 @@
+import { useEffect, useState, type FormEvent } from 'react'
+import {
+  Box,
+  Button,
+  Card,
+  Checkbox,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  InputAdornment,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Tooltip,
+  Typography,
+  useTheme,
+} from '@mui/material'
+import AddIcon from '@mui/icons-material/Add'
+import RefreshIcon from '@mui/icons-material/Refresh'
+import DeleteIcon from '@mui/icons-material/DeleteOutline'
+import EditIcon from '@mui/icons-material/EditOutlined'
+import VisibilityIcon from '@mui/icons-material/Visibility'
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import { useTranslation } from 'react-i18next'
+
+import {
+  createServer,
+  deleteServer,
+  listServers,
+  testServer,
+  updateServer,
+  type Server,
+} from '@/api/servers'
+import { confirm } from '@/components/ConfirmHost'
+import { pushSnack } from '@/components/SnackbarHost'
+
+type ProbeStatus = 'unknown' | 'checking' | 'ok' | 'fail' | 'unconfigured'
+
+interface ProbeState {
+  status: ProbeStatus
+  error?: string
+  inbound_count?: number
+}
+
+interface FormState {
+  name: string
+  url: string
+  api_token: string
+  username: string
+  password: string
+  remark: string
+  change_api_token: boolean
+  change_password: boolean
+  show_api_token: boolean
+  show_password: boolean
+}
+
+const EMPTY_FORM: FormState = {
+  name: '', url: '', api_token: '', username: '', password: '', remark: '',
+  change_api_token: false, change_password: false,
+  show_api_token: false, show_password: false,
+}
+
+function credentialsConfigured(s: Server): boolean {
+  return s.has_api_token || s.has_password
+}
+
+export default function ServersView() {
+  const theme = useTheme()
+  const md = theme.palette.md
+  const { t } = useTranslation(['admin', 'common'])
+
+  const [items, setItems] = useState<Server[]>([])
+  const [loading, setLoading] = useState(false)
+  const [probeStates, setProbeStates] = useState<Record<number, ProbeState>>({})
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchBusy, setBatchBusy] = useState<'test' | 'delete' | ''>('')
+  const [singleTesting, setSingleTesting] = useState<number | null>(null)
+
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editing, setEditing] = useState<Server | null>(null)
+  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+  const [busy, setBusy] = useState(false)
+
+  const selectedCount = selected.size
+  const allChecked = items.length > 0 && selected.size === items.length
+  const someChecked = selected.size > 0 && selected.size < items.length
+
+  useEffect(() => { void load() }, [])
+
+  async function load() {
+    setLoading(true)
+    try {
+      const list = await listServers()
+      setItems(list)
+      setSelected(new Set())
+      // Fire-and-forget probe of all items.
+      void Promise.allSettled(list.map(s => probeServer(s)))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function stateFor(s: Server): ProbeState {
+    return probeStates[s.id] ?? { status: credentialsConfigured(s) ? 'unknown' : 'unconfigured' }
+  }
+
+  async function probeServer(s: Server, notify = false) {
+    if (!credentialsConfigured(s)) {
+      setProbeStates(p => ({ ...p, [s.id]: { status: 'unconfigured' } }))
+      if (notify) pushSnack(t('admin:servers.validate.credentials_required'), 'warning')
+      return
+    }
+    setProbeStates(p => ({ ...p, [s.id]: { status: 'checking' } }))
+    try {
+      const r = await testServer(s.id)
+      if (r.ok) {
+        setProbeStates(p => ({ ...p, [s.id]: { status: 'ok', inbound_count: r.inbound_count } }))
+        if (notify) pushSnack(t('admin:servers.toast.test_ok', { count: r.inbound_count ?? 0 }), 'success')
+      } else {
+        setProbeStates(p => ({ ...p, [s.id]: { status: 'fail', error: r.error ?? 'unknown' } }))
+        if (notify) pushSnack(r.error ?? 'unknown', 'error')
+      }
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string }).response?.data?.error
+        ?? (err as { message?: string }).message
+        ?? 'unknown'
+      setProbeStates(p => ({ ...p, [s.id]: { status: 'fail', error: msg } }))
+      // axios interceptor already toasts non-401 errors
+    }
+  }
+
+  async function runTest(s: Server) {
+    setSingleTesting(s.id)
+    try { await probeServer(s, true) }
+    finally { setSingleTesting(null) }
+  }
+
+  function openCreate() {
+    setEditing(null)
+    setForm({ ...EMPTY_FORM, change_api_token: true, change_password: true })
+    setDialogOpen(true)
+  }
+
+  function openEdit(s: Server) {
+    setEditing(s)
+    setForm({
+      ...EMPTY_FORM,
+      name: s.name,
+      url: s.url,
+      username: s.username ?? '',
+      remark: s.remark ?? '',
+    })
+    setDialogOpen(true)
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (!form.url) { pushSnack(t('admin:servers.validate.url_required'), 'warning'); return }
+    setBusy(true)
+    try {
+      if (editing) {
+        const req: Record<string, string> = {
+          url: form.url,
+          name: form.name,
+          username: form.username,
+          remark: form.remark,
+        }
+        if (form.change_api_token) req.api_token = form.api_token
+        if (form.change_password) req.password = form.password
+        await updateServer(editing.id, req)
+        pushSnack(t('admin:servers.toast.saved'), 'success')
+      } else {
+        if (!form.name) { pushSnack(t('admin:servers.validate.name_required'), 'warning'); return }
+        await createServer({
+          name: form.name, url: form.url,
+          api_token: form.api_token || undefined,
+          username: form.username || undefined,
+          password: form.password || undefined,
+          remark: form.remark || undefined,
+        })
+        pushSnack(t('admin:servers.toast.created'), 'success')
+      }
+      setDialogOpen(false)
+      await load()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmDelete(s: Server) {
+    const ok = await confirm({
+      title: t('admin:servers.confirm.delete_title'),
+      message: t('admin:servers.confirm.delete_message', { name: s.name }),
+      destructive: true,
+      confirmText: t('admin:servers.action.delete'),
+    })
+    if (!ok) return
+    await deleteServer(s.id)
+    pushSnack(t('admin:servers.toast.deleted'), 'success')
+    await load()
+  }
+
+  async function batchRunTest() {
+    const rows = items.filter(s => selected.has(s.id))
+    if (!rows.length) return
+    setBatchBusy('test')
+    try {
+      await Promise.allSettled(rows.map(s => probeServer(s)))
+      pushSnack(t('admin:servers.toast.batch_tested', { count: rows.length }), 'success')
+    } finally {
+      setBatchBusy('')
+    }
+  }
+
+  async function batchDeleteServers() {
+    const rows = items.filter(s => selected.has(s.id))
+    if (!rows.length) return
+    const names = rows.slice(0, 5).map(r => r.name).join('、')
+    const suffix = rows.length > 5 ? ` +${rows.length - 5}` : ''
+    const ok = await confirm({
+      title: t('admin:servers.confirm.batch_delete_title'),
+      message: t('admin:servers.confirm.batch_delete_message', { names, suffix }),
+      destructive: true,
+      confirmText: t('admin:servers.action.delete'),
+    })
+    if (!ok) return
+    setBatchBusy('delete')
+    try {
+      const results = await Promise.allSettled(rows.map(r => deleteServer(r.id)))
+      const okIds = rows.filter((_, i) => results[i].status === 'fulfilled').map(r => r.id)
+      const failed = rows.length - okIds.length
+      setItems(prev => prev.filter(s => !okIds.includes(s.id)))
+      setSelected(new Set())
+      if (failed > 0) {
+        pushSnack(t('admin:servers.toast.batch_partial', { ok: okIds.length, fail: failed }), 'warning')
+      } else {
+        pushSnack(t('admin:servers.toast.batch_deleted', { count: okIds.length }), 'success')
+      }
+    } finally {
+      setBatchBusy('')
+    }
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked ? new Set(items.map(s => s.id)) : new Set())
+  }
+
+  function toggleOne(id: number, checked: boolean) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(id); else next.delete(id)
+      return next
+    })
+  }
+
+  function statusBadge(s: Server) {
+    const st = stateFor(s)
+    let label: string
+    let bg: string, fg: string
+    switch (st.status) {
+      case 'checking':
+        label = t('admin:servers.status.checking')
+        bg = md.secondaryContainer; fg = md.onSecondaryContainer
+        break
+      case 'ok':
+        label = typeof st.inbound_count === 'number'
+          ? t('admin:servers.status.ok_count', { count: st.inbound_count })
+          : t('admin:servers.status.ok')
+        bg = md.tertiaryContainer; fg = md.onTertiaryContainer
+        break
+      case 'fail':
+        label = t('admin:servers.status.fail')
+        bg = md.errorContainer; fg = md.onErrorContainer
+        break
+      case 'unconfigured':
+        label = t('admin:servers.status.unconfigured')
+        bg = md.surfaceContainerHighest; fg = md.onSurfaceVariant
+        break
+      default:
+        label = t('admin:servers.status.unknown')
+        bg = md.surfaceContainerHighest; fg = md.onSurfaceVariant
+    }
+    const chip = (
+      <Box sx={{
+        display: 'inline-block', px: 1.25, py: 0.25,
+        borderRadius: 1, fontSize: 12, fontWeight: 500,
+        bgcolor: bg, color: fg,
+      }}>
+        {label}
+      </Box>
+    )
+    if (st.error) return <Tooltip title={st.error}><span>{chip}</span></Tooltip>
+    return chip
+  }
+
+  return (
+    <Box sx={{ p: 3 }}>
+      {/* Header */}
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2, mb: 1 }}>
+        <Box>
+          <Typography variant="h4">{t('admin:servers.title')}</Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>{t('admin:servers.subtitle')}</Typography>
+        </Box>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>
+          {t('admin:servers.create')}
+        </Button>
+      </Box>
+
+      {/* Selection toolbar */}
+      {selectedCount > 0 && (
+        <Box sx={{
+          display: 'flex', alignItems: 'center', gap: 1, mt: 2, mb: 1,
+          px: 2, py: 1, borderRadius: 9999,
+          bgcolor: md.secondaryContainer, color: md.onSecondaryContainer,
+          width: 'fit-content',
+        }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 500, mr: 1 }}>
+            {t('admin:servers.selection_count', { count: selectedCount })}
+          </Typography>
+          <Button
+            size="small" variant="text"
+            startIcon={batchBusy === 'test' ? <CircularProgress size={14} /> : <RefreshIcon />}
+            disabled={batchBusy !== ''}
+            onClick={batchRunTest}
+            sx={{ color: 'inherit' }}
+          >
+            {t('admin:servers.batch_test')}
+          </Button>
+          <Button
+            size="small" variant="text" color="error"
+            startIcon={batchBusy === 'delete' ? <CircularProgress size={14} /> : <DeleteIcon />}
+            disabled={batchBusy !== ''}
+            onClick={batchDeleteServers}
+          >
+            {t('admin:servers.batch_delete')}
+          </Button>
+        </Box>
+      )}
+
+      {/* Table */}
+      <Card sx={{ mt: 2, bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', overflow: 'hidden' }}>
+        <TableContainer>
+          <Table>
+            <TableHead>
+              <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}` } }}>
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    indeterminate={someChecked}
+                    checked={allChecked}
+                    onChange={(_, c) => toggleAll(c)}
+                  />
+                </TableCell>
+                <TableCell>{t('admin:servers.table.name')}</TableCell>
+                <TableCell>{t('admin:servers.table.url')}</TableCell>
+                <TableCell>{t('admin:servers.table.status')}</TableCell>
+                <TableCell>{t('admin:servers.table.remark')}</TableCell>
+                <TableCell align="right">{t('admin:servers.table.actions')}</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading && items.length === 0 && (
+                <TableRow><TableCell colSpan={6} sx={{ textAlign: 'center', py: 6 }}>
+                  <CircularProgress size={24} />
+                </TableCell></TableRow>
+              )}
+              {!loading && items.length === 0 && (
+                <TableRow><TableCell colSpan={6} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>
+                  —
+                </TableCell></TableRow>
+              )}
+              {items.map(s => (
+                <TableRow
+                  key={s.id}
+                  hover
+                  sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}
+                >
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={selected.has(s.id)}
+                      onChange={(_, c) => toggleOne(s.id, c)}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 500 }}>{s.name}</TableCell>
+                  <TableCell sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{s.url}</TableCell>
+                  <TableCell>{statusBadge(s)}</TableCell>
+                  <TableCell sx={{ color: md.onSurfaceVariant, fontSize: 13 }}>{s.remark || '—'}</TableCell>
+                  <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                    <Button
+                      size="small" variant="text"
+                      startIcon={singleTesting === s.id ? <CircularProgress size={14} /> : <RefreshIcon />}
+                      disabled={singleTesting !== null}
+                      onClick={() => runTest(s)}
+                    >
+                      {t('admin:servers.action.test')}
+                    </Button>
+                    <IconButton size="small" onClick={() => openEdit(s)} aria-label={t('admin:servers.action.edit')}>
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton size="small" onClick={() => confirmDelete(s)} aria-label={t('admin:servers.action.delete')} sx={{ color: md.error }}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Card>
+
+      {/* Create/Edit dialog */}
+      <Dialog
+        open={dialogOpen}
+        onClose={() => !busy && setDialogOpen(false)}
+        PaperProps={{ sx: { borderRadius: 4, bgcolor: md.surfaceContainerHigh, width: 520, maxWidth: '90vw' } }}
+      >
+        <DialogTitle sx={{ pt: 3 }}>
+          {editing ? t('admin:servers.edit_title', { name: editing.name }) : t('admin:servers.create')}
+        </DialogTitle>
+        <DialogContent>
+          <Box component="form" id="server-form" onSubmit={submit} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: 1 }}>
+            <Box>
+              <TextField
+                fullWidth required
+                label={t('admin:servers.field.name')}
+                placeholder={t('admin:servers.placeholder.name')}
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+                helperText={t('admin:servers.hint.name')}
+              />
+            </Box>
+            <TextField
+              fullWidth required
+              label={t('admin:servers.field.url')}
+              placeholder={t('admin:servers.placeholder.url')}
+              value={form.url}
+              onChange={e => setForm({ ...form, url: e.target.value })}
+              sx={{ '& input': { fontSize: 14 } }}
+            />
+
+            {/* API Token: in edit mode, default to "kept unchanged" with a Change link */}
+            <SecretField
+              label={t('admin:servers.field.api_token')}
+              placeholder={t('admin:servers.placeholder.api_token')}
+              value={form.api_token}
+              show={form.show_api_token}
+              onShow={v => setForm({ ...form, show_api_token: v })}
+              onChange={v => setForm({ ...form, api_token: v })}
+              edit={!!editing}
+              changing={form.change_api_token}
+              alreadyConfigured={!!editing?.has_api_token}
+              onStartChange={() => setForm({ ...form, change_api_token: true })}
+            />
+
+            <TextField
+              fullWidth
+              label={t('admin:servers.field.username')}
+              placeholder={t('admin:servers.placeholder.username')}
+              value={form.username}
+              onChange={e => setForm({ ...form, username: e.target.value })}
+            />
+
+            <SecretField
+              label={t('admin:servers.field.password')}
+              placeholder={t('admin:servers.placeholder.password')}
+              value={form.password}
+              show={form.show_password}
+              onShow={v => setForm({ ...form, show_password: v })}
+              onChange={v => setForm({ ...form, password: v })}
+              edit={!!editing}
+              changing={form.change_password}
+              alreadyConfigured={!!editing?.has_password}
+              onStartChange={() => setForm({ ...form, change_password: true })}
+            />
+
+            <TextField
+              fullWidth
+              label={t('admin:servers.field.remark')}
+              value={form.remark}
+              onChange={e => setForm({ ...form, remark: e.target.value })}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setDialogOpen(false)} disabled={busy} variant="text">
+            {t('common:actions.cancel')}
+          </Button>
+          <Button
+            type="submit" form="server-form"
+            variant="contained" disabled={busy}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : null}
+          >
+            {t('common:actions.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
+}
+
+interface SecretFieldProps {
+  label: string
+  placeholder: string
+  value: string
+  show: boolean
+  onShow: (v: boolean) => void
+  onChange: (v: string) => void
+  edit: boolean
+  changing: boolean
+  alreadyConfigured: boolean
+  onStartChange: () => void
+}
+
+function SecretField(p: SecretFieldProps) {
+  const theme = useTheme()
+  const md = theme.palette.md
+  const { t } = useTranslation('admin')
+
+  if (p.edit && !p.changing) {
+    return (
+      <Box>
+        <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.5 }}>{p.label}</Typography>
+        <Box sx={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 1.5, height: 56, px: 1.75,
+          borderRadius: 1.5, border: `1px solid ${md.outlineVariant}`,
+        }}>
+          <Typography variant="body2">
+            {p.alreadyConfigured ? t('servers.hint.configured') : t('servers.hint.unconfigured')}
+          </Typography>
+          <Button size="small" variant="text" onClick={p.onStartChange}>
+            {t('servers.hint.change')}
+          </Button>
+        </Box>
+      </Box>
+    )
+  }
+  return (
+    <TextField
+      fullWidth
+      type={p.show ? 'text' : 'password'}
+      label={p.label}
+      placeholder={p.placeholder}
+      value={p.value}
+      onChange={e => p.onChange(e.target.value)}
+      InputProps={{
+        endAdornment: (
+          <InputAdornment position="end">
+            <IconButton size="small" onClick={() => p.onShow(!p.show)} aria-label="toggle visibility">
+              {p.show ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+            </IconButton>
+          </InputAdornment>
+        ),
+      }}
+    />
+  )
+}

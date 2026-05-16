@@ -1,0 +1,101 @@
+{
+  "profile": {
+    "title": "My subscription",
+    "usage_section": "My usage",
+    "expire": "Expires",
+    "expire_permanent": "Permanent",
+    "expire_at": "{{date}}",
+    "expire_in": "in {{days}} day(s)",
+    "expired_days": "expired {{days}}d ago",
+    "today": "today",
+    "traffic_limit": "Traffic limit",
+    "traffic_used": "Period used",
+    "today_used": "Today used",
+    "unlimited": "Unlimited",
+    "status_enabled": "Enabled",
+    "status_disabled": "Disabled",
+    "reset_period": {
+      "never": "Never",
+      "monthly": "Monthly",
+      "quarterly": "Quarterly"
+    }
+  },
+  "sub": {
+    "title": "Subscription URL",
+    "intro": "Import this URL into a supported client. Resetting credentials immediately invalidates the old URL.",
+    "qr_hint": "Scan the QR code on the left from your mobile client to import directly.",
+    "masked_hint": "Subscription URL is hidden — tap 👁 to reveal both URL and QR. The copy button works without revealing.",
+    "reveal": "Show",
+    "hide": "Hide",
+    "copy": "Copy",
+    "reset": "Reset credentials",
+    "reset_warn": "Resetting credentials immediately invalidates the old subscription URL and forces all connections to drop. Continue?",
+    "reset_ok": "Reset OK! New UUID: {{uuid}}"
+  },
+  "actions": {
+    "change_password": "Change password",
+    "personal_rules": "Personal rules"
+  },
+  "password": {
+    "title": "Change password",
+    "old": "Old password",
+    "new": "New password",
+    "confirm": "Confirm new password",
+    "mismatch": "Passwords do not match",
+    "saved": "Password updated"
+  },
+  "rules": {
+    "title": "My personal rules",
+    "placeholder": "One rule per line. Higher priority than site rule sets.",
+    "saved": "Saved"
+  },
+  "emergency": {
+    "title": "Emergency access",
+    "intro": "After expiry or traffic limit exceeded, emergency access can temporarily restore connection for {{hours}} hour(s) ({{remaining}} remaining).",
+    "status_available": "After expiry or traffic limit exceeded, this can temporarily restore connection for {{hours}} hour(s).",
+    "status_active": "Emergency access is active until {{until}}.",
+    "status_no_quota": "Emergency access has no remaining uses.",
+    "status_not_eligible": "Your account has not expired and has not exceeded its traffic limit yet.",
+    "status_disabled": "Emergency access is disabled.",
+    "status_invalid_settings": "Emergency access settings are incomplete. Contact an administrator.",
+    "status_unavailable": "Emergency access is not available right now.",
+    "quota": "Used {{used}} / {{max}}, {{remaining}} remaining",
+    "traffic_quota_hint": "Each window allows up to {{total}} of traffic",
+    "traffic_used": "This window: {{used}} / {{total}}",
+    "meta_duration": "{{hours}}h / window",
+    "meta_quota": "{{total}} / window",
+    "meta_count": "{{remaining}} / {{max}} uses left",
+    "use": "Use emergency access",
+    "granted": "Emergency access is active until {{until}}",
+    "no_quota": "Emergency access has no remaining uses"
+  },
+  "trend": {
+    "title": "Traffic trend",
+    "range_7": "Last 7 days",
+    "range_30": "Last 30 days",
+    "range_90": "Last 90 days"
+  },
+  "import": {
+    "title": "Import to client",
+    "others_title": "More clients",
+    "recommended_label": "Recommended client",
+    "tutorial": "View tutorial",
+    "intro": "Pick your client and tap Import — it'll auto-configure via URL Scheme. Tap Install if you don't have the client yet.",
+    "import": "Import",
+    "install": "Install",
+    "platform_windows": "Windows",
+    "platform_macos": "macOS",
+    "platform_linux": "Linux",
+    "platform_ios": "iOS",
+    "platform_android": "Android",
+    "platform_other": "Other"
+  },
+  "links": {
+    "title": "Quick links"
+  },
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "copied": "Copied"
+  }
+}

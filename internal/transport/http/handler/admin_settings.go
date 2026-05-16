@@ -47,9 +47,11 @@ type settingsDTO struct {
 	EmergencyAccessEnabled     bool                     `json:"emergency_access_enabled"`
 	EmergencyAccessHours       int                      `json:"emergency_access_hours"`
 	EmergencyAccessMaxCount    int                      `json:"emergency_access_max_count"`
+	EmergencyAccessQuotaGB     int                      `json:"emergency_access_quota_gb"`
 	SubPath                    string                   `json:"sub_path"`
 	SubClientRules             []ports.SubClientRule    `json:"sub_client_rules"`
 	SubImportClients           []ports.SubImportClient  `json:"sub_import_clients"`
+	SubImportTutorialURL       string                   `json:"sub_import_tutorial_url"`
 	SubLogRetentionDays        int                      `json:"sub_log_retention_days"`
 	SubBlockAutoDisable        bool                     `json:"sub_block_auto_disable"`
 	SubBlockAutoDisableCount   int                      `json:"sub_block_auto_disable_count"`
@@ -57,6 +59,7 @@ type settingsDTO struct {
 	QuickLinks                 []ports.QuickLink        `json:"quick_links"`
 	GlobalAnnouncement         ports.GlobalAnnouncement `json:"global_announcement"`
 	FooterText                 string                   `json:"footer_text"`
+	ThemeColor                 string                   `json:"theme_color"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -99,9 +102,11 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		EmergencyAccessEnabled:     s.EmergencyAccessEnabled,
 		EmergencyAccessHours:       s.EmergencyAccessHours,
 		EmergencyAccessMaxCount:    s.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:     s.EmergencyAccessQuotaGB,
 		SubPath:                    s.SubPath,
 		SubClientRules:             s.SubClientRules,
 		SubImportClients:           s.SubImportClients,
+		SubImportTutorialURL:       s.SubImportTutorialURL,
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
@@ -109,6 +114,7 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		QuickLinks:                 s.QuickLinks,
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,
+		ThemeColor:                 s.ThemeColor,
 	})
 }
 
@@ -122,7 +128,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 	case "sso_redirect", "sso_first", "dual", "local_only":
 		// valid
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "login_mode must be sso_redirect | sso_first | dual | local_only"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Login_mode must be sso_redirect | sso_first | dual | local_only"})
 		return
 	}
 	s := ports.UISettings{
@@ -148,9 +154,11 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		EmergencyAccessEnabled:     req.EmergencyAccessEnabled,
 		EmergencyAccessHours:       req.EmergencyAccessHours,
 		EmergencyAccessMaxCount:    req.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:     req.EmergencyAccessQuotaGB,
 		SubPath:                    strings.TrimSpace(req.SubPath),
 		SubClientRules:             req.SubClientRules,
 		SubImportClients:           normalizeSubImportClients(req.SubImportClients),
+		SubImportTutorialURL:       strings.TrimSpace(req.SubImportTutorialURL),
 		SubLogRetentionDays:        req.SubLogRetentionDays,
 		SubBlockAutoDisable:        req.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   req.SubBlockAutoDisableCount,
@@ -158,22 +166,23 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		QuickLinks:                 normalizeQuickLinks(req.QuickLinks),
 		GlobalAnnouncement:         normalizeGlobalAnnouncement(req.GlobalAnnouncement),
 		FooterText:                 strings.TrimSpace(req.FooterText),
+		ThemeColor:                 strings.TrimSpace(req.ThemeColor),
 	}
 	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "retention days must be >= 0"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Retention days must be >= 0"})
 		return
 	}
 	if s.CronTrafficPullMinutes < 0 || s.CronReconcileMinutes < 0 ||
 		s.JWTAccessTTLMinutes < 0 || s.JWTRefreshTTLMinutes < 0 ||
 		s.SubPerIPPerMin < 0 || s.LoginPerIPPerMin < 0 ||
-		s.EmergencyAccessHours < 0 || s.EmergencyAccessMaxCount < 0 ||
+		s.EmergencyAccessHours < 0 || s.EmergencyAccessMaxCount < 0 || s.EmergencyAccessQuotaGB < 0 ||
 		s.SubLogRetentionDays < 0 || s.SubBlockAutoDisableCount < 0 ||
 		s.SubUpdateIntervalHours < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "runtime tuning values must be >= 0"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Runtime tuning values must be >= 0"})
 		return
 	}
 	if s.EmergencyAccessEnabled && (s.EmergencyAccessHours <= 0 || s.EmergencyAccessMaxCount <= 0) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "emergency access hours and max count must be > 0 when enabled"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Emergency access hours and max count must be > 0 when enabled"})
 		return
 	}
 	if s.EmailDomain == "" {
@@ -223,9 +232,11 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		EmergencyAccessEnabled:     s.EmergencyAccessEnabled,
 		EmergencyAccessHours:       s.EmergencyAccessHours,
 		EmergencyAccessMaxCount:    s.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:     s.EmergencyAccessQuotaGB,
 		SubPath:                    s.SubPath,
 		SubClientRules:             s.SubClientRules,
 		SubImportClients:           s.SubImportClients,
+		SubImportTutorialURL:       s.SubImportTutorialURL,
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
@@ -233,6 +244,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		QuickLinks:                 s.QuickLinks,
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,
+		ThemeColor:                 s.ThemeColor,
 	})
 }
 
@@ -279,7 +291,7 @@ func normalizeSubImportClients(clients []ports.SubImportClient) []ports.SubImpor
 		for _, p := range c.Platforms {
 			p = strings.ToLower(strings.TrimSpace(p))
 			switch p {
-			case "windows", "macos", "linux", "ios", "android", "universal":
+			case "windows", "macos", "linux", "ios", "android", "other":
 				if !seen[p] {
 					seen[p] = true
 					platforms = append(platforms, p)
@@ -287,6 +299,24 @@ func normalizeSubImportClients(clients []ports.SubImportClient) []ports.SubImpor
 			}
 		}
 		c.Platforms = platforms
+		// RecommendedFor must be a subset of the client's own Platforms — it
+		// makes no sense to recommend an Android-only client for desktop
+		// visitors. Silently drop any platform that isn't in the client's
+		// declared support list; dedupe and clamp to allowed values.
+		recFor := make([]string, 0, len(c.RecommendedFor))
+		recSeen := map[string]bool{}
+		for _, p := range c.RecommendedFor {
+			p = strings.ToLower(strings.TrimSpace(p))
+			if !seen[p] {
+				continue
+			}
+			if recSeen[p] {
+				continue
+			}
+			recSeen[p] = true
+			recFor = append(recFor, p)
+		}
+		c.RecommendedFor = recFor
 		if c.Name == "" || c.ImportURLTemplate == "" || len(c.Platforms) == 0 {
 			continue
 		}

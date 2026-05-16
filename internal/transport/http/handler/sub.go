@@ -81,11 +81,16 @@ clientCheckDone:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	now := time.Now()
+	if u.EmergencyUntil != nil && now.After(*u.EmergencyUntil) && u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+		c.String(http.StatusForbidden, "emergency access expired")
+		return
+	}
 	if !u.Enabled {
 		c.String(http.StatusForbidden, "disabled")
 		return
 	}
-	if u.IsExpired(time.Now()) {
+	if u.IsExpired(now) {
 		c.String(http.StatusForbidden, "expired")
 		return
 	}

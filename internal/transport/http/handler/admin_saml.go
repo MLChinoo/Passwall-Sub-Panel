@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -167,16 +166,7 @@ func (h *AdminSAMLHandler) Put(c *gin.Context) {
 	// the first time SAML is enabled — admin should not have to fill those
 	// fields by hand.
 	if cfg.Mode == "auto" {
-		base := strings.TrimRight(resolveSubBase(c.Request.Context(), h.settings), "/")
-		if base == "" {
-			// Fall back to the request's own host so admins without a
-			// configured sub_base_url still get valid SP URLs generated.
-			scheme := "https"
-			if c.Request.TLS == nil && c.GetHeader("X-Forwarded-Proto") != "https" {
-				scheme = "http"
-			}
-			base = scheme + "://" + c.Request.Host
-		}
+		base := resolveSubBaseForRequest(c.Request.Context(), h.settings, c.Request)
 		cfg.SP.EntityID = base + "/api/auth/saml/metadata"
 		cfg.SP.ACSURL = base + "/api/auth/saml/acs"
 		// Reset attribute mapping to documented defaults (ApplySAMLDefaults
@@ -185,7 +175,7 @@ func (h *AdminSAMLHandler) Put(c *gin.Context) {
 		if cfg.SP.CertPEM == "" || cfg.SP.KeyPEM == "" {
 			cert, key, err := samlkey.GenerateSelfSigned(cfg.SP.EntityID)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "generate SP keypair: " + err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Generate SP keypair: " + err.Error()})
 				return
 			}
 			cfg.SP.CertPEM = cert

@@ -36,7 +36,6 @@ config/saml-sp.key
 
 # Frontend dependencies and build output
 node_modules/
-/web/dist/
 
 # Frontend build output is generated; only the embed placeholder is tracked.
 internal/web/dist/*

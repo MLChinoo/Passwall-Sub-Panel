@@ -105,6 +105,15 @@ type TrafficRepo interface {
 	LatestForUser(ctx context.Context, userID int64) (*domain.TrafficSnapshot, error)
 	LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error)
 	ListByUser(ctx context.Context, userID int64, since, until time.Time) ([]*domain.TrafficSnapshot, error)
+	InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error
+	LatestForClient(ctx context.Context, userID int64, panelID int64, inboundID int, email string) (*domain.ClientTrafficSnapshot, error)
+}
+
+type NodeTrafficRepo interface {
+	Insert(ctx context.Context, s *domain.NodeTrafficSnapshot) error
+	LatestForNode(ctx context.Context, nodeID int64) (*domain.NodeTrafficSnapshot, error)
+	LastBefore(ctx context.Context, nodeID int64, before time.Time) (*domain.NodeTrafficSnapshot, error)
+	ListByNode(ctx context.Context, nodeID int64, since, until time.Time) ([]*domain.NodeTrafficSnapshot, error)
 }
 
 type AuditRepo interface {
@@ -233,6 +242,11 @@ type UISettings struct {
 	EmergencyAccessEnabled  bool `json:"emergency_access_enabled"`
 	EmergencyAccessHours    int  `json:"emergency_access_hours"`
 	EmergencyAccessMaxCount int  `json:"emergency_access_max_count"`
+	// EmergencyAccessQuotaGB caps how much traffic a single emergency window
+	// can consume on top of the user's already-exceeded period. 0 = unlimited
+	// (only the time/count limits apply). When the user crosses the quota, the
+	// traffic poll ends the emergency window early and re-runs auto-disable.
+	EmergencyAccessQuotaGB int `json:"emergency_access_quota_gb"`
 
 	// ---- Subscription settings ----
 	// SubPath is the URL path prefix for subscription endpoints.
@@ -253,6 +267,9 @@ type UISettings struct {
 	SubUpdateIntervalHours int `yaml:"sub_update_interval_hours" json:"sub_update_interval_hours"`
 	// SubImportClients defines user-facing one-click subscription import targets.
 	SubImportClients []SubImportClient `yaml:"sub_import_clients" json:"sub_import_clients"`
+	// SubImportTutorialURL is an optional documentation/tutorial link shown
+	// next to the one-click import section on the user portal.
+	SubImportTutorialURL string `yaml:"sub_import_tutorial_url" json:"sub_import_tutorial_url"`
 	// QuickLinks defines shortcut buttons on the user self-service page.
 	QuickLinks []QuickLink `yaml:"quick_links" json:"quick_links"`
 	// GlobalAnnouncement is a single pinned notice shown to all users.
@@ -260,6 +277,11 @@ type UISettings struct {
 	// FooterText is the text displayed at the bottom of the login page.
 	// Defaults to "© Passwall Sub Panel".
 	FooterText string `yaml:"footer_text" json:"footer_text"`
+	// ThemeColor is the M3 source color (HEX, e.g. "#0061A4") used as the
+	// system-default theme for every user. Empty = fall back to the
+	// frontend's compiled-in DEFAULT_PRESET_HEX. Individual users can still
+	// override via the appearance menu (stored in localStorage).
+	ThemeColor string `yaml:"theme_color" json:"theme_color"`
 }
 
 // SubClientRule defines a subscription client detection rule.
@@ -273,12 +295,21 @@ type SubClientRule struct {
 // SubImportClient defines a user-facing one-click subscription import target.
 type SubImportClient struct {
 	Name              string   `yaml:"name" json:"name"`
-	Platforms         []string `yaml:"platforms" json:"platforms"` // windows, macos, linux, ios, android, universal
+	Platforms         []string `yaml:"platforms" json:"platforms"` // windows, macos, linux, ios, android, other
 	RenderFormat      string   `yaml:"render_format" json:"render_format"`
 	ImportURLTemplate string   `yaml:"import_url_template" json:"import_url_template"`
 	InstallURL        string   `yaml:"install_url" json:"install_url"`
 	Enabled           bool     `yaml:"enabled" json:"enabled"`
 	Sort              int      `yaml:"sort" json:"sort"`
+	// RecommendedFor lists the platforms for which this client should be
+	// rendered as the highlighted "hero" pick on the user portal. The portal
+	// detects the visitor's device (windows/macos/linux/ios/android) and
+	// renders the first enabled client whose RecommendedFor contains that
+	// platform. Empty list = never the hero (just listed under "更多客户端").
+	// Lets admins pick a different recommended client per OS without
+	// fiddling with priorities — e.g., Clash Verge Rev for desktops, Clash
+	// Meta for Android, Stash for iOS.
+	RecommendedFor []string `yaml:"recommended_for" json:"recommended_for"`
 }
 
 // QuickLink defines a user-facing shortcut button on the self-service page.
@@ -332,19 +363,20 @@ type OIDCConfigRepo interface {
 
 // Repos aggregates all repository ports for dependency injection.
 type Repos struct {
-	User       UserRepo
-	Group      GroupRepo
-	Node       NodeRepo
-	Ownership  OwnershipRepo
-	Traffic    TrafficRepo
-	Audit      AuditRepo
-	SubLog     SubLogRepo
-	SyncTask   SyncTaskRepo
-	RuleSet    RuleSetRepo
-	Template   TemplateRepo
-	XUIPanel   XUIPanelRepo
-	Settings   SettingsRepo
-	Mail       MailRepo
-	SAMLConfig SAMLConfigRepo
-	OIDCConfig OIDCConfigRepo
+	User        UserRepo
+	Group       GroupRepo
+	Node        NodeRepo
+	Ownership   OwnershipRepo
+	Traffic     TrafficRepo
+	NodeTraffic NodeTrafficRepo
+	Audit       AuditRepo
+	SubLog      SubLogRepo
+	SyncTask    SyncTaskRepo
+	RuleSet     RuleSetRepo
+	Template    TemplateRepo
+	XUIPanel    XUIPanelRepo
+	Settings    SettingsRepo
+	Mail        MailRepo
+	SAMLConfig  SAMLConfigRepo
+	OIDCConfig  OIDCConfigRepo
 }

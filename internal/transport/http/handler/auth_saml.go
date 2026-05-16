@@ -37,7 +37,7 @@ func NewAuthSAMLHandler(samlSvc *auth.SAMLService, authSvc *auth.Service, userSv
 // won't work here because the ACS POST is cross-site and SameSite=Lax blocks them.
 func (h *AuthSAMLHandler) Login(c *gin.Context) {
 	if !h.saml.Enabled() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Sso not enabled"})
 		return
 	}
 	returnTo := sanitizeReturnTo(c.Query("return_to"), "/user/me")
@@ -54,7 +54,7 @@ func (h *AuthSAMLHandler) Login(c *gin.Context) {
 // browser to the return URL embedded in RelayState.
 func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 	if !h.saml.Enabled() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Sso not enabled"})
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_error&description="+url.QueryEscape(err.Error()))
 		return
 	}
-	if !u.Enabled {
+	if !u.Enabled && !allowDisabledEmergencyLogin(u.AutoDisabledReason) {
 		errorCode := "account_disabled"
 		errorDesc := "您的账号已被停用，请联系管理员。"
 		if u.AutoDisabledReason == domain.DisabledPendingApproval {
@@ -121,10 +121,14 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/sso-callback?next="+returnTo)
 }
 
+func allowDisabledEmergencyLogin(reason domain.AutoDisabledReason) bool {
+	return reason == domain.DisabledTrafficExceeded || reason == domain.DisabledExpired
+}
+
 // Metadata serves the SP metadata XML for IdP-side onboarding.
 func (h *AuthSAMLHandler) Metadata(c *gin.Context) {
 	if !h.saml.Enabled() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "sso not enabled"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Sso not enabled"})
 		return
 	}
 	xml, err := h.saml.SPMetadataXML()

@@ -1,0 +1,36 @@
+{
+  "actions": {
+    "details": "Details",
+    "export": "Export",
+    "sync": "Bulk sync",
+    "confirm": "Apply changes",
+    "create": "Create",
+    "close": "Close",
+    "reset": "Reset",
+    "ok": "OK",
+    "cancel": "Cancel"
+  },
+  "status": {
+    "online": "Online",
+    "offline": "Offline",
+    "load": "Load",
+    "delta_vs_yesterday": "vs. yesterday"
+  },
+  "search": {
+    "placeholder": "Search…"
+  },
+  "placeholder": {
+    "title": "Page not yet migrated",
+    "body": "This page hasn't been moved from the Vue version to React + MUI yet. Current path:"
+  },
+  "errors": {
+    "sync_pending": "3X-UI temporarily unreachable; the sync task has been queued (auto-retry every minute)."
+  },
+  "auth": {
+    "logout": "Sign out"
+  },
+  "nav": {
+    "collapse": "Collapse menu",
+    "expand": "Expand menu"
+  }
+}

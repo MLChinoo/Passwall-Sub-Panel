@@ -30,6 +30,21 @@ type User struct {
 	TrafficLimitBytes  int64 // 0 = unlimited
 	TrafficResetPeriod ResetPeriod
 	TrafficPeriodStart *time.Time
+	// LifetimeUpBytes / LifetimeDownBytes / LifetimeTotalBytes accumulate
+	// monotonically across 3X-UI restarts. The poll worker computes per-cycle
+	// deltas against the previous snapshot and treats negative deltas (counter
+	// reset on Xray restart) as "delta = current value", so these counters
+	// never go backwards.
+	LifetimeUpBytes    int64
+	LifetimeDownBytes  int64
+	LifetimeTotalBytes int64
+	// LifetimeBaselineAt marks when the poll worker last updated the lifetime
+	// counters. It's the cutoff the bootstrap-delta logic uses: ownerships
+	// created AFTER this point are genuinely new traffic (count their first
+	// cumulative read); ownerships created BEFORE were already accounted for
+	// in lifetime (skip their bootstrap to avoid double-counting). Decoupled
+	// from UpdatedAt because that field gets touched by many unrelated edits.
+	LifetimeBaselineAt *time.Time
 	// DisplayName is the friendly name shown in panel UI (avatar label,
 	// header, lists). Independent of UPN, which is the stable identifier.
 	// SSO users get it from the SAML displayname claim on every login; for
@@ -44,6 +59,14 @@ type User struct {
 	// BlockViolationCount tracks how many times the user attempted to use a blocked subscription client.
 	BlockViolationCount int
 	EmergencyUsedCount  int
+	EmergencyUntil      *time.Time
+	// EmergencyBaselineBytes snapshots LifetimeTotalBytes at the moment an
+	// emergency-access window was granted. The traffic poll uses it to compute
+	// "bytes consumed during this emergency window" and ends the window early
+	// when the admin-configured EmergencyAccessQuotaGB is exhausted. Reset to
+	// zero implicitly when EmergencyUntil is cleared (rollover, admin reset,
+	// natural expiry).
+	EmergencyBaselineBytes int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -150,6 +173,27 @@ type Node struct {
 	SortOrder     int
 	Enabled       bool
 	CreatedAt     time.Time
+	// LifetimeUpBytes / LifetimeDownBytes / LifetimeTotalBytes accumulate
+	// monotonically across 3X-UI counter resets, mirroring the user-level
+	// fields. Updated by the traffic poll worker.
+	LifetimeUpBytes       int64
+	LifetimeDownBytes     int64
+	LifetimeTotalBytes    int64
+	LastTrafficUpBytes    int64
+	LastTrafficDownBytes  int64
+	LastTrafficTotalBytes int64
+}
+
+// NodeTrafficSnapshot is the per-node analogue of TrafficSnapshot: a
+// monotonic lifetime value at one point in time. Raw inbound counters are kept
+// on Node.LastTraffic* only as the baseline for the next delta calculation.
+type NodeTrafficSnapshot struct {
+	ID         int64
+	NodeID     int64
+	UpBytes    int64
+	DownBytes  int64
+	TotalBytes int64
+	CapturedAt time.Time
 }
 
 // HasTag reports whether the node carries an exact-match tag.
@@ -176,9 +220,9 @@ type XUIClientEntry struct {
 	CreatedAt   time.Time
 }
 
-// TrafficSnapshot captures the cumulative traffic of a panel user at one
-// point in time (aggregated across all owned clients via 3X-UI's
-// getClientTraffics).
+// TrafficSnapshot captures the monotonic lifetime traffic of a panel user at
+// one point in time. The poll worker derives these values from per-client raw
+// counter deltas so a reset on one inbound cannot hide growth on another.
 type TrafficSnapshot struct {
 	ID         int64
 	UserID     int64
@@ -186,6 +230,21 @@ type TrafficSnapshot struct {
 	DownBytes  int64
 	TotalBytes int64
 	CapturedAt time.Time
+}
+
+// ClientTrafficSnapshot captures the raw cumulative counters for one managed
+// 3X-UI client. User-level lifetime snapshots are derived from per-client
+// deltas so a reset on one inbound cannot hide traffic on another inbound.
+type ClientTrafficSnapshot struct {
+	ID          int64
+	UserID      int64
+	PanelID     int64
+	InboundID   int
+	ClientEmail string
+	UpBytes     int64
+	DownBytes   int64
+	TotalBytes  int64
+	CapturedAt  time.Time
 }
 
 // SubLog records one subscription URL fetch for diagnostics.
@@ -266,12 +325,13 @@ type XUIPanel struct {
 type MailReminderKind string
 
 const (
-	MailReminderExpireBefore   MailReminderKind = "expire_before"
-	MailReminderExpired        MailReminderKind = "expired"
-	MailReminderTrafficLow     MailReminderKind = "traffic_low"
-	MailReminderAccountDisable MailReminderKind = "account_disabled"
-	MailReminderAccountEnable  MailReminderKind = "account_enabled"
-	MailReminderAnnouncement   MailReminderKind = "announcement"
+	MailReminderExpireBefore     MailReminderKind = "expire_before"
+	MailReminderExpired          MailReminderKind = "expired"
+	MailReminderTrafficLow       MailReminderKind = "traffic_low"
+	MailReminderTrafficExhausted MailReminderKind = "traffic_exhausted"
+	MailReminderAccountDisable   MailReminderKind = "account_disabled"
+	MailReminderAccountEnable    MailReminderKind = "account_enabled"
+	MailReminderAnnouncement     MailReminderKind = "announcement"
 )
 
 type MailSettings struct {

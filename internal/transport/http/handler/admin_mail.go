@@ -133,6 +133,56 @@ func (h *AdminMailHandler) PutTemplate(c *gin.Context) {
 	})
 }
 
+func (h *AdminMailHandler) PreviewTemplate(c *gin.Context) {
+	kind := domain.MailReminderKind(c.Param("kind"))
+	var req mailTemplateDTO
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	preview, err := h.mail.PreviewTemplate(c.Request.Context(), &domain.MailTemplate{
+		Kind:    kind,
+		Subject: req.Subject,
+		Body:    req.Body,
+		Enabled: req.Enabled,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
+// ResetTemplate replaces the stored template body+subject for the given kind
+// with the in-code default. Used by the "重置为默认" button so admins who
+// saved a template under an older panel version can pull in newer copy /
+// structure (e.g., when we add a new metric row) without manual editing.
+//
+// Returns the freshly-restored template DTO so the editor can replace its
+// form state in one round-trip.
+func (h *AdminMailHandler) ResetTemplate(c *gin.Context) {
+	kind := domain.MailReminderKind(c.Param("kind"))
+	tpl, err := h.mail.ResetTemplate(c.Request.Context(), kind)
+	if err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, mailTemplateDTO{
+		Kind:    tpl.Kind,
+		Subject: tpl.Subject,
+		Body:    tpl.Body,
+		Enabled: tpl.Enabled,
+	})
+}
+
 type mailTestRequest struct {
 	To string `json:"to" binding:"required"`
 }

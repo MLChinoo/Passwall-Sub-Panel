@@ -18,14 +18,12 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 	if err := r.db.WithContext(ctx).First(&row, 1).Error; err != nil {
 		err = wrapNotFound(err)
 		if errors.Is(err, domain.ErrNotFound) {
-			return defaults, nil
+			return applyDefaults(defaults, defaults), nil
 		}
-		if err != nil {
-			return defaults, err
-		}
+		return defaults, err
 	}
 	if row.ID == 0 {
-		return defaults, nil
+		return applyDefaults(defaults, defaults), nil
 	}
 	out := ports.UISettings{
 		LoginMode:                  row.LoginMode,
@@ -50,9 +48,11 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 		EmergencyAccessEnabled:     row.EmergencyAccessEnabled,
 		EmergencyAccessHours:       row.EmergencyAccessHours,
 		EmergencyAccessMaxCount:    row.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:     row.EmergencyAccessQuotaGB,
 		SubPath:                    row.SubPath,
 		SubClientRules:             row.SubClientRules.toDomain(),
 		SubImportClients:           row.SubImportClients.toDomain(),
+		SubImportTutorialURL:       row.SubImportTutorialURL,
 		SubLogRetentionDays:        row.SubLogRetentionDays,
 		SubBlockAutoDisable:        row.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   row.SubBlockAutoDisableCount,
@@ -60,7 +60,16 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 		QuickLinks:                 row.QuickLinks.toDomain(),
 		GlobalAnnouncement:         row.GlobalAnnouncement.toDomain(),
 		FooterText:                 row.FooterText,
+		ThemeColor:                 row.ThemeColor,
 	}
+	return applyDefaults(out, defaults), nil
+}
+
+// applyDefaults fills in unset fields on the loaded settings. Runs on every
+// Load path (record found, record missing, table empty) so the panel always
+// boots with sane runtime values — required because tickers and rate limiters
+// panic on zero/negative intervals.
+func applyDefaults(out, defaults ports.UISettings) ports.UISettings {
 	if out.LoginMode == "" {
 		out.LoginMode = defaults.LoginMode
 	}
@@ -73,9 +82,10 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 			out.AppTitle = out.SiteTitle
 		}
 	}
-	if out.IconURL == "" {
-		out.IconURL = defaults.IconURL
-	}
+	// IconURL / LogoURL / LogoURLDark intentionally left blank when the admin
+	// hasn't customized them — the frontend site store renders a built-in
+	// fallback. Filling defaults here would surface the placeholder URL in the
+	// settings form and confuse admins.
 	if out.EmailDomain == "" {
 		out.EmailDomain = defaults.EmailDomain
 	}
@@ -111,6 +121,12 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 	if out.SubLogRetentionDays <= 0 {
 		out.SubLogRetentionDays = 7
 	}
+	if out.AuditRetentionDays <= 0 {
+		out.AuditRetentionDays = 30
+	}
+	if out.SyncTaskRetentionDays <= 0 {
+		out.SyncTaskRetentionDays = 30
+	}
 	if out.SubClientRules == nil {
 		out.SubClientRules = defaultSubClientRules()
 	}
@@ -126,7 +142,7 @@ func (r *settingsRepo) Load(ctx context.Context, defaults ports.UISettings) (por
 	if out.FooterText == "" {
 		out.FooterText = "© Passwall Sub Panel"
 	}
-	return out, nil
+	return out
 }
 
 // defaultSubClientRules returns the default subscription client detection rules.
@@ -155,6 +171,7 @@ func defaultSubImportClients() []ports.SubImportClient {
 			InstallURL:        "https://github.com/clash-verge-rev/clash-verge-rev/releases",
 			Enabled:           true,
 			Sort:              10,
+			RecommendedFor:    []string{"windows", "macos", "linux"},
 		},
 		{
 			Name:              "Clash Meta for Android",
@@ -164,6 +181,7 @@ func defaultSubImportClients() []ports.SubImportClient {
 			InstallURL:        "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
 			Enabled:           true,
 			Sort:              20,
+			RecommendedFor:    []string{"android"},
 		},
 		{
 			Name:              "Clash Mi",
@@ -173,6 +191,7 @@ func defaultSubImportClients() []ports.SubImportClient {
 			InstallURL:        "https://github.com/KaringX/clashmi/releases",
 			Enabled:           true,
 			Sort:              25,
+			RecommendedFor:    []string{"ios"},
 		},
 		{
 			Name:              "Stash",
@@ -220,9 +239,11 @@ func (r *settingsRepo) Save(ctx context.Context, s ports.UISettings) error {
 		EmergencyAccessEnabled:     s.EmergencyAccessEnabled,
 		EmergencyAccessHours:       s.EmergencyAccessHours,
 		EmergencyAccessMaxCount:    s.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:     s.EmergencyAccessQuotaGB,
 		SubPath:                    s.SubPath,
 		SubClientRules:             jsonSubRulesFromDomain(s.SubClientRules),
 		SubImportClients:           jsonSubImportClientsFromDomain(s.SubImportClients),
+		SubImportTutorialURL:       s.SubImportTutorialURL,
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
@@ -230,6 +251,7 @@ func (r *settingsRepo) Save(ctx context.Context, s ports.UISettings) error {
 		QuickLinks:                 jsonQuickLinksFromDomain(s.QuickLinks),
 		GlobalAnnouncement:         jsonGlobalAnnouncementFromDomain(s.GlobalAnnouncement),
 		FooterText:                 s.FooterText,
+		ThemeColor:                 s.ThemeColor,
 	}
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
 }

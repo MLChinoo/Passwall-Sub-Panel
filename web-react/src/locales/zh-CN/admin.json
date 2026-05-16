@@ -1,0 +1,949 @@
+{
+  "dashboard": {
+    "title": "总览",
+    "metric": {
+      "users": "用户总数",
+      "nodes": "节点总数",
+      "groups": "分组总数"
+    },
+    "trend_title": "近 7 天流量趋势",
+    "traffic": {
+      "title": "本周期流量排行",
+      "view_all": "查看全部",
+      "table": {
+        "rank": "#",
+        "upn": "UPN",
+        "period_used": "本周期已用",
+        "today_used": "今日已用"
+      },
+      "empty": "暂无流量数据（采集需等首个 5min 窗口）"
+    }
+  },
+  "settings": {
+    "title": "系统设置",
+    "tab_general": "基本设置",
+    "tab_brand": "站点品牌",
+    "tab_subscription": "订阅管理",
+    "tab_portal": "用户门户",
+    "tab_mail": "邮件提醒",
+    "tab_sso": "SSO 认证",
+    "save": "保存",
+    "saved": "已保存",
+    "feature_pending": "该 tab 正在迁移到 React + MUI（下个版本）。当前请使用 Vue 版本管理这些字段。",
+    "general": {
+      "section_login": "登录",
+      "section_security": "安全",
+      "section_runtime": "运行时调度",
+      "login_mode": "登录模式",
+      "login_mode_dual": "本地 + SSO（默认）",
+      "login_mode_sso_first": "SSO 优先",
+      "login_mode_sso_redirect": "强制 SSO（自动跳转）",
+      "login_mode_local_only": "仅本地",
+      "disallow_user_local_login": "禁止用户本地登录",
+      "disallow_user_password_change": "禁止用户修改密码",
+      "jwt_issuer": "JWT Issuer",
+      "jwt_access_ttl_minutes": "Access Token 有效期（分钟）",
+      "jwt_refresh_ttl_minutes": "Refresh Token 有效期（分钟）",
+      "sub_per_ip_per_min": "订阅请求限流（次/分钟/IP）",
+      "login_per_ip_per_min": "登录限流（次/分钟/IP）",
+      "cron_traffic_pull_minutes": "流量采集间隔（分钟）",
+      "cron_reconcile_minutes": "Reconcile 间隔（分钟）",
+      "audit_retention_days": "审计日志保留（天）",
+      "sync_task_retention_days": "同步任务保留（天）",
+      "emergency_section": "紧急访问",
+      "emergency_access_enabled": "允许用户紧急访问",
+      "emergency_access_hours": "紧急访问时长（小时）",
+      "emergency_access_max_count": "紧急访问最大次数",
+      "emergency_access_quota_gb": "紧急访问流量配额（GB）",
+      "emergency_access_quota_gb_hint": "0 表示不限制；超出后将提前结束本次紧急访问并重新自动停用"
+    },
+    "brand": {
+      "section_text": "站点文案",
+      "section_assets": "图片资源",
+      "section_theme": "主题色",
+      "section_email": "邮件",
+      "site_title": "站点标题",
+      "app_title": "应用标题（顶栏 / 登录页）",
+      "footer_text": "底部文案",
+      "icon_url": "Favicon URL",
+      "logo_url": "浅色主题 Logo URL",
+      "logo_url_dark": "深色主题 Logo URL",
+      "email_domain": "默认邮箱域",
+      "sub_base_url": "订阅 Base URL（必填）",
+      "asset_hint": "Logo / Icon 留空时使用内置默认。",
+      "theme_color": "系统默认主题色（HEX）",
+      "theme_color_hint": "用作所有用户的默认主题色；用户仍可在顶栏调色板里覆盖。留空时回退到内置默认色。",
+      "theme_color_clear": "清空"
+    },
+    "sso": {
+      "tab_saml": "SAML 2.0",
+      "tab_oidc": "OIDC / OAuth2",
+      "saved": "已保存",
+      "reload_error": "已保存到数据库，但重新加载失败：{{error}}",
+      "saml": {
+        "enabled": "启用 SAML 2.0",
+        "mode": "配置模式",
+        "mode_auto": "自动（IdP 元数据 URL）",
+        "mode_manual": "手动",
+        "sp_section": "服务提供方（SP）",
+        "sp_entity_id": "Entity ID",
+        "sp_acs_url": "ACS URL（回调）",
+        "sp_cert": "SP 证书（PEM）",
+        "sp_key": "SP 私钥（PEM，留空保持不变）",
+        "sp_key_kept": "SP 私钥已配置（保持不变）",
+        "sp_key_change": "修改私钥",
+        "idp_section": "身份提供方（IdP）",
+        "idp_metadata_url": "IdP Metadata URL",
+        "idp_refresh_hours": "Metadata 刷新间隔（小时）",
+        "attr_section": "属性映射",
+        "attr_upn": "UPN 属性名",
+        "attr_email": "Email 属性名",
+        "attr_display_name": "Display Name 属性名",
+        "attr_groups": "Groups 属性名",
+        "admin_groups": "管理员组 ID（逗号分隔）",
+        "default_group": "默认分组 slug",
+        "new_user_section": "新用户默认",
+        "expire_days": "默认有效期（天，0=永久）",
+        "traffic_limit_gb": "默认流量上限（GB，0=无限）",
+        "traffic_reset_period": "默认流量重置周期"
+      },
+      "oidc": {
+        "enabled": "启用 OIDC / OAuth2",
+        "issuer_url": "Issuer URL",
+        "client_id": "Client ID",
+        "client_secret": "Client Secret（留空保持不变）",
+        "client_secret_kept": "Client Secret 已配置（保持不变）",
+        "client_secret_change": "修改",
+        "redirect_url": "Redirect URL",
+        "scopes": "Scopes（逗号分隔）",
+        "attr_section": "属性映射",
+        "attr_username": "Username Claim",
+        "attr_email": "Email Claim",
+        "attr_display_name": "Display Name Claim",
+        "attr_groups": "Groups Claim",
+        "admin_groups": "管理员组 ID（逗号分隔）",
+        "default_group": "默认分组 slug",
+        "new_user_section": "新用户默认",
+        "expire_days": "默认有效期（天，0=永久）",
+        "traffic_limit_gb": "默认流量上限（GB，0=无限）",
+        "traffic_reset_period": "默认流量重置周期"
+      }
+    },
+    "mail": {
+      "section_smtp": "SMTP 服务器",
+      "section_sender": "发件人",
+      "section_thresholds": "提醒阈值",
+      "section_test": "发送测试邮件",
+      "section_templates": "邮件模板",
+      "enabled": "启用邮件提醒",
+      "smtp_host": "SMTP 主机",
+      "smtp_port": "端口",
+      "smtp_username": "用户名",
+      "smtp_password": "密码",
+      "encryption": "加密",
+      "encryption_none": "不加密",
+      "encryption_starttls": "STARTTLS",
+      "encryption_tls": "TLS",
+      "from_email": "发件邮箱",
+      "from_name": "发件人显示名",
+      "expire_before_days": "到期前 N 天提醒",
+      "traffic_remain_percent": "剩余流量 < N% 时提醒",
+      "test_to": "测试收件邮箱",
+      "test_send": "发送测试",
+      "test_sent": "已发送",
+      "saved": "已保存",
+      "password_kept": "密码已保存（保持不变）",
+      "password_change": "修改",
+      "kind": {
+        "expire_before": "到期前提醒",
+        "expired": "已到期",
+        "traffic_low": "流量不足",
+        "traffic_exhausted": "流量耗尽",
+        "account_disabled": "账号停用",
+        "account_enabled": "账号启用",
+        "announcement": "全站公告"
+      },
+      "tpl_subject": "主题",
+      "tpl_body": "正文",
+      "tpl_enabled": "启用此模板",
+      "tpl_preview": "预览",
+      "tpl_save": "保存模板",
+      "tpl_reset": "重置为默认",
+      "tpl_missing_hint": "该模板尚未初始化。点击\"重置为默认\"加载默认内容。",
+      "reset_confirm_title": "重置为默认模板？",
+      "reset_confirm_body": "当前模板将被默认模板覆盖，自定义内容会丢失。",
+      "reset_confirm_ok": "重置",
+      "reset_done": "已重置为默认模板",
+      "preview_title": "预览：{{kind}}",
+      "preview_subject": "邮件主题",
+      "preview_body": "邮件正文",
+      "preview_close": "关闭"
+    },
+    "portal": {
+      "section_quick_links": "快捷链接",
+      "section_announcement": "全站公告",
+      "add_link": "新增链接",
+      "delete_link": "删除",
+      "no_links": "暂无快捷链接，点击下方按钮添加。",
+      "link_table": {
+        "label": "标题",
+        "url": "URL",
+        "new_window": "新窗口",
+        "enabled": "启用",
+        "sort": "排序"
+      },
+      "announcement": {
+        "enabled": "启用全站公告",
+        "title": "标题",
+        "content": "内容",
+        "level": "级别",
+        "level_info": "信息",
+        "level_warning": "警告",
+        "level_danger": "危险"
+      }
+    },
+    "subscription": {
+      "section_basic": "基本",
+      "section_protection": "异常保护",
+      "section_clients": "客户端识别规则",
+      "section_imports": "一键导入客户端",
+      "add_rule": "新增规则",
+      "add_client": "新增客户端",
+      "delete_row": "删除",
+      "no_rules": "暂无规则，点击下方按钮添加。",
+      "no_clients": "暂无客户端，点击下方按钮添加。",
+      "client_field": {
+        "name": "名称",
+        "platforms": "支持的平台",
+        "render_format": "渲染格式",
+        "import_url_template": "导入 URL 模板",
+        "install_url": "下载 / 安装 URL",
+        "enabled": "启用",
+        "sort": "排序",
+        "recommended_for": "在哪些平台作为推荐客户端",
+        "recommended_for_empty": "请先选择支持的平台"
+      },
+      "platform": {
+        "windows": "Windows",
+        "macos": "macOS",
+        "linux": "Linux",
+        "android": "Android",
+        "ios": "iOS",
+        "other": "其他"
+      },
+      "rule_field": {
+        "name": "名称",
+        "keywords": "关键词（逗号分隔，命中 UA）",
+        "render_format": "渲染格式",
+        "enabled": "启用"
+      },
+      "sub_path": "订阅 URL 路径段（必填）",
+      "sub_import_tutorial_url": "导入教程链接（用户门户「查看教程」按钮指向；留空时按钮隐藏）",
+      "sub_log_retention_days": "订阅日志保留（天）",
+      "sub_update_interval_hours": "订阅自动刷新提示间隔（小时）",
+      "sub_block_auto_disable": "异常订阅请求自动禁用账号",
+      "sub_block_auto_disable_count": "触发禁用的连续异常次数",
+      "rule_table": {
+        "name": "名称",
+        "keywords": "关键词",
+        "format": "渲染格式",
+        "enabled": "启用"
+      },
+      "client_table": {
+        "name": "客户端",
+        "platforms": "平台",
+        "format": "格式",
+        "enabled": "启用"
+      }
+    }
+  },
+  "traffic": {
+    "title": "流量看板",
+    "poll_now": "立即采集",
+    "poll_done": "采集完成",
+    "scope_user": "按用户",
+    "scope_node": "按节点",
+    "node_table": {
+      "name": "节点名",
+      "panel": "服务器",
+      "region": "Region",
+      "month_used": "本月已用"
+    },
+    "tab_rank": "排行榜",
+    "tab_trend": "趋势图",
+    "limit": {
+      "10": "Top 10",
+      "20": "Top 20",
+      "50": "Top 50"
+    },
+    "refresh": "刷新",
+    "rank_note": "采集间隔来自系统设置，默认 5 min。",
+    "rank_table": {
+      "rank": "#",
+      "upn": "UPN",
+      "period_used": "本周期已用",
+      "today_used": "今日已用",
+      "permanent": "累计"
+    },
+    "trend": {
+      "all_users": "全部用户",
+      "all_nodes": "全部节点",
+      "search_user": "搜索用户…",
+      "search_node": "搜索节点…",
+      "period_day": "日",
+      "period_week": "周",
+      "period_month": "月",
+      "range_7": "最近 7 天",
+      "range_30": "最近 30 天",
+      "range_90": "最近 90 天",
+      "summary_total": "范围总计",
+      "summary_up": "上行",
+      "summary_down": "下行",
+      "summary_range": "范围",
+      "chart_note": "图表基于累计快照差值生成。"
+    }
+  },
+  "templates": {
+    "title": "配置方案",
+    "subtitle": "一个方案由客户端模板和绑定规则集组成，订阅渲染会以这里的绑定为准。",
+    "create": "新增方案",
+    "edit_title": "编辑配置方案",
+    "selection_count": "已选 {{count}}",
+    "batch_delete": "批量删除",
+    "field": {
+      "slug": "Slug",
+      "name": "名称",
+      "client_type": "客户端类型",
+      "is_default": "设为默认",
+      "rule_sets": "规则集",
+      "content": "模板内容"
+    },
+    "placeholder": {
+      "rule_sets": "选择与该模板策略组匹配的规则集",
+      "content": "支持占位符 (proxies / proxy_groups / rules_common / rules_personal)"
+    },
+    "table": {
+      "slug": "Slug",
+      "name": "名称",
+      "client_type": "客户端",
+      "rule_sets": "规则集",
+      "coverage": "规则目标",
+      "default": "默认",
+      "actions": "操作"
+    },
+    "status": {
+      "no_binding": "未绑定",
+      "auto_generated": "自动生成",
+      "missing_n": "缺失 {{n}}",
+      "ok": "正常",
+      "default": "默认"
+    },
+    "hint": {
+      "rule_sets": "订阅渲染只使用这里绑定的规则集。",
+      "auto_groups": "策略组将根据已绑定规则集的规则目标自动生成。",
+      "missing_targets": "规则目标未在模板策略组中找到：{{names}}",
+      "groups_ok": "已识别 {{n}} 个策略组，规则目标匹配正常。",
+      "no_binding": "当前未绑定规则集，只会渲染节点、策略组和个人规则。",
+      "incomplete": "模板内容尚未完整，请继续编辑。"
+    },
+    "validate": {
+      "slug_name_required": "slug 和 name 必填"
+    },
+    "toast": {
+      "saved": "已保存",
+      "deleted": "已删除",
+      "batch_deleted": "已删除 {{count}} 个配置方案",
+      "batch_partial": "已删除 {{ok}} 个，失败 {{fail}} 个"
+    },
+    "confirm": {
+      "delete_title": "删除配置方案",
+      "delete_message": "删除配置方案 {{slug}}？",
+      "batch_delete_title": "批量删除配置方案",
+      "batch_delete_message": "确定删除 {{count}} 个配置方案？"
+    }
+  },
+  "sync_tasks": {
+    "title": "同步任务",
+    "pending_count": "当前列表等待重试：{{count}}",
+    "purge": "一键清空",
+    "refresh": "刷新",
+    "selection_count": "已选 {{count}}",
+    "batch_retry": "批量重试",
+    "batch_cancel": "批量中止",
+    "filter_status": "状态",
+    "filter_type": "任务类型",
+    "status": {
+      "pending": "等待中",
+      "running": "执行中",
+      "succeeded": "已成功",
+      "canceled": "已取消"
+    },
+    "type": {
+      "user_delete": "删除用户",
+      "user_resync": "同步用户节点",
+      "user_push_config": "同步用户配置",
+      "node_create": "创建节点",
+      "node_delete": "删除节点",
+      "node_set_enabled": "同步节点启用",
+      "node_update": "更新节点配置"
+    },
+    "table": {
+      "id": "ID",
+      "status": "状态",
+      "type": "类型",
+      "target": "目标",
+      "summary": "摘要",
+      "attempts": "重试",
+      "next_run": "下次执行",
+      "error": "错误",
+      "actions": "操作"
+    },
+    "action": {
+      "detail": "详情",
+      "retry": "重试",
+      "cancel": "中止"
+    },
+    "confirm": {
+      "purge_title": "清空已完成任务",
+      "purge_message": "清空所有非进行中（已成功 / 已取消）的同步任务记录？等待中 / 执行中的任务不受影响。",
+      "batch_cancel_title": "批量中止任务",
+      "batch_cancel_message": "确定中止选中的 {{count}} 个同步任务？"
+    },
+    "toast": {
+      "purged": "已清空 {{count}} 条记录",
+      "batch_retried": "已重试 {{count}} 个任务",
+      "batch_canceled": "已中止 {{count}} 个任务",
+      "batch_partial": "已处理 {{ok}} 个，失败 {{fail}} 个"
+    },
+    "detail_title": "任务详情"
+  },
+  "logs": {
+    "title": "日志管理",
+    "tab_sub": "订阅日志",
+    "tab_audit": "审计日志",
+    "retention_label": "订阅日志保留天数",
+    "retention_save": "保存",
+    "retention_saved": "保留天数已更新",
+    "retention_hint": "0 = 永不自动清理。当前值会被「清理过期」按钮使用。",
+    "clear_all": "清空全部",
+    "purge_old": "清理过期",
+    "view_detail": "详情",
+    "sub_table": {
+      "id": "ID",
+      "user": "用户",
+      "ip": "IP",
+      "client_type": "客户端",
+      "ua": "User-Agent",
+      "at": "时间"
+    },
+    "audit_table": {
+      "id": "ID",
+      "actor": "操作者",
+      "action": "动作",
+      "target": "目标",
+      "ip": "IP",
+      "at": "时间"
+    },
+    "filter": {
+      "actor": "操作者",
+      "action": "动作"
+    },
+    "detail": {
+      "before": "操作前",
+      "after": "操作后"
+    },
+    "confirm": {
+      "clear_sub_title": "清空订阅日志",
+      "clear_sub_message": "确定清空所有订阅日志？此操作不可恢复。",
+      "clear_audit_title": "清空审计日志",
+      "clear_audit_message": "确定清空所有审计日志？此操作不可恢复。"
+    },
+    "toast": {
+      "cleared": "已清空",
+      "purged": "已清理 {{count}} 条过期日志"
+    }
+  },
+  "rules": {
+    "title": "规则库",
+    "subtitle": "规则集是可复用片段，只有绑定到配置方案后才会参与订阅渲染。",
+    "create": "新增规则集",
+    "edit_title": "编辑规则集",
+    "selection_count": "已选 {{count}}",
+    "batch_enable": "批量启用",
+    "batch_disable": "批量禁用",
+    "batch_delete": "批量删除",
+    "field": {
+      "slug": "Slug",
+      "name": "名称",
+      "sort": "排序",
+      "enabled": "启用",
+      "proxy_group_order": "策略组顺序",
+      "content": "规则内容"
+    },
+    "placeholder": {
+      "slug": "ad_block",
+      "name": "广告拦截",
+      "proxy_group_order": "🚀 节点选择\n💬 Ai平台\n🎮 游戏平台",
+      "content": "- DOMAIN-SUFFIX,example.com,DIRECT"
+    },
+    "hint": {
+      "proxy_group_order": "可留空；一行一个策略组名。绑定该规则集的订阅会优先按这里排列，未列出的策略组保持规则内容中的首次出现顺序。"
+    },
+    "table": {
+      "slug": "Slug",
+      "name": "名称",
+      "sort": "排序",
+      "lines": "规则行数",
+      "used_by": "引用配置方案",
+      "status": "状态",
+      "actions": "操作"
+    },
+    "status": {
+      "enabled": "启用",
+      "disabled": "禁用",
+      "no_usage": "未引用"
+    },
+    "validate": {
+      "slug_name_required": "slug 和 name 必填"
+    },
+    "toast": {
+      "saved": "已保存",
+      "deleted": "已删除",
+      "batch_enabled": "已启用 {{count}} 个规则集",
+      "batch_disabled": "已停用 {{count}} 个规则集",
+      "batch_deleted": "已删除 {{count}} 个规则集",
+      "batch_partial": "已处理 {{ok}} 个，失败 {{fail}} 个"
+    },
+    "confirm": {
+      "delete_title": "删除规则集",
+      "delete_message": "删除规则集 {{slug}}？{{usage}}",
+      "delete_used_suffix": "\n\n该规则集正在被 {{names}} 引用，删除后这些配置方案会跳过它。",
+      "batch_delete_title": "批量删除规则集",
+      "batch_delete_message": "确定删除 {{count}} 个规则集？"
+    }
+  },
+  "nodes": {
+    "title": "节点管理",
+    "subtitle": "管理 3X-UI 入站，订阅生成基于此处的启用状态",
+    "tab_managed": "已管理",
+    "tab_unmanaged": "未管理 inbound",
+    "create": "新增节点",
+    "edit_title": "编辑节点",
+    "import": "纳管",
+    "imported": "已纳管",
+    "import_validate": "请填写连接地址和 Region",
+    "edit_inbound": "编辑 Inbound 配置",
+    "edit_inbound_dialog": {
+      "title": "编辑 Inbound 配置",
+      "load_failed": "加载现有 inbound 失败：{{error}}",
+      "unsupported": "该 inbound 协议暂不支持可视化编辑（仅支持 VLESS / SS-2022）",
+      "saved": "Inbound 配置已保存"
+    },
+    "create_dialog": {
+      "title": "新增 inbound",
+      "title_dynamic": "新增 inbound ({{protocol}})",
+      "note": "简化版：仅 VLESS + Reality + TCP 一种最常用组合。其他协议（WS / gRPC / SS-2022 等）下版本补充。",
+      "note_multi": "支持 VLESS（TCP / WS / gRPC × None / TLS / Reality）和 Shadowsocks 2022。下方按协议显示对应字段。",
+      "no_servers": "请先到「服务器」页面添加 3X-UI 服务器",
+      "section_target": "目标",
+      "section_protocol": "协议",
+      "section_inbound": "监听",
+      "section_vless": "VLESS",
+      "section_tcp": "TCP",
+      "section_ws": "WebSocket",
+      "section_grpc": "gRPC",
+      "section_tls": "TLS",
+      "section_reality": "Reality 配置",
+      "section_ss2022": "Shadowsocks 2022",
+      "section_sniffing": "Sniffing",
+      "section_metadata": "元数据",
+      "protocol": "协议",
+      "panel": "3X-UI 服务器",
+      "listen": "监听地址（留空=所有）",
+      "port": "端口",
+      "enable": "启用",
+      "vless_flow": "VLESS Flow",
+      "vless_network": "传输层（network）",
+      "vless_security": "传输安全（security）",
+      "accept_proxy_protocol": "Accept Proxy Protocol",
+      "tcp_header_type": "TCP header 伪装",
+      "ws_path": "WebSocket Path",
+      "ws_host": "WebSocket Host（Header）",
+      "grpc_service_name": "gRPC serviceName",
+      "grpc_authority": "gRPC authority",
+      "grpc_multi_mode": "Multi-mode",
+      "tls_server_name": "TLS serverName",
+      "tls_alpn": "TLS ALPN（逗号分隔）",
+      "tls_min_version": "最小版本",
+      "tls_max_version": "最大版本",
+      "reality_dest": "Reality dest（伪装目标 host:port）",
+      "reality_server_names": "Reality serverNames（逗号分隔）",
+      "reality_fingerprint": "Fingerprint",
+      "reality_spider_x": "spiderX 路径",
+      "reality_keys": "Reality 密钥对",
+      "gen_keys": "生成 keypair",
+      "private_key": "Private Key",
+      "public_key": "Public Key",
+      "short_ids": "Short IDs（逗号分隔）",
+      "ss_method": "加密方式",
+      "ss_password": "服务端 PSK（base64）",
+      "ss_network": "Network",
+      "ss_network_hint": "常用 tcp,udp",
+      "gen_ss_password": "生成 PSK",
+      "sniffing_enabled": "启用 Sniffing",
+      "sniffing_dest_override": "destOverride（逗号分隔）",
+      "sniffing_metadata_only": "仅元数据",
+      "sniffing_route_only": "仅路由",
+      "validate_required": "显示名 / 服务器地址 / Region 必填",
+      "validate_reality_keys": "请先生成或填写 Reality privateKey / publicKey / shortId",
+      "validate_reality_target": "Reality dest 和 SNI 必填",
+      "validate_ss2022": "SS-2022 method 和服务端 PSK 必填",
+      "created": "已创建",
+      "queued": "已加入同步任务"
+    },
+    "claim": "Claim",
+    "claim_dialog": {
+      "title": "Claim 已存在的 client",
+      "subtitle": "把 3X-UI inbound #{{id}} 上已存在的 client（按 email 标识）关联到面板用户。常用于历史 inbound 迁移。",
+      "user": "目标面板用户",
+      "client_email": "Client Email（必填，跟 3X-UI 中的完全一致）",
+      "client_uuid": "Client UUID（可选；留空让 panel 沿用 3X-UI 现有值）",
+      "submit": "Claim",
+      "claimed": "已关联",
+      "validate_required": "请选择用户并填写 client email"
+    },
+    "import_dialog": {
+      "title": "纳管 inbound",
+      "subtitle": "{{panel}} · inbound #{{id}} · {{protocol}}:{{port}}",
+      "display_name": "显示名",
+      "server_address": "连接地址",
+      "flow": "Flow（可选）",
+      "region": "Region",
+      "tags": "Tags（逗号分隔）",
+      "sort_order": "排序权重"
+    },
+    "feature_pending": "功能迁移中（下个版本）",
+    "selection_count": "已选 {{count}}",
+    "batch_enable": "批量启用",
+    "batch_disable": "批量停用",
+    "batch_delete": "批量删除",
+    "table": {
+      "id": "ID",
+      "display_name": "显示名",
+      "panel_name": "服务器",
+      "server_address": "连接地址",
+      "region": "Region",
+      "tags": "Tags",
+      "inbound": "Inbound",
+      "sort_order": "排序",
+      "enabled": "启用",
+      "actions": "操作"
+    },
+    "field": {
+      "display_name": "显示名",
+      "server_address": "连接地址",
+      "flow": "Flow（可选）",
+      "region": "Region",
+      "tags": "Tags（逗号分隔）",
+      "sort_order": "排序权重"
+    },
+    "action": {
+      "edit": "编辑",
+      "delete": "删除"
+    },
+    "validate": {
+      "address_region_required": "请填写连接地址和 Region"
+    },
+    "toast": {
+      "saved": "已保存",
+      "deleted": "已删除",
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "batch_enabled": "已启用 {{count}} 个节点",
+      "batch_disabled": "已停用 {{count}} 个节点",
+      "batch_deleted": "已删除 {{count}} 个节点",
+      "batch_partial": "已处理 {{ok}} 个，失败 {{fail}} 个"
+    },
+    "confirm": {
+      "delete_title": "删除节点",
+      "delete_message": "确定删除节点 {{name}}？该操作会从 3X-UI 移除对应 inbound。",
+      "batch_delete_title": "批量删除节点",
+      "batch_delete_message": "确定删除 {{count}} 个节点？"
+    }
+  },
+  "users": {
+    "title": "用户管理",
+    "create": "新增用户",
+    "edit_title": "编辑用户",
+    "result_title": "用户已创建",
+    "search_placeholder": "搜索 UPN / 邮箱 / 备注…",
+    "filter_group_all": "全部分组",
+    "refresh": "刷新",
+    "field": {
+      "upn": "UPN",
+      "email": "邮箱",
+      "display_name": "显示名",
+      "password": "初始密码（留空自动生成）",
+      "group": "分组",
+      "role": "角色",
+      "expire_days": "有效期（天，0=永久）",
+      "expire_at": "到期时间",
+      "expire_mode_date": "到期时间",
+      "expire_mode_permanent": "永久",
+      "traffic_limit_gb": "流量上限 (GB，0=无限)",
+      "period_used_gb": "本周期已用 (GB)",
+      "emergency_used_count": "紧急访问已用 {{count}} 次",
+      "emergency_window_until": "生效至 {{time}}（剩余 {{hours}} 小时）",
+      "emergency_window_used_with_quota": "本窗口已用 {{used}} / {{quota}} GB",
+      "emergency_window_used_unlimited": "本窗口已用 {{used}} GB（不限量）",
+      "traffic_reset_period": "流量重置周期",
+      "remark": "备注"
+    },
+    "role": {
+      "admin": "管理员",
+      "user": "普通用户"
+    },
+    "reset_period": {
+      "never": "不重置",
+      "monthly": "每月",
+      "quarterly": "每季"
+    },
+    "table": {
+      "upn": "UPN",
+      "display_name": "显示名",
+      "group": "分组",
+      "role": "角色",
+      "traffic": "流量",
+      "expire": "到期",
+      "status": "状态",
+      "actions": "操作"
+    },
+    "status": {
+      "enabled": "启用",
+      "disabled": "禁用",
+      "expired": "已过期",
+      "expiring_soon": "{{days}} 天内到期",
+      "expired_days": "已过期 {{days}} 天",
+      "today": "今天到期",
+      "permanent": "永久",
+      "unlimited": "无限",
+      "traffic_exhausted": "流量已用尽",
+      "blocked": "违规停用",
+      "pending_approval": "待审核",
+      "pending_delete": "待删除",
+      "manual_disabled": "管理员停用",
+      "emergency_active": "紧急访问中"
+    },
+    "action": {
+      "edit": "编辑",
+      "renew": "续期 30 天",
+      "enable": "启用",
+      "disable": "停用",
+      "delete": "删除"
+    },
+    "result": {
+      "intro": "用户 {{upn}} 已创建。请记录初始密码 —— 这是唯一一次显示。",
+      "password_label": "初始密码",
+      "sub_url_label": "订阅 URL",
+      "copy": "复制"
+    },
+    "reason": {
+      "enable_title": "启用用户",
+      "disable_title": "停用用户",
+      "enable_placeholder": "启用原因（可选）",
+      "disable_placeholder": "停用原因（可选）"
+    },
+    "validate": {
+      "upn_required": "请填写 UPN",
+      "group_required": "请选择分组",
+      "demote_self": "你正在把当前登录的管理员账号降级为普通用户，保存后会失去管理后台权限。继续？"
+    },
+    "toast": {
+      "saved": "已保存",
+      "deleted": "已删除",
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "renewed": "已续期 {{days}} 天",
+      "renew_permanent_skip": "永久账号无需快捷续期；如需改成限时账号请进入编辑设置到期时间",
+      "copied": "已复制"
+    },
+    "confirm": {
+      "delete_title": "删除用户",
+      "delete_message": "确定删除用户 {{upn}}？该操作将从所有 3X-UI inbound 清除其 client。",
+      "demote_title": "确认降级",
+      "reset_credentials_title": "重置凭证",
+      "reset_credentials_message": "重置 {{upn}} 的凭证会让旧订阅链接立即失效，现有连接被强制断开。继续？",
+      "batch_delete_title": "批量删除用户",
+      "batch_delete_message": "确定删除 {{names}}{{suffix}}？该操作将从所有 3X-UI inbound 清除这些用户的 client。"
+    },
+    "more_menu": {
+      "copy_sub": "复制订阅 URL",
+      "personal_rules": "个人规则",
+      "reset_credentials": "重置凭证",
+      "reset_emergency": "重置紧急访问次数"
+    },
+    "batch": {
+      "selected": "已选 {{count}}",
+      "enable": "批量启用",
+      "disable": "批量停用",
+      "renew": "批量续期 30 天",
+      "delete": "批量删除",
+      "more": "更多",
+      "no_renewable": "所选用户没有可快捷续期的限时账号",
+      "renewed_with_skip": "已续期 {{count}} 个用户，跳过 {{skipped}} 个永久账号",
+      "renewed_partial": "已续期 {{ok}} 个用户，失败 {{fail}} 个",
+      "enable_partial": "已启用 {{ok}} 个用户，失败 {{fail}} 个",
+      "disable_partial": "已停用 {{ok}} 个用户，失败 {{fail}} 个",
+      "enabled_count": "已启用 {{count}} 个用户",
+      "disabled_count": "已停用 {{count}} 个用户",
+      "delete_partial": "已删除 {{ok}} 个用户，失败 {{fail}} 个",
+      "deleted_count": "已删除 {{count}} 个用户",
+      "emergency_partial": "已重置 {{ok}} 个用户，失败 {{fail}} 个",
+      "emergency_count": "已重置 {{count}} 个用户的紧急使用次数"
+    },
+    "rules": {
+      "title": "{{upn}} 的个人规则",
+      "placeholder": "每行一条规则，支持 mihomo / sing-box 格式",
+      "saved": "个人规则已保存",
+      "reset": "撤销修改",
+      "save": "保存"
+    },
+    "reconcile": {
+      "trigger": "一键同步 Reconcile",
+      "result_title": "巡检结果",
+      "summary_no_fix": "巡检完成！共扫描 {{scanned}} 个节点/用户，所有数据均一致。",
+      "summary_fixed": "巡检完成！共扫描 {{scanned}} 个节点/用户，自动修复 {{fixed}} 个问题。",
+      "issues_title": "未修复问题"
+    },
+    "credentials": {
+      "result": "已重置！新 UUID: {{uuid}}",
+      "emergency_reset": "已重置紧急使用次数"
+    }
+  },
+  "groups": {
+    "title": "分组管理",
+    "create": "新增分组",
+    "edit_title": "编辑分组",
+    "selection_count": "已选 {{count}}",
+    "batch_delete": "批量删除",
+    "field": {
+      "slug": "Slug",
+      "name": "名称",
+      "match_all": "匹配所有节点",
+      "tags": "tag_filter",
+      "remark": "备注"
+    },
+    "placeholder": {
+      "tags": "region:TW, tag:reality"
+    },
+    "hint": {
+      "tags": "逗号分隔，AND 组合。支持 region:XX / tag:YY / server:ZZ"
+    },
+    "table": {
+      "name": "名称",
+      "slug": "Slug",
+      "tag_filter": "tag_filter",
+      "members": "成员数",
+      "remark": "备注",
+      "actions": "操作"
+    },
+    "tag": {
+      "all": "所有节点"
+    },
+    "action": {
+      "edit": "编辑",
+      "delete": "删除"
+    },
+    "validate": {
+      "slug_required": "Slug 必填",
+      "name_required": "名称必填"
+    },
+    "warn": {
+      "has_members": "该组还有 {{count}} 个成员，请先迁出"
+    },
+    "toast": {
+      "created": "已创建",
+      "updated": "已更新",
+      "deleted": "已删除",
+      "resync_partial": "部分成员 resync 失败：{{count}} 个",
+      "batch_deleted": "已删除 {{count}} 个分组",
+      "batch_partial": "已删除 {{ok}} 个分组，失败 {{fail}} 个"
+    },
+    "confirm": {
+      "delete_title": "删除分组",
+      "delete_message": "确定删除分组 {{name}}？",
+      "batch_delete_title": "批量删除分组",
+      "batch_delete_message": "确定删除 {{names}}{{suffix}}？"
+    }
+  },
+  "servers": {
+    "title": "服务器（3X-UI）",
+    "subtitle": "节点（inbound）关联到服务器。新增节点时从这里的列表选择。",
+    "create": "新增服务器",
+    "edit_title": "编辑 {{name}}",
+    "selection_count": "已选 {{count}}",
+    "batch_test": "批量测试",
+    "batch_delete": "批量删除",
+    "field": {
+      "name": "服务器名称",
+      "url": "URL",
+      "api_token": "API Token",
+      "username": "用户名",
+      "password": "密码",
+      "remark": "备注"
+    },
+    "placeholder": {
+      "name": "default / us-west / ...",
+      "url": "https://3x-ui.example.com:54321",
+      "api_token": "3X-UI API Token（推荐）",
+      "username": "admin（仅在用密码登录时）",
+      "password": "API Token 优先；填密码作为兜底"
+    },
+    "hint": {
+      "name": "显示名称，可修改；内部关联使用数据库 ID",
+      "configured": "已配置（保持不变）",
+      "unconfigured": "未配置",
+      "change": "修改"
+    },
+    "table": {
+      "name": "服务器名称",
+      "url": "URL",
+      "status": "状态",
+      "remark": "备注",
+      "actions": "操作"
+    },
+    "status": {
+      "checking": "检测中",
+      "ok": "连接正常",
+      "ok_count": "连接正常（{{count}}）",
+      "fail": "连接失败",
+      "unconfigured": "未配置凭据",
+      "unknown": "未检测"
+    },
+    "action": {
+      "test": "测试连接",
+      "edit": "编辑",
+      "delete": "删除"
+    },
+    "validate": {
+      "url_required": "URL 必填",
+      "name_required": "服务器名称必填",
+      "credentials_required": "请先配置 API Token 或用户名密码"
+    },
+    "toast": {
+      "saved": "已保存",
+      "created": "已创建",
+      "deleted": "已删除",
+      "test_ok": "连接 OK，3X-UI 有 {{count}} 个 inbound",
+      "batch_tested": "已检测 {{count}} 台服务器",
+      "batch_deleted": "已删除 {{count}} 台服务器",
+      "batch_partial": "已删除 {{ok}} 台服务器，失败 {{fail}} 台"
+    },
+    "confirm": {
+      "delete_title": "删除服务器",
+      "delete_message": "删除服务器 {{name}}？该服务器必须没有节点引用才能删除。",
+      "batch_delete_title": "批量删除服务器",
+      "batch_delete_message": "确定删除 {{names}}{{suffix}}？这些服务器必须没有节点引用才能删除。"
+    }
+  }
+}

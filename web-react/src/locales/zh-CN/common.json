@@ -1,0 +1,36 @@
+{
+  "actions": {
+    "details": "详情",
+    "export": "导出",
+    "sync": "批量同步",
+    "confirm": "确认变更",
+    "create": "新建",
+    "close": "关闭",
+    "reset": "重置",
+    "ok": "确定",
+    "cancel": "取消"
+  },
+  "status": {
+    "online": "在线",
+    "offline": "离线",
+    "load": "负载",
+    "delta_vs_yesterday": "较昨日"
+  },
+  "search": {
+    "placeholder": "搜索…"
+  },
+  "placeholder": {
+    "title": "页面待迁移",
+    "body": "此页面尚未从 Vue 版本迁移到 React + MUI。当前路径："
+  },
+  "errors": {
+    "sync_pending": "3X-UI 暂时不可达，同步任务已加入后台队列（每分钟自动重试）"
+  },
+  "auth": {
+    "logout": "退出登录"
+  },
+  "nav": {
+    "collapse": "收起菜单",
+    "expand": "展开菜单"
+  }
+}

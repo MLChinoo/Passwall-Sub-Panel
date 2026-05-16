@@ -136,13 +136,13 @@ func (h *AdminNodeHandler) List(c *gin.Context) {
 func (h *AdminNodeHandler) Get(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	n, err := h.node.Get(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -251,7 +251,7 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req updateMetadataRequest
@@ -289,7 +289,7 @@ func (h *AdminNodeHandler) UpdateMetadata(c *gin.Context) {
 func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req inboundSpecDTO
@@ -319,7 +319,7 @@ func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
 func (h *AdminNodeHandler) SetEnabled(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req setNodeEnabledRequest
@@ -337,7 +337,7 @@ func (h *AdminNodeHandler) SetEnabled(c *gin.Context) {
 func (h *AdminNodeHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	if err := h.node.DeleteAndSync(c.Request.Context(), id); err != nil {
@@ -394,7 +394,7 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 	claimedUUID, err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, req.ClientUUID)
 	if err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
-			c.JSON(http.StatusConflict, gin.H{"error": "client already managed"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Client already managed"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

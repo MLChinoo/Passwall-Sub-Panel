@@ -84,4 +84,7 @@ func ApplySAMLDefaults(c *SAMLConfig) {
 	if c.AttributeMapping.Groups == "" {
 		c.AttributeMapping.Groups = "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"
 	}
+	if c.NewUserDefaults.TrafficResetPeriod == "" {
+		c.NewUserDefaults.TrafficResetPeriod = "monthly"
+	}
 }

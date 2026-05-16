@@ -1,0 +1,86 @@
+import { create } from 'zustand'
+import { localLogin, ssoComplete } from '@/api/auth'
+import type { Role } from '@/api/types'
+
+interface AuthState {
+  userId: number | null
+  upn: string
+  displayName: string
+  role: Role | ''
+  login: (upn: string, password: string) => Promise<void>
+  loginSSO: () => Promise<void>
+  setDisplayName: (name: string) => void
+  logout: () => void
+}
+
+const STORAGE_KEY = 'psp_user'
+
+interface PersistedAuthState {
+  userId: number | null
+  upn: string
+  displayName: string
+  role: Role | ''
+}
+
+function loadFromStorage(): PersistedAuthState {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (raw) return JSON.parse(raw) as PersistedAuthState
+  } catch { /* ignore */ }
+  return { userId: null, upn: '', displayName: '', role: '' }
+}
+
+function persist(state: PersistedAuthState) {
+  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+  ...loadFromStorage(),
+
+  async login(upn, password) {
+    const res = await localLogin(upn, password)
+    sessionStorage.setItem('psp_access', res.access_token)
+    sessionStorage.setItem('psp_refresh', res.refresh_token)
+    const next: PersistedAuthState = {
+      userId: res.user.id,
+      upn: res.user.upn,
+      displayName: res.user.display_name || '',
+      role: res.user.role,
+    }
+    set(next)
+    persist(next)
+  },
+
+  async loginSSO() {
+    const res = await ssoComplete()
+    sessionStorage.setItem('psp_access', res.access_token)
+    sessionStorage.setItem('psp_refresh', res.refresh_token)
+    const next: PersistedAuthState = {
+      userId: res.user.id,
+      upn: res.user.upn,
+      displayName: res.user.display_name || '',
+      role: res.user.role,
+    }
+    set(next)
+    persist(next)
+  },
+
+  setDisplayName(name) {
+    const { userId, upn, role } = get()
+    const next: PersistedAuthState = { userId, upn, displayName: name, role }
+    set(next)
+    persist(next)
+  },
+
+  logout() {
+    sessionStorage.removeItem('psp_access')
+    sessionStorage.removeItem('psp_refresh')
+    sessionStorage.removeItem(STORAGE_KEY)
+    set({ userId: null, upn: '', displayName: '', role: '' })
+  },
+}))
+
+// Selectors for ergonomics.
+export const selectIsLoggedIn = () => !!sessionStorage.getItem('psp_access')
+export const selectIsAdmin = (s: AuthState) => s.role === 'admin'
+export const selectLabel = (s: AuthState) => s.displayName || s.upn || 'User'

@@ -57,4 +57,7 @@ func ApplyOIDCDefaults(c *OIDCConfig) {
 	if c.AttributeMapping.Groups == "" {
 		c.AttributeMapping.Groups = "groups"
 	}
+	if c.NewUserDefaults.TrafficResetPeriod == "" {
+		c.NewUserDefaults.TrafficResetPeriod = "monthly"
+	}
 }

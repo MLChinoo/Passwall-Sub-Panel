@@ -97,21 +97,22 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	repos := ports.Repos{
-		User:       mysqlRepos.User,
-		Group:      mysqlRepos.Group,
-		Node:       mysqlRepos.Node,
-		Ownership:  mysqlRepos.Ownership,
-		Traffic:    mysqlRepos.Traffic,
-		Audit:      mysqlRepos.Audit,
-		SubLog:     mysqlRepos.SubLog,
-		SyncTask:   mysqlRepos.SyncTask,
-		RuleSet:    ruleSetRepo,
-		Template:   templateRepo,
-		XUIPanel:   mysqlRepos.XUIPanel,
-		Settings:   mysqlRepos.Settings,
-		Mail:       mysqlRepos.Mail,
-		SAMLConfig: mysqlRepos.SAMLConfig,
-		OIDCConfig: mysqlRepos.OIDCConfig,
+		User:        mysqlRepos.User,
+		Group:       mysqlRepos.Group,
+		Node:        mysqlRepos.Node,
+		Ownership:   mysqlRepos.Ownership,
+		Traffic:     mysqlRepos.Traffic,
+		NodeTraffic: mysqlRepos.NodeTraffic,
+		Audit:       mysqlRepos.Audit,
+		SubLog:      mysqlRepos.SubLog,
+		SyncTask:    mysqlRepos.SyncTask,
+		RuleSet:     ruleSetRepo,
+		Template:    templateRepo,
+		XUIPanel:    mysqlRepos.XUIPanel,
+		Settings:    mysqlRepos.Settings,
+		Mail:        mysqlRepos.Mail,
+		SAMLConfig:  mysqlRepos.SAMLConfig,
+		OIDCConfig:  mysqlRepos.OIDCConfig,
 	}
 
 	if err := initAdminIfNeeded(ctx, repos); err != nil {
@@ -163,7 +164,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	syncSvc := syncsvc.New(pool, repos.Ownership)
 	userSvc := user.New(repos.User, repos.Group, repos.Ownership, repos.SyncTask, groupSvc, syncSvc, pool, repos.Settings)
 	nodeSvc := node.New(repos.Node, pool, syncSvc, repos.SyncTask, repos.Group, repos.User, syncSvc, repos.Settings)
-	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, pool, userSvc)
+	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, repos.Node, repos.NodeTraffic, pool, userSvc).WithSettings(repos.Settings)
 	mailSvc := mailer.New(repos.Mail, repos.User, repos.Traffic, repos.Settings, repos.SyncTask)
 	reconcileSvc := reconcile.New(repos.User, repos.Ownership, repos.Node, repos.Group, repos.Settings, repos.Audit, pool, syncSvc)
 	renderSvc := render.New(repos, pool, groupSvc)

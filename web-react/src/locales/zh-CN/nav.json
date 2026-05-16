@@ -1,0 +1,18 @@
+{
+  "admin": {
+    "dashboard": "总览",
+    "users": "用户管理",
+    "servers": "服务器",
+    "nodes": "节点管理",
+    "groups": "分组",
+    "rules": "规则库",
+    "templates": "配置方案",
+    "traffic": "流量统计",
+    "logs": "日志管理",
+    "sync_tasks": "同步任务",
+    "settings": "系统设置"
+  },
+  "user": {
+    "me": "我的订阅"
+  }
+}

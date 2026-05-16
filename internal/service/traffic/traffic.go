@@ -5,6 +5,7 @@ package traffic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,11 +21,17 @@ type UserDisabler interface {
 }
 
 type Service struct {
-	users     ports.UserRepo
-	ownership ports.OwnershipRepo
-	traffic   ports.TrafficRepo
-	pool      ports.XUIPool
-	disabler  UserDisabler
+	users       ports.UserRepo
+	ownership   ports.OwnershipRepo
+	traffic     ports.TrafficRepo
+	nodes       ports.NodeRepo
+	nodeTraffic ports.NodeTrafficRepo
+	pool        ports.XUIPool
+	disabler    UserDisabler
+	// settings is optional — only used to look up EmergencyAccessQuotaGB so the
+	// poll can end an emergency window early when the per-window cap is hit.
+	// Nil-tolerant: when absent, emergency access is uncapped (legacy behavior).
+	settings ports.SettingsRepo
 }
 
 type inboundKey struct {
@@ -33,12 +40,22 @@ type inboundKey struct {
 }
 
 type ownershipRef struct {
-	userID int64
-	email  string
+	userID    int64
+	email     string
+	createdAt time.Time
 }
 
-func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.TrafficRepo, pool ports.XUIPool, disabler UserDisabler) *Service {
-	return &Service{users: users, ownership: ownership, traffic: traffic, pool: pool, disabler: disabler}
+func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.TrafficRepo, nodes ports.NodeRepo, nodeTraffic ports.NodeTrafficRepo, pool ports.XUIPool, disabler UserDisabler) *Service {
+	return &Service{users: users, ownership: ownership, traffic: traffic, nodes: nodes, nodeTraffic: nodeTraffic, pool: pool, disabler: disabler}
+}
+
+// WithSettings attaches the settings repo so the poll can enforce the
+// emergency-access traffic quota. Optional — leaving it nil preserves the
+// previous "uncapped emergency window" behavior. Returns the service for
+// chaining at construction sites.
+func (s *Service) WithSettings(settings ports.SettingsRepo) *Service {
+	s.settings = settings
+	return s
 }
 
 // PollOnce walks every user, pulls aggregated traffic, writes a snapshot,
@@ -64,37 +81,122 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}
 		for _, e := range entries {
 			key := inboundKey{panelID: e.PanelID, inboundID: e.InboundID}
-			byInbound[key] = append(byInbound[key], ownershipRef{userID: u.ID, email: e.ClientEmail})
+			byInbound[key] = append(byInbound[key], ownershipRef{userID: u.ID, email: e.ClientEmail, createdAt: e.CreatedAt})
 		}
 	}
 
-	for key, refs := range byInbound {
-		c, err := s.pool.Get(key.panelID)
+	// Group queries per panel, fetch full inbound list once (it embeds
+	// clientStats — the dedicated /getClientTrafficsById endpoint is empty
+	// on some 3X-UI builds). Falls back to per-inbound calls if needed.
+	byPanel := make(map[int64]map[int][]ownershipRef)
+	for k, refs := range byInbound {
+		if byPanel[k.panelID] == nil {
+			byPanel[k.panelID] = make(map[int][]ownershipRef)
+		}
+		byPanel[k.panelID][k.inboundID] = refs
+	}
+
+	log.Info("traffic poll start", "users", len(users), "panels", len(byPanel), "inbounds_to_query", len(byInbound))
+	for panelID, inbounds := range byPanel {
+		c, err := s.pool.Get(panelID)
 		if err != nil {
-			log.Warn("traffic poll panel", "panel_id", key.panelID, "inbound_id", key.inboundID, "err", err)
-			markSkippedUsers(skipUsers, refs)
-			continue
-		}
-		traffics, err := c.GetInboundTraffics(ctx, key.inboundID)
-		if err != nil {
-			log.Warn("traffic poll inbound", "panel_id", key.panelID, "inbound_id", key.inboundID, "err", err)
-			markSkippedUsers(skipUsers, refs)
-			continue
-		}
-		trafficByEmail := make(map[string]ports.ClientTraffic, len(traffics))
-		for _, t := range traffics {
-			trafficByEmail[t.Email] = t
-		}
-		for _, ref := range refs {
-			t, ok := trafficByEmail[ref.email]
-			if !ok {
-				continue
+			log.Warn("traffic poll panel", "panel_id", panelID, "err", err)
+			for _, refs := range inbounds {
+				markSkippedUsers(skipUsers, refs)
 			}
-			total := totals[ref.userID]
-			total.up += t.Up
-			total.down += t.Down
-			total.hits++
-			totals[ref.userID] = total
+			continue
+		}
+		// One list call per panel. Returns inbounds with their clientStats
+		// populated — same data 3X-UI's own UI uses.
+		listed, lerr := c.ListInbounds(ctx)
+		statsByInbound := make(map[int][]ports.ClientTraffic, len(listed))
+		if lerr != nil {
+			log.Warn("traffic poll list inbounds", "panel_id", panelID, "err", lerr)
+		} else {
+			for _, inb := range listed {
+				statsByInbound[inb.ID] = inb.ClientStats
+			}
+		}
+
+		for inboundID, refs := range inbounds {
+			traffics := statsByInbound[inboundID]
+			// Per-inbound fallback if list didn't return data for this inbound.
+			if len(traffics) == 0 {
+				t, ferr := c.GetInboundTraffics(ctx, inboundID)
+				if ferr != nil {
+					log.Warn("traffic poll inbound fallback",
+						"panel_id", panelID, "inbound_id", inboundID, "err", ferr)
+				} else {
+					traffics = t
+				}
+			}
+			trafficByEmail := make(map[string]ports.ClientTraffic, len(traffics))
+			for _, t := range traffics {
+				trafficByEmail[t.Email] = t
+			}
+			matched := 0
+			var nodeUp, nodeDown int64
+			for _, ref := range refs {
+				t, ok := trafficByEmail[ref.email]
+				if !ok {
+					continue
+				}
+				matched++
+				nodeUp += t.Up
+				nodeDown += t.Down
+				total := totals[ref.userID]
+				total.up += t.Up
+				total.down += t.Down
+				total.hits++
+				delta, derr := s.recordClientStats(ctx, ref.userID, panelID, inboundID, ref.email, t.Up, t.Down)
+				if derr != nil {
+					log.Warn("traffic poll client snapshot",
+						"user_id", ref.userID,
+						"panel_id", panelID,
+						"inbound_id", inboundID,
+						"email", ref.email,
+						"err", derr)
+				} else {
+					if delta.hadPrev {
+						total.deltaUp += delta.up
+						total.deltaDown += delta.down
+						total.deltaTotal += delta.total
+					} else {
+						total.bootstrap = append(total.bootstrap, bootstrapClientDelta{
+							delta:     delta,
+							createdAt: ref.createdAt,
+						})
+					}
+				}
+				totals[ref.userID] = total
+			}
+			if matched < len(refs) {
+				seen := make([]string, 0, len(traffics))
+				for _, t := range traffics {
+					seen = append(seen, t.Email)
+				}
+				wanted := make([]string, 0, len(refs))
+				for _, r := range refs {
+					wanted = append(wanted, r.email)
+				}
+				log.Warn("traffic poll email mismatch",
+					"panel_id", panelID, "inbound_id", inboundID,
+					"matched", matched, "expected", len(refs),
+					"3xui_emails", seen,
+					"panel_owned_emails", wanted)
+			}
+
+			// Persist per-node snapshots from the managed client rows we
+			// matched above. Some 3X-UI builds return zero for inbound-level
+			// Up/Down even when clientStats is populated; summing the owned
+			// clients is both more reliable and matches the dashboard contract
+			// that only panel-managed clients are counted.
+			if matched > 0 {
+				if err := s.recordNodeStats(ctx, panelID, inboundID, nodeUp, nodeDown); err != nil {
+					log.Warn("traffic poll node snapshot",
+						"panel_id", panelID, "inbound_id", inboundID, "err", err)
+				}
+			}
 		}
 	}
 
@@ -137,48 +239,209 @@ func (s *Service) listAllUsers(ctx context.Context) ([]*domain.User, error) {
 }
 
 type trafficTotals struct {
-	up   int64
-	down int64
-	hits int
+	up         int64
+	down       int64
+	deltaUp    int64
+	deltaDown  int64
+	deltaTotal int64
+	bootstrap  []bootstrapClientDelta
+	hits       int
+}
+
+type trafficDelta struct {
+	up      int64
+	down    int64
+	total   int64
+	hadPrev bool
+}
+
+type bootstrapClientDelta struct {
+	delta     trafficDelta
+	createdAt time.Time
+}
+
+func (s *Service) recordClientStats(ctx context.Context, userID int64, panelID int64, inboundID int, email string, up, down int64) (trafficDelta, error) {
+	totalBytes := up + down
+	prev, err := s.traffic.LatestForClient(ctx, userID, panelID, inboundID, email)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return trafficDelta{}, fmt.Errorf("latest client snapshot: %w", err)
+	}
+
+	var delta trafficDelta
+	if prev == nil {
+		delta = trafficDelta{up: up, down: down, total: totalBytes}
+	} else {
+		delta = trafficDelta{
+			up:      monotonicDelta(up, prev.UpBytes),
+			down:    monotonicDelta(down, prev.DownBytes),
+			total:   monotonicDelta(totalBytes, prev.TotalBytes),
+			hadPrev: true,
+		}
+	}
+
+	if err := s.traffic.InsertClient(ctx, &domain.ClientTrafficSnapshot{
+		UserID:      userID,
+		PanelID:     panelID,
+		InboundID:   inboundID,
+		ClientEmail: email,
+		UpBytes:     up,
+		DownBytes:   down,
+		TotalBytes:  totalBytes,
+		CapturedAt:  time.Now(),
+	}); err != nil {
+		return trafficDelta{}, fmt.Errorf("insert client snapshot: %w", err)
+	}
+	return delta, nil
 }
 
 func (s *Service) recordAndEnforce(ctx context.Context, u *domain.User, totals trafficTotals) error {
-	if totals.hits == 0 {
-		// No 3X-UI rows for this user; still record a zero snapshot so the
-		// dashboard can show "0 used today" instead of "no data".
-	}
-
 	now := time.Now()
-	snap := &domain.TrafficSnapshot{
-		UserID:     u.ID,
-		UpBytes:    totals.up,
-		DownBytes:  totals.down,
-		TotalBytes: totals.up + totals.down,
-		CapturedAt: now,
-	}
-	if err := s.traffic.Insert(ctx, snap); err != nil {
-		return fmt.Errorf("insert snapshot: %w", err)
+
+	// Skip the snapshot entirely when 3X-UI returned no matching client rows.
+	// Inserting a zero would corrupt subsequent today/period delta math.
+	// Period rollover and limit enforcement still need to run, so don't
+	// short-circuit the whole function — just don't write the snapshot.
+	wroteSnap := false
+	var snap *domain.TrafficSnapshot
+	if totals.hits > 0 {
+		// User lifetime must be based on per-client deltas. If one inbound's
+		// counter resets while another keeps growing, a delta on the aggregate
+		// raw total would be wrong.
+		prev, perr := s.traffic.LatestForUser(ctx, u.ID)
+		if perr != nil && !errors.Is(perr, domain.ErrNotFound) {
+			log.Warn("traffic poll latest snapshot lookup", "user_id", u.ID, "err", perr)
+			prev = nil
+		}
+		// Decide which bootstrap deltas (clients with no per-client snapshot
+		// yet) we should fold into lifetime. The cutoff comes from
+		// LifetimeBaselineAt when available; otherwise fall back to the last
+		// aggregate snapshot timestamp; if neither exists, the user has no
+		// baseline at all and every bootstrap counts.
+		//
+		// Using LifetimeBaselineAt instead of prev.CapturedAt fixes the edge
+		// case where the snapshots table was wiped but lifetime survives —
+		// previously bootstraps were silently dropped, missing the first
+		// cumulative read for any genuinely-new ownership.
+		var cutoff *time.Time
+		switch {
+		case u.LifetimeBaselineAt != nil:
+			cutoff = u.LifetimeBaselineAt
+		case prev != nil:
+			t := prev.CapturedAt
+			cutoff = &t
+		}
+		for _, b := range totals.bootstrap {
+			if cutoff == nil {
+				// Truly fresh user — count every cumulative read as new.
+				totals.deltaUp += b.delta.up
+				totals.deltaDown += b.delta.down
+				totals.deltaTotal += b.delta.total
+				continue
+			}
+			if !b.createdAt.IsZero() && b.createdAt.After(*cutoff) {
+				totals.deltaUp += b.delta.up
+				totals.deltaDown += b.delta.down
+				totals.deltaTotal += b.delta.total
+			}
+			// else: ownership predates the cutoff → already in lifetime.
+		}
+
+		if u.LifetimeTotalBytes == 0 && prev != nil && prev.TotalBytes > 0 {
+			// Migration/bootstrap path: old installs only have aggregate
+			// snapshots. Seed lifetime from the previous user snapshot once,
+			// then add per-client deltas from this poll.
+			u.LifetimeUpBytes = prev.UpBytes
+			u.LifetimeDownBytes = prev.DownBytes
+			u.LifetimeTotalBytes = prev.TotalBytes
+		}
+		u.LifetimeUpBytes += totals.deltaUp
+		u.LifetimeDownBytes += totals.deltaDown
+		u.LifetimeTotalBytes += totals.deltaTotal
+		// Always advance the baseline once we've written a successful snapshot
+		// — that's the cutoff for the next poll's bootstrap-delta logic. If we
+		// only updated it on dirty cycles, an ownership added during a
+		// no-traffic cycle would later be classified as "before baseline" and
+		// silently dropped from lifetime.
+		baselineNow := now
+		u.LifetimeBaselineAt = &baselineNow
+
+		// NOTE on snapshot semantics: TotalBytes here is the user's
+		// lifetime-cumulative value, NOT the raw 3X-UI counter sum. This
+		// changed from the original schema (which stored raw counters). Old
+		// rows written by previous code persist in the DB as raw values; the
+		// migration block above seeds Lifetime from those on the first new-
+		// code poll, so today/period delta math self-heals within one poll
+		// cycle. Anyone reading this table directly should know it now means
+		// "monotonic lifetime", which never goes backward across resets.
+		snap = &domain.TrafficSnapshot{
+			UserID:     u.ID,
+			UpBytes:    u.LifetimeUpBytes,
+			DownBytes:  u.LifetimeDownBytes,
+			TotalBytes: u.LifetimeTotalBytes,
+			CapturedAt: now,
+		}
+		if err := s.traffic.Insert(ctx, snap); err != nil {
+			return fmt.Errorf("insert snapshot: %w", err)
+		}
+		wroteSnap = true
+
+		if err := s.users.Update(ctx, u); err != nil {
+			log.Warn("traffic lifetime update", "user_id", u.ID, "err", err)
+		}
 	}
 
 	// Roll the period if a boundary has been crossed.
 	if u.TrafficPeriodStart != nil && shouldRollPeriod(now, *u.TrafficPeriodStart, u.TrafficResetPeriod) {
-		u.TrafficPeriodStart = &now
-		// If they were auto-disabled for traffic, the new period gives them
-		// quota back — re-enable.
-		if !u.Enabled && u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+		periodStart := currentPeriodStart(now, u.TrafficResetPeriod)
+		u.TrafficPeriodStart = &periodStart
+		if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+			u.EmergencyUntil = nil
+			u.EmergencyBaselineBytes = 0
+		}
+		// Persist the new periodStart FIRST. SetEnabledAndSync re-reads the
+		// user from the DB, so anything we change in memory after Update() is
+		// lost. Without this, periodStart never actually moves and rollover
+		// fires on every poll forever.
+		if err := s.users.Update(ctx, u); err != nil {
+			log.Warn("traffic period start update", "user_id", u.ID, "err", err)
+		}
+		// If they were traffic-disabled (including an active emergency access
+		// window), the new period gives them quota back.
+		if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
 			if err := s.disabler.SetEnabledAndSync(ctx, u.ID, true, domain.DisabledNone, ""); err != nil {
 				log.Warn("traffic re-enable", "user_id", u.ID, "err", err)
-			}
-		} else {
-			if err := s.users.Update(ctx, u); err != nil {
-				log.Warn("traffic period start update", "user_id", u.ID, "err", err)
+			} else {
+				u.Enabled = true
+				u.AutoDisabledReason = domain.DisabledNone
+				u.DisableDetail = ""
 			}
 		}
-		return nil
 	}
 
 	// Enforce limit
-	if u.TrafficLimitBytes <= 0 || !u.Enabled {
+	emergencyActive := u.EmergencyUntil != nil && now.Before(*u.EmergencyUntil)
+	// If the admin has set a per-window emergency-access quota, end the window
+	// early once the user crosses it. Falling through to the normal limit
+	// check below will then auto-disable them (they're still over their period
+	// limit, which is why they were granted emergency access in the first
+	// place).
+	if emergencyActive && s.settings != nil {
+		if st, serr := s.settings.Load(ctx, ports.UISettings{}); serr == nil && st.EmergencyAccessQuotaGB > 0 {
+			quotaBytes := int64(st.EmergencyAccessQuotaGB) * 1024 * 1024 * 1024
+			used := u.LifetimeTotalBytes - u.EmergencyBaselineBytes
+			if used >= quotaBytes {
+				log.Info("emergency access quota exhausted",
+					"user_id", u.ID, "used_bytes", used, "quota_bytes", quotaBytes)
+				u.EmergencyUntil = nil
+				u.EmergencyBaselineBytes = 0
+				if err := s.users.Update(ctx, u); err != nil {
+					log.Warn("emergency quota clear update", "user_id", u.ID, "err", err)
+				}
+				emergencyActive = false
+			}
+		}
+	}
+	if u.TrafficLimitBytes <= 0 || !u.Enabled || !wroteSnap || emergencyActive {
 		return nil
 	}
 	periodUsed, err := s.periodUsage(ctx, u, snap)
@@ -195,22 +458,230 @@ func (s *Service) recordAndEnforce(ctx context.Context, u *domain.User, totals t
 	return nil
 }
 
+// monotonicDelta returns the bytes added since the previous snapshot.
+// A negative result means the upstream counter rolled over (Xray restart),
+// in which case the current value IS the delta.
+func monotonicDelta(current, previous int64) int64 {
+	d := current - previous
+	if d < 0 {
+		return current
+	}
+	return d
+}
+
+// recordNodeStats writes a per-node snapshot for the inbound on the given
+// panel and updates the node's monotonic lifetime counters. Mirrors the
+// per-user logic in recordAndEnforce: counter resets (latest < prev) collapse
+// to "delta = current value", and only non-zero deltas trigger an Update.
+func (s *Service) recordNodeStats(ctx context.Context, panelID int64, inboundID int, up, down int64) error {
+	if s.nodes == nil || s.nodeTraffic == nil {
+		return nil
+	}
+	node, err := s.nodes.GetByPanelInbound(ctx, panelID, inboundID)
+	if err != nil {
+		// Inbound exists in 3X-UI but not in our nodes table — could be an
+		// orphan or a freshly imported one we haven't loaded yet. Skip.
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("lookup node: %w", err)
+	}
+	totalBytes := up + down
+
+	var dUp, dDown, dTotal int64
+	hasRawBaseline := node.LastTrafficUpBytes != 0 || node.LastTrafficDownBytes != 0 || node.LastTrafficTotalBytes != 0
+	switch {
+	case hasRawBaseline:
+		dUp = monotonicDelta(up, node.LastTrafficUpBytes)
+		dDown = monotonicDelta(down, node.LastTrafficDownBytes)
+		dTotal = monotonicDelta(totalBytes, node.LastTrafficTotalBytes)
+	case node.LifetimeTotalBytes > 0:
+		// Existing installs may already have lifetime values but no raw
+		// baseline fields. Initialize the baseline without double-counting
+		// the current cumulative counters.
+		dUp, dDown, dTotal = 0, 0, 0
+	default:
+		dUp, dDown, dTotal = up, down, totalBytes
+	}
+	node.LifetimeUpBytes += dUp
+	node.LifetimeDownBytes += dDown
+	node.LifetimeTotalBytes += dTotal
+	node.LastTrafficUpBytes = up
+	node.LastTrafficDownBytes = down
+	node.LastTrafficTotalBytes = totalBytes
+
+	if err := s.nodeTraffic.Insert(ctx, &domain.NodeTrafficSnapshot{
+		NodeID:     node.ID,
+		UpBytes:    node.LifetimeUpBytes,
+		DownBytes:  node.LifetimeDownBytes,
+		TotalBytes: node.LifetimeTotalBytes,
+		CapturedAt: time.Now(),
+	}); err != nil {
+		return fmt.Errorf("insert node snapshot: %w", err)
+	}
+
+	if err := s.nodes.Update(ctx, node); err != nil {
+		log.Warn("node traffic lifetime update", "node_id", node.ID, "err", err)
+	}
+	return nil
+}
+
+// NodeReport summarises one node's traffic for the dashboard.
+type NodeReport struct {
+	NodeID              int64
+	PermanentTotalBytes int64
+	PeriodUsedBytes     int64
+	TodayUsedBytes      int64
+}
+
+// NodeReportFor returns the lifetime / current-period / today usage for one
+// node. Lifetime comes from the monotonic node counter; today / period are
+// computed as deltas with reset-clamping.
+func (s *Service) NodeReportFor(ctx context.Context, nodeID int64) (*NodeReport, error) {
+	report := &NodeReport{NodeID: nodeID}
+	if s.nodes != nil {
+		if n, nerr := s.nodes.GetByID(ctx, nodeID); nerr == nil {
+			report.PermanentTotalBytes = n.LifetimeTotalBytes
+		}
+	}
+	if s.nodeTraffic == nil {
+		return report, nil
+	}
+
+	latest, err := s.nodeTraffic.LatestForNode(ctx, nodeID)
+	if err != nil || latest == nil {
+		return report, nil
+	}
+	// Pre-migration / freshly imported node: lifetime not yet seeded but a
+	// snapshot exists. Mirror ReportFor's fallback so the dashboard doesn't
+	// show 0 cumulative alongside non-zero today/period.
+	if report.PermanentTotalBytes == 0 {
+		report.PermanentTotalBytes = latest.TotalBytes
+	}
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if base, err := s.nodeTraffic.LastBefore(ctx, nodeID, todayStart); err == nil && base != nil {
+		report.TodayUsedBytes = monotonicDelta(latest.TotalBytes, base.TotalBytes)
+	} else {
+		report.TodayUsedBytes = latest.TotalBytes
+	}
+
+	// Period for nodes follows the calendar month — there's no per-node reset
+	// configuration. Start of the current month.
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	if base, err := s.nodeTraffic.LastBefore(ctx, nodeID, monthStart); err == nil && base != nil {
+		report.PeriodUsedBytes = monotonicDelta(latest.TotalBytes, base.TotalBytes)
+	} else {
+		report.PeriodUsedBytes = latest.TotalBytes
+	}
+	return report, nil
+}
+
+// NodeHistoryReport mirrors HistoryReport but for nodes.
+type NodeHistoryReport struct {
+	NodeID int64
+	Period HistoryPeriod
+	Since  string
+	Until  string
+	Items  []HistoryItem
+}
+
+// NodeHistoryFor returns a per-bucket history of cumulative-counter deltas
+// for one node. Reuses the same bucketing helpers as HistoryFor.
+func (s *Service) NodeHistoryFor(ctx context.Context, nodeID int64, period HistoryPeriod, since, until time.Time) (*NodeHistoryReport, error) {
+	period, err := normalizeHistoryPeriod(period)
+	if err != nil {
+		return nil, err
+	}
+	since = startOfDay(since)
+	until = startOfDay(until)
+	if until.Before(since) {
+		return nil, fmt.Errorf("%w: until must be on or after since", domain.ErrValidation)
+	}
+	untilExclusive := until.AddDate(0, 0, 1)
+
+	var (
+		snapshots []*domain.NodeTrafficSnapshot
+		prev      *domain.NodeTrafficSnapshot
+	)
+	if s.nodeTraffic != nil {
+		var lerr error
+		snapshots, lerr = s.nodeTraffic.ListByNode(ctx, nodeID, since, untilExclusive)
+		if lerr != nil {
+			return nil, lerr
+		}
+		prev, _ = s.nodeTraffic.LastBefore(ctx, nodeID, since)
+	}
+	prevUp, prevDown, prevTotal := nodeSnapshotCounters(prev)
+
+	items := make([]HistoryItem, 0)
+	idx := 0
+	for bucketStart := bucketStartFor(since, period); bucketStart.Before(untilExclusive); bucketStart = nextBucketStart(bucketStart, period) {
+		bucketEnd := nextBucketStart(bucketStart, period)
+		if bucketEnd.After(untilExclusive) {
+			bucketEnd = untilExclusive
+		}
+
+		var lastInBucket *domain.NodeTrafficSnapshot
+		for idx < len(snapshots) && snapshots[idx].CapturedAt.Before(bucketEnd) {
+			if !snapshots[idx].CapturedAt.Before(since) {
+				lastInBucket = snapshots[idx]
+			}
+			idx++
+		}
+
+		item := HistoryItem{Date: bucketLabel(bucketStart, period)}
+		if lastInBucket != nil {
+			item.UpBytes = deltaCounter(lastInBucket.UpBytes, prevUp)
+			item.DownBytes = deltaCounter(lastInBucket.DownBytes, prevDown)
+			item.TotalBytes = deltaCounter(lastInBucket.TotalBytes, prevTotal)
+			prevUp = lastInBucket.UpBytes
+			prevDown = lastInBucket.DownBytes
+			prevTotal = lastInBucket.TotalBytes
+		}
+		items = append(items, item)
+	}
+
+	return &NodeHistoryReport{
+		NodeID: nodeID,
+		Period: period,
+		Since:  since.Format("2006-01-02"),
+		Until:  until.Format("2006-01-02"),
+		Items:  items,
+	}, nil
+}
+
+func nodeSnapshotCounters(s *domain.NodeTrafficSnapshot) (up, down, total int64) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	return s.UpBytes, s.DownBytes, s.TotalBytes
+}
+
 // periodUsage returns bytes used since the user's current period start.
-// Falls back to the latest snapshot's total if no earlier snapshot exists
-// (treats "no history" as "all usage is in this period").
+// Falls back to the latest snapshot's total when no earlier snapshot exists
+// (treats "no history" as "all usage is in this period"). Counter resets
+// (latest < base) collapse to "current value as bytes-since-reset".
+//
+// Genuine DB errors are propagated — treating them as "no baseline" would
+// silently report the full lifetime cumulative as period usage and could
+// trigger spurious auto-disable.
 func (s *Service) periodUsage(ctx context.Context, u *domain.User, latest *domain.TrafficSnapshot) (int64, error) {
 	if u.TrafficPeriodStart == nil {
 		return latest.TotalBytes, nil
 	}
 	baseSnap, err := s.traffic.LastBefore(ctx, u.ID, *u.TrafficPeriodStart)
-	if err != nil || baseSnap == nil {
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return latest.TotalBytes, nil
+		}
+		return 0, fmt.Errorf("period baseline lookup: %w", err)
+	}
+	if baseSnap == nil {
 		return latest.TotalBytes, nil
 	}
-	used := latest.TotalBytes - baseSnap.TotalBytes
-	if used < 0 {
-		used = latest.TotalBytes
-	}
-	return used, nil
+	return monotonicDelta(latest.TotalBytes, baseSnap.TotalBytes), nil
 }
 
 func shouldRollPeriod(now, periodStart time.Time, period domain.ResetPeriod) bool {
@@ -223,6 +694,18 @@ func shouldRollPeriod(now, periodStart time.Time, period domain.ResetPeriod) boo
 		return now.Year() != periodStart.Year() || nowQ != psQ
 	}
 	return false
+}
+
+func currentPeriodStart(now time.Time, period domain.ResetPeriod) time.Time {
+	switch period {
+	case domain.ResetMonthly:
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	case domain.ResetQuarterly:
+		month := time.Month(((int(now.Month())-1)/3)*3 + 1)
+		return time.Date(now.Year(), month, 1, 0, 0, 0, 0, now.Location())
+	default:
+		return now
+	}
 }
 
 // UsageReport summarises a single user's traffic for the dashboard.
@@ -257,26 +740,46 @@ type HistoryReport struct {
 }
 
 // ReportFor returns the lifetime / current-period / today usage for one user.
+//
+// Lifetime is read from the user row (monotonic, accumulated by the poll
+// worker) so an Xray restart that resets 3X-UI's counters can't roll it back.
+// Today / period are computed as deltas against earlier snapshots and are
+// clamped to non-negative; if the cumulative counter dropped (counter reset)
+// the current cumulative value IS the bytes-since-reset, so we report that.
 func (s *Service) ReportFor(ctx context.Context, userID int64) (*UsageReport, error) {
 	report := &UsageReport{UserID: userID}
+	u, uerr := s.users.GetByID(ctx, userID)
+	if uerr == nil {
+		report.PermanentTotalBytes = u.LifetimeTotalBytes
+	}
+
 	latest, err := s.traffic.LatestForUser(ctx, userID)
 	if err != nil || latest == nil {
 		return report, nil
 	}
-	report.PermanentTotalBytes = latest.TotalBytes
+	// Pre-migration fallback: a user whose poll worker hasn't run yet under
+	// the new code has Lifetime=0 but might already have aggregate snapshots
+	// from before. Show the snapshot's cumulative as a stand-in until the
+	// next poll seeds Lifetime properly.
+	if report.PermanentTotalBytes == 0 {
+		report.PermanentTotalBytes = latest.TotalBytes
+	}
 
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if base, err := s.traffic.LastBefore(ctx, userID, todayStart); err == nil && base != nil {
-		report.TodayUsedBytes = latest.TotalBytes - base.TotalBytes
+		report.TodayUsedBytes = monotonicDelta(latest.TotalBytes, base.TotalBytes)
 	} else {
 		report.TodayUsedBytes = latest.TotalBytes
 	}
 
-	u, err := s.users.GetByID(ctx, userID)
-	if err == nil && u.TrafficPeriodStart != nil {
-		if base, err := s.traffic.LastBefore(ctx, userID, *u.TrafficPeriodStart); err == nil && base != nil {
-			report.PeriodUsedBytes = latest.TotalBytes - base.TotalBytes
+	if uerr == nil {
+		if u.TrafficPeriodStart != nil {
+			if base, err := s.traffic.LastBefore(ctx, userID, *u.TrafficPeriodStart); err == nil && base != nil {
+				report.PeriodUsedBytes = monotonicDelta(latest.TotalBytes, base.TotalBytes)
+			} else {
+				report.PeriodUsedBytes = latest.TotalBytes
+			}
 		} else {
 			report.PeriodUsedBytes = latest.TotalBytes
 		}
@@ -421,22 +924,44 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 		return err
 	}
 
-	var latestTotal int64
+	var latestTotal, latestUp int64
 	if latest, err := s.traffic.LatestForUser(ctx, userID); err == nil && latest != nil {
 		latestTotal = latest.TotalBytes
+		latestUp = latest.UpBytes
 	}
 	baseTotal := latestTotal - usedBytes
 	if baseTotal < 0 {
 		baseTotal = 0
 	}
 	currentTotal := baseTotal + usedBytes
+	// Preserve the up/down ratio from the latest real snapshot so HistoryFor's
+	// per-direction bucket math doesn't see synthetic rows where Up jumps from
+	// 0 to its full cumulative value in one tick. When no prior data is
+	// available, fall back to an even split — better than dumping everything
+	// onto Down.
+	splitUpDown := func(total int64) (up, down int64) {
+		if total <= 0 {
+			return 0, 0
+		}
+		if latestTotal > 0 {
+			up = total * latestUp / latestTotal
+			down = total - up
+			return up, down
+		}
+		up = total / 2
+		down = total - up
+		return up, down
+	}
+	baseUp, baseDown := splitUpDown(baseTotal)
+	currentUp, currentDown := splitUpDown(currentTotal)
 	now := time.Now()
 	periodStart := now
 	baseAt := now.Add(-time.Millisecond)
 
 	if err := s.traffic.Insert(ctx, &domain.TrafficSnapshot{
 		UserID:     userID,
-		DownBytes:  baseTotal,
+		UpBytes:    baseUp,
+		DownBytes:  baseDown,
 		TotalBytes: baseTotal,
 		CapturedAt: baseAt,
 	}); err != nil {
@@ -444,7 +969,8 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 	}
 	if err := s.traffic.Insert(ctx, &domain.TrafficSnapshot{
 		UserID:     userID,
-		DownBytes:  currentTotal,
+		UpBytes:    currentUp,
+		DownBytes:  currentDown,
 		TotalBytes: currentTotal,
 		CapturedAt: now,
 	}); err != nil {
@@ -452,6 +978,22 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 	}
 
 	u.TrafficPeriodStart = &periodStart
+	if currentTotal > u.LifetimeTotalBytes {
+		// Manual usage edits are expressed as the current period's visible
+		// total. Keep lifetime snapshots monotonic so the next real poll adds
+		// to the admin-selected baseline instead of dropping below it. Apply
+		// the same up/down ratio used for the synthetic snapshots so the user
+		// row stays internally consistent.
+		deltaTotal := currentTotal - u.LifetimeTotalBytes
+		dUp, dDown := splitUpDown(deltaTotal)
+		u.LifetimeUpBytes += dUp
+		u.LifetimeDownBytes += dDown
+		u.LifetimeTotalBytes = currentTotal
+	}
+	// Move the bootstrap-delta cutoff forward — without this, ownerships added
+	// between the admin override and the next poll would be classified
+	// against an out-of-date baseline.
+	u.LifetimeBaselineAt = &now
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}

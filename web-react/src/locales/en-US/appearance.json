@@ -1,0 +1,22 @@
+{
+  "title": "Appearance",
+  "preset_section": "Preset palette",
+  "custom_section": "Custom",
+  "custom_hint": "Enter a HEX color (e.g. #6750A4)",
+  "mode_section": "Mode",
+  "mode": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "reset": "Reset to system default",
+  "system_default": "System default",
+  "user_override": "Your override",
+  "preset": {
+    "purple": "Purple",
+    "blue": "Blue",
+    "teal": "Teal",
+    "green": "Green",
+    "orange": "Orange",
+    "pink": "Pink"
+  }
+}

@@ -69,7 +69,7 @@ func (l *PerIPLimiter) sweepExpiredLocked(now time.Time) {
 func (l *PerIPLimiter) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !l.Allow(c.ClientIP()) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit"})
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "Rate limit"})
 			return
 		}
 		c.Next()

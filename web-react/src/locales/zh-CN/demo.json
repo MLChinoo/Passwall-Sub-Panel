@@ -1,0 +1,49 @@
+{
+  "brand": "Passwall Panel",
+  "nav": {
+    "dashboard": "总览",
+    "users": "用户",
+    "nodes": "节点",
+    "groups": "分组",
+    "rules": "规则",
+    "traffic": "流量",
+    "settings": "设置"
+  },
+  "page": {
+    "headline": "节点管理",
+    "supporting": "管理 3X-UI 入站、监控负载，订阅生成基于此处的启用状态。"
+  },
+  "metric": {
+    "online_nodes": "在线节点",
+    "today_traffic": "今日流量",
+    "active_users": "活跃用户",
+    "sub_requests": "订阅请求"
+  },
+  "list": {
+    "title": "节点列表",
+    "search_placeholder": "搜索节点名称…",
+    "filter_all": "全部 {{count}}",
+    "filter_online": "在线 {{count}}",
+    "filter_offline": "离线 {{count}}",
+    "empty": "没有符合条件的节点"
+  },
+  "regions": {
+    "hk": "香港",
+    "jp": "日本",
+    "sg": "新加坡",
+    "us": "美国"
+  },
+  "fab": {
+    "create_node": "新建节点"
+  },
+  "tip": {
+    "title": "这只是视觉 demo",
+    "body": "所有数据均为静态。右上角调色板按钮可以试预设色 / 自定义色 / 明暗，演示「系统默认 + 用户覆盖」的双层模型。"
+  },
+  "snack": {
+    "node_enabled": "{{name}} 已启用",
+    "node_disabled": "{{name}} 已禁用",
+    "import_triggered": "已触发节点导入",
+    "create_dialog": "打开新建节点对话框"
+  }
+}

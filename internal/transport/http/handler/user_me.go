@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -30,13 +31,13 @@ func NewUserMeHandler(userSvc *user.Service, trafficSvc *traffic.Service, settin
 func (h *UserMeHandler) Profile(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	u, err := h.user.Get(c.Request.Context(), claims.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -53,37 +54,36 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 			canChangePassword = false
 		}
 	}
-	emergencyEnabled := false
-	emergencyHours := 0
-	emergencyMaxCount := 0
+	var emergencyStatus user.EmergencyAccessStatus
 	if settingsErr == nil {
-		emergencyEnabled = settings.EmergencyAccessEnabled
-		emergencyHours = settings.EmergencyAccessHours
-		emergencyMaxCount = settings.EmergencyAccessMaxCount
-	}
-	emergencyRemaining := emergencyMaxCount - u.EmergencyUsedCount
-	if emergencyRemaining < 0 {
-		emergencyRemaining = 0
+		emergencyStatus = user.EmergencyAccessStatusForUserWithTrafficLimit(u, settings, time.Now(), h.trafficLimitExceeded(c.Request.Context(), u))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"id":                   u.ID,
-		"display_name":         u.DisplayName,
-		"upn":                  u.UPN,
-		"sub_url":              h.subURL(c.Request.Context(), u.SubToken),
-		"sub_import_clients":   enabledSubImportClients(settings.SubImportClients),
-		"quick_links":          enabledQuickLinks(settings.QuickLinks),
-		"global_announcement":  visibleGlobalAnnouncement(settings.GlobalAnnouncement),
-		"expire_at":            u.ExpireAt,
-		"traffic_limit_bytes":  u.TrafficLimitBytes,
-		"traffic_reset_period": u.TrafficResetPeriod,
-		"enabled":              u.Enabled,
-		"can_change_password":  canChangePassword,
+		"id":                      u.ID,
+		"display_name":            u.DisplayName,
+		"upn":                     u.UPN,
+		"sub_url":                 h.subURL(c.Request, u.SubToken),
+		"sub_import_clients":      enabledSubImportClients(settings.SubImportClients),
+		"sub_import_tutorial_url": settings.SubImportTutorialURL,
+		"quick_links":             enabledQuickLinks(settings.QuickLinks),
+		"global_announcement":     visibleGlobalAnnouncement(settings.GlobalAnnouncement),
+		"expire_at":               u.ExpireAt,
+		"traffic_limit_bytes":     u.TrafficLimitBytes,
+		"traffic_reset_period":    u.TrafficResetPeriod,
+		"enabled":                 u.Enabled,
+		"can_change_password":     canChangePassword,
 		"emergency_access": gin.H{
-			"enabled":        emergencyEnabled,
-			"duration_hours": emergencyHours,
-			"max_count":      emergencyMaxCount,
-			"used_count":     u.EmergencyUsedCount,
-			"remaining":      emergencyRemaining,
+			"enabled":         emergencyStatus.Enabled,
+			"available":       emergencyStatus.Available,
+			"status":          emergencyStatus.Status,
+			"reason":          emergencyStatus.Reason,
+			"duration_hours":  emergencyStatus.DurationHours,
+			"max_count":       emergencyStatus.MaxCount,
+			"used_count":      emergencyStatus.UsedCount,
+			"remaining":       emergencyStatus.Remaining,
+			"emergency_until": emergencyStatus.Until,
+			"quota_bytes":     emergencyStatus.QuotaBytes,
+			"used_bytes":      emergencyStatus.UsedBytes,
 		},
 	})
 }
@@ -118,14 +118,23 @@ func visibleGlobalAnnouncement(a ports.GlobalAnnouncement) *ports.GlobalAnnounce
 func (h *UserMeHandler) EmergencyAccess(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
-	res, err := h.user.UseEmergencyAccess(c.Request.Context(), claims.UserID)
+	u, err := h.user.Get(c.Request.Context(), claims.UserID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	res, err := h.user.UseEmergencyAccess(c.Request.Context(), claims.UserID, h.trafficLimitExceeded(c.Request.Context(), u))
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		case errors.Is(err, domain.ErrForbidden):
 			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		case errors.Is(err, domain.ErrValidation):
@@ -138,25 +147,33 @@ func (h *UserMeHandler) EmergencyAccess(c *gin.Context) {
 	if h.user.HasPendingSync(c.Request.Context(), claims.UserID) {
 		c.Header("X-Sync-Pending", "1")
 	}
-	remaining := res.MaxCount - res.UsedCount
-	if remaining < 0 {
-		remaining = 0
-	}
+	settings, _ := h.settings.Load(c.Request.Context(), ports.UISettings{})
 	c.JSON(http.StatusOK, gin.H{
-		"expire_at":      res.User.ExpireAt,
-		"extended_from":  res.ExtendedFrom,
-		"extended_until": res.ExtendedUntil,
-		"used_count":     res.UsedCount,
-		"max_count":      res.MaxCount,
-		"remaining":      remaining,
-		"sync_pending":   h.user.HasPendingSync(c.Request.Context(), claims.UserID),
+		"expire_at":       res.User.ExpireAt,
+		"emergency_until": res.User.EmergencyUntil,
+		"extended_from":   res.ExtendedFrom,
+		"extended_until":  res.ExtendedUntil,
+		"used_count":      res.UsedCount,
+		"max_count":       res.MaxCount,
+		"remaining":       res.Remaining,
+		"quota_bytes":     int64(settings.EmergencyAccessQuotaGB) * 1024 * 1024 * 1024,
+		"used_bytes":      int64(0), // window just opened — UsedBytes is always 0 right after grant
+		"sync_pending":    h.user.HasPendingSync(c.Request.Context(), claims.UserID),
 	})
+}
+
+func (h *UserMeHandler) trafficLimitExceeded(ctx context.Context, u *domain.User) bool {
+	if h == nil || h.traffic == nil || u == nil || u.TrafficLimitBytes <= 0 {
+		return false
+	}
+	report, err := h.traffic.ReportFor(ctx, u.ID)
+	return err == nil && report != nil && report.PeriodUsedBytes >= u.TrafficLimitBytes
 }
 
 func (h *UserMeHandler) Traffic(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	report, err := h.traffic.ReportFor(c.Request.Context(), claims.UserID)
@@ -175,7 +192,7 @@ func (h *UserMeHandler) Traffic(c *gin.Context) {
 func (h *UserMeHandler) TrafficHistory(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	period, since, until, err := parseTrafficHistoryQuery(c)
@@ -206,13 +223,13 @@ func (h *UserMeHandler) TrafficHistory(c *gin.Context) {
 func (h *UserMeHandler) GetRules(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	u, err := h.user.Get(c.Request.Context(), claims.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -228,7 +245,7 @@ type updatePersonalRulesRequest struct {
 func (h *UserMeHandler) PutRules(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	var req updatePersonalRulesRequest
@@ -239,7 +256,7 @@ func (h *UserMeHandler) PutRules(c *gin.Context) {
 	if err := h.user.SetPersonalRules(c.Request.Context(), claims.UserID, req.PersonalRules); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		case errors.Is(err, domain.ErrValidation):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
@@ -253,13 +270,13 @@ func (h *UserMeHandler) PutRules(c *gin.Context) {
 func (h *UserMeHandler) ResetCredentials(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	res, err := h.user.ResetCredentialsAndSync(c.Request.Context(), claims.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -267,7 +284,7 @@ func (h *UserMeHandler) ResetCredentials(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"sub_token": res.SubToken,
-		"sub_url":   h.subURL(c.Request.Context(), res.SubToken),
+		"sub_url":   h.subURL(c.Request, res.SubToken),
 		"uuid":      res.UUID,
 	})
 }
@@ -280,7 +297,7 @@ type changePasswordRequest struct {
 func (h *UserMeHandler) ChangePassword(c *gin.Context) {
 	claims := middleware.ClaimsFrom(c)
 	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
 		return
 	}
 	var req changePasswordRequest
@@ -294,7 +311,7 @@ func (h *UserMeHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 	if !u.HasLocalPassword() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account has no local password"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Account has no local password"})
 		return
 	}
 	// Optional admin-controlled lock that prevents non-admin local users
@@ -303,12 +320,12 @@ func (h *UserMeHandler) ChangePassword(c *gin.Context) {
 	if u.Role != domain.RoleAdmin {
 		s, sErr := h.settings.Load(c.Request.Context(), ports.UISettings{})
 		if sErr == nil && s.DisallowUserPasswordChange {
-			c.JSON(http.StatusForbidden, gin.H{"error": "password change is disabled for non-administrators"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Password change is disabled for non-administrators"})
 			return
 		}
 	}
 	if _, err := h.user.VerifyLocalPassword(c.Request.Context(), u.UPN, req.OldPassword); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "old password incorrect"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Old password incorrect"})
 		return
 	}
 	if err := h.user.SetPassword(c.Request.Context(), claims.UserID, req.NewPassword); err != nil {
@@ -318,9 +335,9 @@ func (h *UserMeHandler) ChangePassword(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (h *UserMeHandler) subURL(ctx context.Context, token string) string {
-	base := strings.TrimRight(resolveSubBase(ctx, h.settings), "/")
-	path := resolveSubPath(ctx, h.settings, token)
+func (h *UserMeHandler) subURL(r *http.Request, token string) string {
+	base := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
+	path := resolveSubPath(r.Context(), h.settings, token)
 	if base == "" {
 		return path
 	}
@@ -328,7 +345,7 @@ func (h *UserMeHandler) subURL(ctx context.Context, token string) string {
 }
 
 // resolveSubBase returns the panel's public base URL from the DB settings.
-// Empty means "use relative /sub/<token>" — the caller handles that.
+// Empty means the caller may fall back to the current request's origin.
 func resolveSubBase(ctx context.Context, s ports.SettingsRepo) string {
 	if s == nil {
 		return ""
@@ -338,6 +355,42 @@ func resolveSubBase(ctx context.Context, s ports.SettingsRepo) string {
 		return ""
 	}
 	return st.SubBaseURL
+}
+
+func resolveSubBaseForRequest(ctx context.Context, s ports.SettingsRepo, r *http.Request) string {
+	if base := strings.TrimSpace(resolveSubBase(ctx, s)); base != "" {
+		return base
+	}
+	return inferRequestBaseURL(r)
+}
+
+func inferRequestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	scheme := firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+	if scheme != "http" && scheme != "https" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedValue(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }
 
 func resolveSubPath(ctx context.Context, s ports.SettingsRepo, token string) string {

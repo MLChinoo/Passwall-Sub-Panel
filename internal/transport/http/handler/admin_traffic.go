@@ -15,14 +15,15 @@ import (
 )
 
 // AdminTrafficHandler exposes /api/admin/traffic — aggregate usage views
-// (Top-N this period) and per-user lookups.
+// (Top-N this period) and per-user / per-node lookups.
 type AdminTrafficHandler struct {
 	users   ports.UserRepo
+	nodes   ports.NodeRepo
 	traffic *traffic.Service
 }
 
-func NewAdminTrafficHandler(users ports.UserRepo, trafficSvc *traffic.Service) *AdminTrafficHandler {
-	return &AdminTrafficHandler{users: users, traffic: trafficSvc}
+func NewAdminTrafficHandler(users ports.UserRepo, nodes ports.NodeRepo, trafficSvc *traffic.Service) *AdminTrafficHandler {
+	return &AdminTrafficHandler{users: users, nodes: nodes, traffic: trafficSvc}
 }
 
 type trafficRow struct {
@@ -100,7 +101,7 @@ func (h *AdminTrafficHandler) History(c *gin.Context) {
 	if rawUserID := c.Query("user_id"); rawUserID != "" {
 		userID, err := strconv.ParseInt(rawUserID, 10, 64)
 		if err != nil || userID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
 			return
 		}
 		h.historyForUser(c, userID, period, since, until)
@@ -159,7 +160,7 @@ func (h *AdminTrafficHandler) History(c *gin.Context) {
 func (h *AdminTrafficHandler) UserHistory(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	period, since, until, err := parseTrafficHistoryQuery(c)
@@ -195,7 +196,7 @@ func (h *AdminTrafficHandler) historyForUser(c *gin.Context, userID int64, perio
 func (h *AdminTrafficHandler) UserReport(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	report, err := h.traffic.ReportFor(c.Request.Context(), id)
@@ -222,7 +223,7 @@ func (h *AdminTrafficHandler) Poll(c *gin.Context) {
 func (h *AdminTrafficHandler) SetUserUsage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req setUserTrafficRequest
@@ -231,14 +232,14 @@ func (h *AdminTrafficHandler) SetUserUsage(c *gin.Context) {
 		return
 	}
 	if req.PeriodUsedGB < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "period_used_gb must be >= 0"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Period_used_gb must be >= 0"})
 		return
 	}
 	usedBytes := int64(req.PeriodUsedGB * 1024 * 1024 * 1024)
 	if err := h.traffic.SetPeriodUsage(c.Request.Context(), id, usedBytes); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 		case errors.Is(err, domain.ErrValidation):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
@@ -309,4 +310,126 @@ func historyItems(items []traffic.HistoryItem) []trafficHistoryItem {
 		}
 	}
 	return out
+}
+
+type nodeTrafficRow struct {
+	NodeID              int64    `json:"node_id"`
+	DisplayName         string   `json:"display_name"`
+	PanelName           string   `json:"panel_name"`
+	Region              string   `json:"region"`
+	Tags                []string `json:"tags"`
+	PermanentTotalBytes int64    `json:"permanent_total_bytes"`
+	PeriodUsedBytes     int64    `json:"period_used_bytes"`
+	TodayUsedBytes      int64    `json:"today_used_bytes"`
+}
+
+// NodesTop returns the top-N nodes by current-month usage. N defaults to 20.
+func (h *AdminTrafficHandler) NodesTop(c *gin.Context) {
+	n, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if n <= 0 {
+		n = 20
+	}
+	nodes, err := h.nodes.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	rows := make([]nodeTrafficRow, 0, len(nodes))
+	for _, node := range nodes {
+		report, rerr := h.traffic.NodeReportFor(c.Request.Context(), node.ID)
+		if rerr != nil || report == nil {
+			continue
+		}
+		rows = append(rows, nodeTrafficRow{
+			NodeID:              node.ID,
+			DisplayName:         node.DisplayName,
+			PanelName:           node.PanelName,
+			Region:              node.Region,
+			Tags:                node.Tags,
+			PermanentTotalBytes: report.PermanentTotalBytes,
+			PeriodUsedBytes:     report.PeriodUsedBytes,
+			TodayUsedBytes:      report.TodayUsedBytes,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].PeriodUsedBytes > rows[j].PeriodUsedBytes
+	})
+	if len(rows) > n {
+		rows = rows[:n]
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows})
+}
+
+// NodesHistory returns aggregate per-bucket history across all nodes (or a
+// single node when ?node_id= is passed).
+func (h *AdminTrafficHandler) NodesHistory(c *gin.Context) {
+	period, since, until, err := parseTrafficHistoryQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if rawID := c.Query("node_id"); rawID != "" {
+		nodeID, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil || nodeID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid node_id"})
+			return
+		}
+		report, err := h.traffic.NodeHistoryFor(c.Request.Context(), nodeID, period, since, until)
+		if err != nil {
+			switch {
+			case errors.Is(err, domain.ErrValidation):
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"scope":   "node",
+			"node_id": report.NodeID,
+			"period":  report.Period,
+			"since":   report.Since,
+			"until":   report.Until,
+			"items":   historyItems(report.Items),
+		})
+		return
+	}
+
+	nodes, err := h.nodes.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	items := []trafficHistoryItem{}
+	nodesCount := 0
+	for _, node := range nodes {
+		report, herr := h.traffic.NodeHistoryFor(c.Request.Context(), node.ID, period, since, until)
+		if herr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": herr.Error()})
+			return
+		}
+		if len(items) == 0 {
+			items = make([]trafficHistoryItem, len(report.Items))
+			for i, item := range report.Items {
+				items[i].Date = item.Date
+			}
+		}
+		for i, item := range report.Items {
+			if i >= len(items) {
+				break
+			}
+			items[i].UpBytes += item.UpBytes
+			items[i].DownBytes += item.DownBytes
+			items[i].TotalBytes += item.TotalBytes
+		}
+		nodesCount++
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"scope":       "all",
+		"period":      period,
+		"since":       since.Format("2006-01-02"),
+		"until":       until.Format("2006-01-02"),
+		"nodes_count": nodesCount,
+		"items":       items,
+	})
 }

@@ -51,12 +51,12 @@ func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
 			}
 		}
 		if raw == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Missing token"})
 			return
 		}
 		claims, err := svc.Verify(raw)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 			return
 		}
 		u, ok := userCache.Get(claims.UserID)
@@ -64,17 +64,17 @@ func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
 			liveUser, err := users.Get(c.Request.Context(), claims.UserID)
 			if err != nil {
 				if errors.Is(err, domain.ErrNotFound) {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account no longer exists"})
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Account no longer exists"})
 					return
 				}
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "auth lookup failed"})
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Auth lookup failed"})
 				return
 			}
 			u = authUserFromDomain(liveUser)
 			userCache.Put(u)
 		}
-		if !u.Enabled {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account disabled"})
+		if !u.Enabled && !allowSelfServiceForDisabledUser(c, u.AutoDisabledReason) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Account disabled"})
 			return
 		}
 		// Re-bind claims to the live DB role so demotions take effect for
@@ -88,10 +88,11 @@ func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
 }
 
 type authUserSnapshot struct {
-	ID      int64
-	UPN     string
-	Role    domain.Role
-	Enabled bool
+	ID                 int64
+	UPN                string
+	Role               domain.Role
+	Enabled            bool
+	AutoDisabledReason domain.AutoDisabledReason
 }
 
 type authUserEntry struct {
@@ -119,11 +120,36 @@ func newAuthUserLRU(max int, ttl time.Duration) *authUserLRU {
 
 func authUserFromDomain(u *domain.User) authUserSnapshot {
 	return authUserSnapshot{
-		ID:      u.ID,
-		UPN:     u.UPN,
-		Role:    u.Role,
-		Enabled: u.Enabled,
+		ID:                 u.ID,
+		UPN:                u.UPN,
+		Role:               u.Role,
+		Enabled:            u.Enabled,
+		AutoDisabledReason: u.AutoDisabledReason,
 	}
+}
+
+// allowSelfServiceForDisabledUser keeps the user portal fully usable for
+// accounts auto-disabled by traffic-exceeded or expiry: they can log in, view
+// their profile/traffic/rules, change password, reset credentials, request
+// emergency access, etc. The disable still bites at the 3X-UI side (proxy
+// connections are refused), but the panel itself must stay reachable so the
+// user can see WHY they're cut off and take action.
+//
+// Other disable reasons (block_violation, pending_delete, admin manual) keep
+// the previous "401 on everything" behavior — those are punitive states, not
+// quota states.
+func allowSelfServiceForDisabledUser(c *gin.Context, reason domain.AutoDisabledReason) bool {
+	if reason != domain.DisabledTrafficExceeded && reason != domain.DisabledExpired {
+		return false
+	}
+	path := c.FullPath()
+	if path == "" {
+		path = c.Request.URL.Path
+	}
+	// Any route registered under the userGroup (`/api/user/me/...`) is the
+	// authenticated self-service surface. Allowing the whole prefix keeps this
+	// from regressing whenever a new self-service endpoint is added.
+	return strings.HasPrefix(path, "/api/user/me")
 }
 
 func (c *authUserLRU) Get(id int64) (authUserSnapshot, bool) {
@@ -187,16 +213,16 @@ func RequireRole(roles ...domain.Role) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		v, ok := c.Get(CtxClaims)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "no auth context"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "No auth context"})
 			return
 		}
 		claims, ok := v.(*jwtutil.Claims)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "bad auth context"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Bad auth context"})
 			return
 		}
 		if _, allow := allowed[claims.Role]; !allow {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "role not permitted"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Role not permitted"})
 			return
 		}
 		c.Next()

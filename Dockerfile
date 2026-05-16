@@ -1,9 +1,9 @@
-# Stage 1 — build the Vue SPA bundle.
+# Stage 1 — build the React SPA bundle.
 FROM node:20-alpine AS web-builder
 WORKDIR /web
-COPY web/package.json web/package-lock.json* ./
+COPY web-react/package.json web-react/package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
-COPY web/ ./
+COPY web-react/ ./
 # Vite writes into ../internal/web/dist by config, but inside this stage we
 # only have /web. Redirect outDir to the local dist/ here, then copy across
 # stages.

@@ -9,8 +9,8 @@ docs/
 LICENSE
 
 # Frontend artefacts — rebuilt inside the image.
-web/node_modules/
-web/dist/
+web-react/node_modules/
+web-react/dist/
 internal/web/dist/*
 !internal/web/dist/.gitkeep
 

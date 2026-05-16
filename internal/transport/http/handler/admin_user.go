@@ -46,7 +46,17 @@ type userDTO struct {
 	Enabled            bool                      `json:"enabled"`
 	AutoDisabledReason domain.AutoDisabledReason `json:"auto_disabled_reason,omitempty"`
 	EmergencyUsedCount int                       `json:"emergency_used_count"`
-	CreatedAt          time.Time                 `json:"created_at"`
+	EmergencyUntil     *time.Time                `json:"emergency_until,omitempty"`
+	// EmergencyUsedBytes is how much traffic the user has consumed since the
+	// active window opened (lifetime - baseline). Zero when no window is
+	// active. Exposed so the admin's edit dialog can show "已用 X / Y GB"
+	// without needing a separate API call.
+	EmergencyUsedBytes int64 `json:"emergency_used_bytes"`
+	// EmergencyQuotaBytes is the configured per-window cap (0 = unlimited).
+	// Comes from UISettings; included per-user so the table doesn't need a
+	// second round-trip to settings.
+	EmergencyQuotaBytes int64     `json:"emergency_quota_bytes"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type createUserRequest struct {
@@ -92,7 +102,7 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 	}
 	out := make([]userDTO, len(items))
 	for i, u := range items {
-		out[i] = h.toDTO(c.Request.Context(), u)
+		out[i] = h.toDTO(c.Request, u)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out, "total": total})
 }
@@ -100,19 +110,19 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 func (h *AdminUserHandler) Get(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	u, err := h.user.Get(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, h.toDTO(c.Request.Context(), u))
+	c.JSON(http.StatusOK, h.toDTO(c.Request, u))
 }
 
 func (h *AdminUserHandler) Create(c *gin.Context) {
@@ -136,7 +146,7 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrAlreadyExists):
-			c.JSON(http.StatusConflict, gin.H{"error": "upn already exists"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Upn already exists"})
 		case errors.Is(err, domain.ErrValidation):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		case errors.Is(err, domain.ErrNotFound):
@@ -150,7 +160,7 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		c.Header("X-Sync-Pending", "1")
 	}
 	c.JSON(http.StatusCreated, createUserResponse{
-		User:            h.toDTO(c.Request.Context(), res.User),
+		User:            h.toDTO(c.Request, res.User),
 		InitialPassword: res.InitialPassword,
 		SyncedInbounds:  res.SyncedInbounds,
 	})
@@ -159,12 +169,12 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 func (h *AdminUserHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	if err := h.user.DeleteAndSync(c.Request.Context(), id); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -179,13 +189,13 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 func (h *AdminUserHandler) ResetCredentials(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	res, err := h.user.ResetCredentialsAndSync(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -196,7 +206,7 @@ func (h *AdminUserHandler) ResetCredentials(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"sub_token": res.SubToken,
-		"sub_url":   h.subURLFor(c.Request.Context(), res.SubToken),
+		"sub_url":   h.subURLFor(c.Request, res.SubToken),
 		"uuid":      res.UUID,
 	})
 }
@@ -204,12 +214,12 @@ func (h *AdminUserHandler) ResetCredentials(c *gin.Context) {
 func (h *AdminUserHandler) ResetEmergencyUsage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	if err := h.user.ResetEmergencyUsage(c.Request.Context(), id); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -226,7 +236,7 @@ type setEnabledRequest struct {
 func (h *AdminUserHandler) SetEnabled(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req setEnabledRequest
@@ -282,13 +292,13 @@ func (h *AdminUserHandler) SetEnabled(c *gin.Context) {
 func (h *AdminUserHandler) GetRules(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	u, err := h.user.Get(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -300,7 +310,7 @@ func (h *AdminUserHandler) GetRules(c *gin.Context) {
 func (h *AdminUserHandler) PutRules(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req updatePersonalRulesRequest
@@ -311,7 +321,7 @@ func (h *AdminUserHandler) PutRules(c *gin.Context) {
 	if err := h.user.SetPersonalRules(c.Request.Context(), id, req.PersonalRules); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 		case errors.Is(err, domain.ErrValidation):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
@@ -337,7 +347,7 @@ type updateUserRequest struct {
 func (h *AdminUserHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
 		return
 	}
 	var req updateUserRequest
@@ -372,7 +382,7 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 	if err := h.user.UpdateProfile(c.Request.Context(), id, in); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 		case errors.Is(err, domain.ErrValidation):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
@@ -388,35 +398,55 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 	if h.user.HasPendingSync(c.Request.Context(), id) {
 		c.Header("X-Sync-Pending", "1")
 	}
-	c.JSON(http.StatusOK, h.toDTO(c.Request.Context(), u))
+	c.JSON(http.StatusOK, h.toDTO(c.Request, u))
 }
 
 // ---- helpers ----
 
-func (h *AdminUserHandler) toDTO(ctx context.Context, u *domain.User) userDTO {
+func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
+	// Only fill EmergencyUsedBytes when a window is actually active — a stale
+	// baseline from a closed window is meaningless and would mislead the UI.
+	var usedBytes int64
+	if u.EmergencyUntil != nil && u.EmergencyUntil.After(time.Now()) {
+		usedBytes = u.LifetimeTotalBytes - u.EmergencyBaselineBytes
+		if usedBytes < 0 {
+			usedBytes = 0
+		}
+	}
+	// Read quota from current settings; cheap because Load is cached in the
+	// repo layer. Falls back to 0 (= unlimited) if settings unreadable.
+	var quotaBytes int64
+	if h.settings != nil {
+		if st, err := h.settings.Load(r.Context(), ports.UISettings{}); err == nil {
+			quotaBytes = int64(st.EmergencyAccessQuotaGB) * 1024 * 1024 * 1024
+		}
+	}
 	return userDTO{
-		ID:                 u.ID,
-		DisplayName:        u.DisplayName,
-		UPN:                u.UPN,
-		Email:              u.Email,
-		Role:               u.Role,
-		GroupID:            u.GroupID,
-		UUID:               u.UUID,
-		SubURL:             h.subURLFor(ctx, u.SubToken),
-		ExpireAt:           u.ExpireAt,
-		TrafficLimitBytes:  u.TrafficLimitBytes,
-		TrafficResetPeriod: u.TrafficResetPeriod,
-		Remark:             u.Remark,
-		Enabled:            u.Enabled,
-		AutoDisabledReason: u.AutoDisabledReason,
-		EmergencyUsedCount: u.EmergencyUsedCount,
-		CreatedAt:          u.CreatedAt,
+		ID:                  u.ID,
+		DisplayName:         u.DisplayName,
+		UPN:                 u.UPN,
+		Email:               u.Email,
+		Role:                u.Role,
+		GroupID:             u.GroupID,
+		UUID:                u.UUID,
+		SubURL:              h.subURLFor(r, u.SubToken),
+		ExpireAt:            u.ExpireAt,
+		TrafficLimitBytes:   u.TrafficLimitBytes,
+		TrafficResetPeriod:  u.TrafficResetPeriod,
+		Remark:              u.Remark,
+		Enabled:             u.Enabled,
+		AutoDisabledReason:  u.AutoDisabledReason,
+		EmergencyUsedCount:  u.EmergencyUsedCount,
+		EmergencyUntil:      u.EmergencyUntil,
+		EmergencyUsedBytes:  usedBytes,
+		EmergencyQuotaBytes: quotaBytes,
+		CreatedAt:           u.CreatedAt,
 	}
 }
 
-func (h *AdminUserHandler) subURLFor(ctx context.Context, token string) string {
-	base := strings.TrimRight(resolveSubBase(ctx, h.settings), "/")
-	path := resolveSubPath(ctx, h.settings, token)
+func (h *AdminUserHandler) subURLFor(r *http.Request, token string) string {
+	base := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
+	path := resolveSubPath(r.Context(), h.settings, token)
 	if base == "" {
 		return path
 	}

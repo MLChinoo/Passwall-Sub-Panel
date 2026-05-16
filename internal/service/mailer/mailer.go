@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,12 +16,14 @@ import (
 	"net/smtp"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/web"
 )
 
 type Service struct {
@@ -29,6 +32,11 @@ type Service struct {
 	traffic  ports.TrafficRepo
 	settings ports.SettingsRepo
 	tasks    ports.SyncTaskRepo
+}
+
+type TemplatePreview struct {
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
 }
 
 func New(repo ports.MailRepo, users ports.UserRepo, traffic ports.TrafficRepo, settings ports.SettingsRepo, tasks ports.SyncTaskRepo) *Service {
@@ -153,47 +161,98 @@ func mailTaskBackoff(attempt int) time.Duration {
 }
 
 func DefaultTemplates() []*domain.MailTemplate {
+	loginRow := emailRow("登录名", "{{.UPN}}", false)
 	return []*domain.MailTemplate{
 		{
 			Kind:    domain.MailReminderExpireBefore,
 			Enabled: true,
 			Subject: "订阅将在 {{.ExpireBeforeDays}} 天内到期",
-			Body:    defaultHTMLTemplate("订阅即将到期", "你的订阅将在 {{.ExpireAt}} 到期。请及时联系管理员完成续期，避免服务中断。", "到期时间", "{{.ExpireAt}}"),
+			Body: defaultHTMLTemplate(
+				"订阅即将到期",
+				"你的订阅将在 {{.ExpireAt}} 到期。请及时联系管理员完成续期，避免服务中断。",
+				loginRow+emailRow("到期时间", "{{.ExpireAt}}", true)+emailRow("生成时间", "{{.GeneratedAt}}", true),
+			),
 		},
 		{
 			Kind:    domain.MailReminderExpired,
 			Enabled: true,
 			Subject: "订阅已到期",
-			Body:    defaultHTMLTemplate("订阅已到期", "你的订阅已在 {{.ExpireAt}} 到期。如需继续使用，请联系管理员续期。", "到期时间", "{{.ExpireAt}}"),
+			Body: defaultHTMLTemplate(
+				"订阅已到期",
+				"你的订阅已在 {{.ExpireAt}} 到期。如需继续使用，请联系管理员续期。",
+				loginRow+emailRow("到期时间", "{{.ExpireAt}}", true)+emailRow("生成时间", "{{.GeneratedAt}}", true),
+			),
 		},
 		{
 			Kind:    domain.MailReminderTrafficLow,
 			Enabled: true,
 			Subject: "剩余流量低于 {{.TrafficRemainPercent}}%",
-			Body:    defaultHTMLTemplate("剩余流量不足", "你的本周期剩余流量已低于 {{.TrafficRemainPercent}}%。请合理安排使用，或联系管理员调整套餐。", "剩余流量", "{{.TrafficRemainGB}} GB"),
+			Body: defaultHTMLTemplate(
+				"剩余流量不足",
+				"你的本周期剩余流量已低于 {{.TrafficRemainPercent}}%。请合理安排使用，或联系管理员调整套餐。",
+				loginRow+emailRow("剩余流量", "{{.TrafficRemainGB}} GB", true)+emailRow("生成时间", "{{.GeneratedAt}}", true),
+			),
+		},
+		{
+			Kind:    domain.MailReminderTrafficExhausted,
+			Enabled: true,
+			Subject: "本期流量已用完",
+			Body: defaultHTMLTemplate(
+				"流量已用完",
+				"你的本期流量已用完，账号已被自动停用。账号将在下个计费周期开始时自动恢复；如需立即继续使用，可以在面板申请紧急访问或联系管理员。",
+				loginRow+
+					emailRow("已用流量", "{{.PeriodUsedGB}} / {{.TrafficLimitGB}} GB", true)+
+					emailRow("停用时间", "{{.GeneratedAt}}", true),
+			),
 		},
 		{
 			Kind:    domain.MailReminderAccountDisable,
 			Enabled: true,
 			Subject: "账号已被停用",
-			Body:    defaultHTMLTemplate("账号已停用", "你的账号已被停用。{{if .DisableDetail}}原因：{{.DisableDetail}}{{end}}", "停用时间", "{{.GeneratedAt}}"),
+			Body: defaultHTMLTemplate(
+				"账号已停用",
+				"你的账号已被停用。",
+				loginRow+`{{if .DisableDetail}}`+emailRow("停用原因", "{{.DisableDetail}}", true)+`{{end}}`+emailRow("停用时间", "{{.GeneratedAt}}", true),
+			),
 		},
 		{
 			Kind:    domain.MailReminderAccountEnable,
 			Enabled: true,
 			Subject: "账号已恢复正常",
-			Body:    defaultHTMLTemplate("账号已恢复", "你的账号已恢复正常，可以继续使用订阅服务。{{if .EnableDetail}}备注：{{.EnableDetail}}{{end}}", "恢复时间", "{{.GeneratedAt}}"),
+			Body: defaultHTMLTemplate(
+				"账号已恢复",
+				"你的账号已恢复正常，可以继续使用订阅服务。",
+				loginRow+`{{if .EnableDetail}}`+emailRow("备注", "{{.EnableDetail}}", true)+`{{end}}`+emailRow("恢复时间", "{{.GeneratedAt}}", true),
+			),
 		},
 		{
 			Kind:    domain.MailReminderAnnouncement,
 			Enabled: true,
 			Subject: "{{.AnnouncementTitle}}",
-			Body:    defaultHTMLTemplate("{{.AnnouncementTitle}}", "{{.AnnouncementBodyHTML}}", "公告时间", "{{.GeneratedAt}}"),
+			Body: defaultHTMLTemplate(
+				"{{.AnnouncementTitle}}",
+				"{{.AnnouncementBodyHTML}}",
+				loginRow+emailRow("公告时间", "{{.GeneratedAt}}", true),
+			),
 		},
 	}
 }
 
-func defaultHTMLTemplate(title, message, metricLabel, metricValue string) string {
+// emailRow builds one <tr> for the metric table at the bottom of each email.
+// hasTopBorder draws the divider that separates a row from the one above it;
+// the first row in the table should pass false.
+func emailRow(label, valueHTML string, hasTopBorder bool) string {
+	border := ""
+	if hasTopBorder {
+		border = "border-top:1px solid #e5e7eb;"
+	}
+	return fmt.Sprintf(
+		`<tr><td style="padding:14px 18px;color:#64748b;font-size:13px;%s">%s</td><td style="padding:14px 18px;text-align:right;font-size:14px;font-weight:600;color:#111827;%s">%s</td></tr>`,
+		border, label, border, valueHTML,
+	)
+}
+
+func defaultHTMLTemplate(title, message, rowsHTML string) string {
 	return `<!doctype html>
 <html>
 <body style="margin:0;background:#f4f6fb;padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#111827;">
@@ -204,18 +263,10 @@ func defaultHTMLTemplate(title, message, metricLabel, metricValue string) string
       <h1 style="margin:8px 0 0;font-size:24px;line-height:1.3;color:#ffffff;font-weight:700;">` + title + `</h1>
     </div>
     <div style="padding:30px 32px;">
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:#374151;">{{if .DisplayName}}你好 {{.DisplayName}}，{{else}}你好，{{end}}</p>
       <p style="margin:0 0 24px;font-size:15px;line-height:1.7;color:#374151;">` + message + `</p>
-      <table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 26px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
-        <tr>
-          <td style="padding:14px 18px;color:#64748b;font-size:13px;">` + metricLabel + `</td>
-          <td style="padding:14px 18px;text-align:right;font-size:14px;font-weight:600;color:#111827;">` + metricValue + `</td>
-        </tr>
-        <tr>
-          <td style="padding:14px 18px;color:#64748b;font-size:13px;border-top:1px solid #e5e7eb;">生成时间</td>
-          <td style="padding:14px 18px;text-align:right;font-size:14px;font-weight:600;color:#111827;border-top:1px solid #e5e7eb;">{{.GeneratedAt}}</td>
-        </tr>
-      </table>
-      <a href="{{.PanelURL}}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px;font-size:14px;font-weight:700;">登录面板</a>
+      <table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 26px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">` + rowsHTML + `</table>
+      <a href="{{.PanelURL}}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px;font-size:14px;font-weight:700;">打开面板</a>
       {{if .PanelURL}}<p style="margin:24px 0 0;font-size:12px;line-height:1.6;color:#6b7280;">如果按钮无法打开，请复制以下链接：<br><span style="word-break:break-all;color:#374151;">{{.PanelURL}}</span></p>{{end}}
     </div>
   </div>
@@ -274,14 +325,38 @@ func (s *Service) ListTemplates(ctx context.Context) ([]*domain.MailTemplate, er
 	return out, nil
 }
 
+// ResetTemplate overwrites the stored template for `kind` with the default
+// shipped in DefaultTemplates(). Useful when an admin saved a template under
+// an older panel version and wants to pull in newer copy / structure without
+// editing the body by hand.
+func (s *Service) ResetTemplate(ctx context.Context, kind domain.MailReminderKind) (*domain.MailTemplate, error) {
+	if err := validateTemplateKind(kind); err != nil {
+		return nil, err
+	}
+	for _, d := range DefaultTemplates() {
+		if d.Kind != kind {
+			continue
+		}
+		tpl := &domain.MailTemplate{
+			Kind:    d.Kind,
+			Subject: d.Subject,
+			Body:    d.Body,
+			Enabled: d.Enabled,
+		}
+		if err := s.repo.SaveTemplate(ctx, tpl); err != nil {
+			return nil, err
+		}
+		return tpl, nil
+	}
+	return nil, fmt.Errorf("%w: no default template for kind %q", domain.ErrNotFound, kind)
+}
+
 func (s *Service) SaveTemplate(ctx context.Context, tpl *domain.MailTemplate) error {
 	if tpl == nil {
 		return fmt.Errorf("%w: template required", domain.ErrValidation)
 	}
-	switch tpl.Kind {
-	case domain.MailReminderExpireBefore, domain.MailReminderExpired, domain.MailReminderTrafficLow, domain.MailReminderAccountDisable, domain.MailReminderAccountEnable, domain.MailReminderAnnouncement:
-	default:
-		return fmt.Errorf("%w: invalid template kind", domain.ErrValidation)
+	if err := validateTemplateKind(tpl.Kind); err != nil {
+		return err
 	}
 	tpl.Subject = strings.TrimSpace(tpl.Subject)
 	if tpl.Subject == "" {
@@ -294,6 +369,44 @@ func (s *Service) SaveTemplate(ctx context.Context, tpl *domain.MailTemplate) er
 		return fmt.Errorf("%w: body template: %v", domain.ErrValidation, err)
 	}
 	return s.repo.SaveTemplate(ctx, tpl)
+}
+
+func (s *Service) PreviewTemplate(ctx context.Context, tpl *domain.MailTemplate) (*TemplatePreview, error) {
+	if tpl == nil {
+		return nil, fmt.Errorf("%w: template required", domain.ErrValidation)
+	}
+	if err := validateTemplateKind(tpl.Kind); err != nil {
+		return nil, err
+	}
+	subject := strings.TrimSpace(tpl.Subject)
+	if subject == "" {
+		return nil, fmt.Errorf("%w: subject required", domain.ErrValidation)
+	}
+	settings := DefaultSettings()
+	if s != nil && s.repo != nil {
+		if loaded, err := s.LoadSettings(ctx); err == nil {
+			settings = loaded
+		}
+	}
+	data := s.previewTemplateData(ctx, settings, tpl.Kind)
+	renderedSubject, err := renderTemplate("preview_subject", subject, data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: subject template: %v", domain.ErrValidation, err)
+	}
+	renderedBody, err := renderTemplate("preview_body", tpl.Body, data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: body template: %v", domain.ErrValidation, err)
+	}
+	return &TemplatePreview{Subject: renderedSubject, Body: renderedBody}, nil
+}
+
+func validateTemplateKind(kind domain.MailReminderKind) error {
+	switch kind {
+	case domain.MailReminderExpireBefore, domain.MailReminderExpired, domain.MailReminderTrafficLow, domain.MailReminderTrafficExhausted, domain.MailReminderAccountDisable, domain.MailReminderAccountEnable, domain.MailReminderAnnouncement:
+		return nil
+	default:
+		return fmt.Errorf("%w: invalid template kind", domain.ErrValidation)
+	}
 }
 
 func (s *Service) SendTest(ctx context.Context, to string) error {
@@ -321,10 +434,22 @@ func (s *Service) SendAccountDisabledNotification(ctx context.Context, u *domain
 	if err != nil {
 		return err
 	}
-	// Find the account_disabled template.
+	// Pick the most specific template for this disable. When the reason is
+	// traffic_exceeded AND a dedicated traffic_exhausted template is enabled,
+	// use that — its copy is tuned for quota events ("流量已用完，下周期自动
+	// 恢复"). Falls back to the generic account_disabled template otherwise.
+	preferred := domain.MailReminderAccountDisable
+	if disableReason == string(domain.DisabledTrafficExceeded) {
+		for _, t := range templates {
+			if t.Kind == domain.MailReminderTrafficExhausted && t.Enabled {
+				preferred = domain.MailReminderTrafficExhausted
+				break
+			}
+		}
+	}
 	var tpl *domain.MailTemplate
 	for _, t := range templates {
-		if t.Kind == domain.MailReminderAccountDisable && t.Enabled {
+		if t.Kind == preferred && t.Enabled {
 			tpl = t
 			break
 		}
@@ -663,7 +788,7 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 			trafficRemainGB = gb(remain)
 		}
 	}
-	logoURL := "" // Empty by default - no logo if not configured
+	var configuredLogo, configuredLogoDark, base string
 	panelURL := "" // Panel URL for email button
 	appTitle := "Passwall"
 	if s.settings != nil {
@@ -675,16 +800,15 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 			if st.AppTitle != "" {
 				appTitle = st.AppTitle
 			}
-			base := strings.TrimRight(st.SubBaseURL, "/")
+			base = strings.TrimRight(st.SubBaseURL, "/")
 			if base != "" {
 				panelURL = base
 			}
-			// Logo URL - must be absolute URL (http/https) for email clients
-			if st.LogoURL != "" && (strings.HasPrefix(st.LogoURL, "http://") || strings.HasPrefix(st.LogoURL, "https://")) {
-				logoURL = st.LogoURL
-			}
+			configuredLogo = st.LogoURL
+			configuredLogoDark = st.LogoURLDark
 		}
 	}
+	logoURL := resolveLogoURL(base, configuredLogo, configuredLogoDark)
 	return map[string]any{
 		"UserID":               u.ID,
 		"UPN":                  u.UPN,
@@ -703,6 +827,94 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 	}
 }
 
+func (s *Service) previewTemplateData(ctx context.Context, settings domain.MailSettings, kind domain.MailReminderKind) map[string]any {
+	now := time.Now()
+	// Pick template-kind-specific sample values so the preview reflects what a
+	// real recipient would actually see. The base map below holds the common
+	// defaults; the switch below tweaks any field whose realistic value depends
+	// on which template is being previewed.
+	expireAt := now.AddDate(0, 0, settings.ExpireBeforeDays).Format("2006-01-02 15:04")
+	periodUsed := "80.00"
+	trafficLimit := "100.00"
+	trafficRemain := "20.00"
+	disableReason := string(domain.DisabledTrafficExceeded)
+	disableDetail := "本月流量已达到 100 GB 上限"
+	enableDetail := "管理员已为你恢复账户"
+	announcementTitle := "系统维护通知"
+	announcementBody := "<p>今晚 23:00 - 24:00 将进行短暂维护，期间订阅服务可能波动。给你带来的不便敬请谅解。</p>"
+
+	switch kind {
+	case domain.MailReminderExpireBefore:
+		// Future date, X days out matches the "{{.ExpireBeforeDays}} 天内到期" subject.
+		expireAt = now.AddDate(0, 0, settings.ExpireBeforeDays).Format("2006-01-02 15:04")
+	case domain.MailReminderExpired:
+		// Past date — show "expired yesterday" so the template's "已在 X 到期" reads right.
+		expireAt = now.AddDate(0, 0, -1).Format("2006-01-02 15:04")
+	case domain.MailReminderTrafficLow:
+		// Show the user near (but not over) their cap so the "剩余流量" row matches
+		// "low remaining" semantics rather than "exhausted".
+		periodUsed = "92.50"
+		trafficRemain = "7.50"
+	case domain.MailReminderTrafficExhausted:
+		// Quota fully consumed — period used equals limit, remain is zero.
+		periodUsed = "100.00"
+		trafficRemain = "0.00"
+	case domain.MailReminderAccountDisable:
+		// Mirror what auto-disable actually writes today; keep it concrete so
+		// the admin sees the row layout they'll see in real emails.
+		disableReason = string(domain.DisabledTrafficExceeded)
+		disableDetail = "本期流量已达到 100 GB 上限，账号已被自动停用"
+	case domain.MailReminderAccountEnable:
+		enableDetail = "新周期已开始，账号已自动恢复"
+	case domain.MailReminderAnnouncement:
+		announcementTitle = "系统维护通知"
+		announcementBody = "<p>今晚 23:00 - 24:00 将进行短暂维护，期间订阅服务可能波动。</p><p>如有疑问请联系管理员。</p>"
+	}
+
+	data := map[string]any{
+		"UserID":               int64(1001),
+		"UPN":                  "demo@example.com",
+		"DisplayName":          "演示用户",
+		"Email":                "demo@example.com",
+		"SiteTitle":            "Passwall",
+		"LogoURL":              "",
+		"PanelURL":             "https://panel.example.com",
+		"GeneratedAt":          now.Format("2006-01-02 15:04"),
+		"ExpireAt":             expireAt,
+		"ExpireBeforeDays":     settings.ExpireBeforeDays,
+		"TrafficRemainPercent": settings.TrafficRemainPercent,
+		"PeriodUsedGB":         periodUsed,
+		"TrafficLimitGB":       trafficLimit,
+		"TrafficRemainGB":      trafficRemain,
+		"DisableReason":        disableReason,
+		"DisableDetail":        disableDetail,
+		"EnableReason":         string(domain.DisabledNone),
+		"EnableDetail":         enableDetail,
+		"AnnouncementTitle":    announcementTitle,
+		"AnnouncementBodyHTML": announcementBody,
+	}
+	var configuredLogo, configuredLogoDark, base string
+	if s != nil && s.settings != nil {
+		st, err := s.settings.Load(ctx, ports.UISettings{
+			SiteTitle: "Passwall",
+			AppTitle:  "Passwall",
+		})
+		if err == nil {
+			if st.AppTitle != "" {
+				data["SiteTitle"] = st.AppTitle
+			}
+			base = strings.TrimRight(st.SubBaseURL, "/")
+			if base != "" {
+				data["PanelURL"] = base
+			}
+			configuredLogo = st.LogoURL
+			configuredLogoDark = st.LogoURLDark
+		}
+	}
+	data["LogoURL"] = resolveLogoURL(base, configuredLogo, configuredLogoDark)
+	return data
+}
+
 func absoluteURL(base, raw string) string {
 	if raw == "" || strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "data:") {
 		return raw
@@ -711,6 +923,55 @@ func absoluteURL(base, raw string) string {
 		return base + raw
 	}
 	return base + "/" + raw
+}
+
+func isAbsoluteURL(raw string) bool {
+	return strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "data:")
+}
+
+// defaultLogoDataURL returns the embedded brand logo as a base64 data URL so
+// emails always render the logo regardless of SubBaseURL configuration. Mail
+// clients (Gmail/Outlook/etc) cannot resolve relative paths, so any
+// non-absolute LogoURL would otherwise produce a broken image.
+//
+// Computed once on first call from the SPA's embedded /images/ asset.
+var (
+	defaultLogoOnce sync.Once
+	defaultLogoData string
+)
+
+func defaultLogoDataURL() string {
+	defaultLogoOnce.Do(func() {
+		// Email header has a dark background (#0f172a), so use the dark-mode
+		// variant of the logo (light text/strokes on dark).
+		raw, err := web.DistFS.ReadFile("dist/images/logo+title-circle-darkmode.png")
+		if err != nil {
+			// Asset missing (dev build without `npm run build`?) — fall back to
+			// empty so the template `{{if}}` skips the img tag entirely.
+			log.Warn("mailer default logo not embedded", "err", err)
+			return
+		}
+		defaultLogoData = "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
+	})
+	return defaultLogoData
+}
+
+// resolveLogoURL applies the fallback chain so emails never carry a broken
+// <img> src. The email header has a dark background, so the dark variant is
+// preferred. Chain: admin's LogoURLDark → admin's LogoURL → embedded
+// darkmode default as a data URL. Each candidate is dropped if it can't be
+// made into an absolute URL (relative paths won't load in mail clients).
+func resolveLogoURL(base, lightConfigured, darkConfigured string) string {
+	for _, candidate := range []string{darkConfigured, lightConfigured} {
+		if candidate == "" {
+			continue
+		}
+		resolved := absoluteURL(base, candidate)
+		if isAbsoluteURL(resolved) {
+			return resolved
+		}
+	}
+	return defaultLogoDataURL()
 }
 
 func (s *Service) periodUsage(ctx context.Context, u *domain.User) (int64, error) {

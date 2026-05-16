@@ -55,7 +55,7 @@ func (h *AdminTemplatesHandler) Get(c *gin.Context) {
 	t, err := h.repo.GetBySlug(c.Request.Context(), slug)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -78,7 +78,7 @@ func (h *AdminTemplatesHandler) Save(c *gin.Context) {
 		return
 	}
 	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Slug required"})
 		return
 	}
 	if err := h.repo.Save(c.Request.Context(), &domain.Template{

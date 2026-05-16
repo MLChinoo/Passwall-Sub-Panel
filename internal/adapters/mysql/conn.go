@@ -65,6 +65,7 @@ func NewRepos(db *gorm.DB) ports.Repos {
 		Node:       &nodeRepo{db: db},
 		Ownership:  &ownershipRepo{db: db},
 		Traffic:    &trafficRepo{db: db},
+		NodeTraffic: &nodeTrafficRepo{db: db},
 		Audit:      &auditRepo{db: db},
 		SubLog:     &subLogRepo{db: db},
 		SyncTask:   &syncTaskRepo{db: db},

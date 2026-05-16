@@ -73,3 +73,37 @@ func (r *trafficRepo) ListByUser(ctx context.Context, userID int64, since, until
 	}
 	return out, nil
 }
+
+func (r *trafficRepo) InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error {
+	row := clientTrafficRow{
+		UserID:      s.UserID,
+		PanelID:     s.PanelID,
+		InboundID:   s.InboundID,
+		ClientEmail: s.ClientEmail,
+		UpBytes:     s.UpBytes,
+		DownBytes:   s.DownBytes,
+		TotalBytes:  s.TotalBytes,
+		CapturedAt:  s.CapturedAt,
+	}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return err
+	}
+	s.ID = row.ID
+	return nil
+}
+
+func (r *trafficRepo) LatestForClient(ctx context.Context, userID int64, panelID int64, inboundID int, email string) (*domain.ClientTrafficSnapshot, error) {
+	var row clientTrafficRow
+	tx := r.db.WithContext(ctx).
+		Where("user_id = ? AND panel_id = ? AND inbound_id = ? AND client_email = ?", userID, panelID, inboundID, email).
+		Order("id DESC").
+		Limit(1).
+		Find(&row)
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return nil, domain.ErrNotFound
+	}
+	return row.toDomain(), nil
+}

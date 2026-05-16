@@ -170,13 +170,15 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.GET("/audit", auditH.List)
 		adminGroup.DELETE("/audit", auditH.Clear)
 
-		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Traffic)
+		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Repos.Node, d.Traffic)
 		adminGroup.GET("/traffic/top", trafficH.Top)
 		adminGroup.POST("/traffic/poll", trafficH.Poll)
 		adminGroup.GET("/traffic/history", trafficH.History)
 		adminGroup.GET("/traffic/user/:id", trafficH.UserReport)
 		adminGroup.GET("/traffic/user/:id/history", trafficH.UserHistory)
 		adminGroup.PUT("/traffic/user/:id", trafficH.SetUserUsage)
+		adminGroup.GET("/traffic/nodes/top", trafficH.NodesTop)
+		adminGroup.GET("/traffic/nodes/history", trafficH.NodesHistory)
 
 		servers := handler.NewAdminServersHandler(d.Repos.XUIPanel, d.Pool, d.Repos.Node, d.Repos.Ownership)
 		adminGroup.GET("/servers", servers.List)
@@ -193,6 +195,8 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.GET("/settings/mail", mail.Get)
 		adminGroup.PUT("/settings/mail", mail.PutSettings)
 		adminGroup.PUT("/settings/mail/templates/:kind", mail.PutTemplate)
+		adminGroup.POST("/settings/mail/templates/:kind/preview", mail.PreviewTemplate)
+		adminGroup.POST("/settings/mail/templates/:kind/reset", mail.ResetTemplate)
 		adminGroup.POST("/settings/mail/test", mail.Test)
 		adminGroup.POST("/settings/mail/announcement", mail.Announcement)
 

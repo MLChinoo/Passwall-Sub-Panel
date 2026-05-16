@@ -319,7 +319,10 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 	return u, nil
 }
 
-// VerifyLocalPassword returns the user if UPN/password match a password-enabled account.
+// VerifyLocalPassword returns the user if UPN/password match a password-enabled
+// account. On ErrForbidden the user pointer is still returned (non-nil) so the
+// caller can surface a reason-specific error message — for any other error the
+// pointer is nil.
 func (s *Service) VerifyLocalPassword(ctx context.Context, upn, password string) (*domain.User, error) {
 	u, err := s.users.GetByUPN(ctx, strings.TrimSpace(upn))
 	if err != nil {
@@ -328,13 +331,17 @@ func (s *Service) VerifyLocalPassword(ctx context.Context, upn, password string)
 	if !u.HasLocalPassword() {
 		return nil, domain.ErrUnauthorized
 	}
-	if !u.Enabled {
-		return nil, domain.ErrForbidden
+	if !u.Enabled && !emergencySelfServiceAllowedReason(u.AutoDisabledReason) {
+		return u, domain.ErrForbidden
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		return nil, domain.ErrUnauthorized
 	}
 	return u, nil
+}
+
+func emergencySelfServiceAllowedReason(reason domain.AutoDisabledReason) bool {
+	return reason == domain.DisabledTrafficExceeded || reason == domain.DisabledExpired
 }
 
 // ResetSubToken issues a new subscription token, invalidating the old URL.
@@ -611,6 +618,25 @@ type EmergencyAccessResult struct {
 	ExtendedUntil time.Time
 	UsedCount     int
 	MaxCount      int
+	Remaining     int
+}
+
+type EmergencyAccessStatus struct {
+	Enabled       bool
+	DurationHours int
+	MaxCount      int
+	UsedCount     int
+	Remaining     int
+	Available     bool
+	Status        string
+	Reason        string
+	Until         *time.Time
+	// QuotaBytes is the per-window traffic cap (0 = unlimited). UsedBytes is
+	// how much of the current active window has been consumed (only meaningful
+	// when Until is in the future). When UsedBytes >= QuotaBytes > 0 the poll
+	// will end the window early.
+	QuotaBytes int64
+	UsedBytes  int64
 }
 
 // UpdateProfile applies a partial update to one user. If the group
@@ -686,7 +712,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 	return nil
 }
 
-func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64) (*EmergencyAccessResult, error) {
+func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64, trafficLimitExceeded bool) (*EmergencyAccessResult, error) {
 	s.emergencyMu.Lock()
 	defer s.emergencyMu.Unlock()
 
@@ -705,21 +731,42 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64) (*Emerge
 	if err != nil {
 		return nil, err
 	}
-	if u.ExpireAt == nil {
-		return nil, fmt.Errorf("%w: permanent accounts do not need emergency access", domain.ErrValidation)
-	}
-	if u.EmergencyUsedCount >= settings.EmergencyAccessMaxCount {
+	now := time.Now()
+	status := EmergencyAccessStatusForUserWithTrafficLimit(u, settings, now, trafficLimitExceeded)
+	if status.Remaining <= 0 {
 		return nil, fmt.Errorf("%w: emergency access limit reached", domain.ErrForbidden)
 	}
-
-	now := time.Now()
-	from := now
-	if u.ExpireAt.After(now) {
-		from = *u.ExpireAt
+	if !status.Available {
+		return nil, fmt.Errorf("%w: %s", domain.ErrValidation, status.Reason)
 	}
+
+	from := now
 	until := from.Add(time.Duration(settings.EmergencyAccessHours) * time.Hour)
-	u.ExpireAt = &until
+	if u.ExpireAt != nil && !u.ExpireAt.After(now) {
+		u.ExpireAt = &until
+	}
+	if !u.Enabled && (u.AutoDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledExpired) {
+		u.Enabled = true
+		if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+			u.AutoDisabledReason = domain.DisabledTrafficExceeded
+			u.DisableDetail = "emergency access active"
+		} else {
+			u.AutoDisabledReason = domain.DisabledNone
+			u.DisableDetail = ""
+		}
+	}
+	if trafficLimitExceeded && u.Enabled {
+		u.AutoDisabledReason = domain.DisabledTrafficExceeded
+		u.DisableDetail = "emergency access active"
+	}
+	u.EmergencyUntil = &until
 	u.EmergencyUsedCount++
+	// Snapshot the lifetime counter so the traffic poll can compute how much
+	// the user consumes during this emergency window and end it early once
+	// EmergencyAccessQuotaGB is exhausted. Captured even when quota is 0 so
+	// admins can flip the cap on later without retroactively breaking the
+	// window's accounting.
+	u.EmergencyBaselineBytes = u.LifetimeTotalBytes
 	if err := s.users.Update(ctx, u); err != nil {
 		return nil, err
 	}
@@ -736,7 +783,79 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64) (*Emerge
 		ExtendedUntil: until,
 		UsedCount:     u.EmergencyUsedCount,
 		MaxCount:      settings.EmergencyAccessMaxCount,
+		Remaining:     max(0, settings.EmergencyAccessMaxCount-u.EmergencyUsedCount),
 	}, nil
+}
+
+func EmergencyAccessStatusForUser(u *domain.User, settings ports.UISettings, now time.Time) EmergencyAccessStatus {
+	return EmergencyAccessStatusForUserWithTrafficLimit(u, settings, now, false)
+}
+
+func EmergencyAccessStatusForUserWithTrafficLimit(u *domain.User, settings ports.UISettings, now time.Time, trafficLimitExceeded bool) EmergencyAccessStatus {
+	st := EmergencyAccessStatus{
+		Enabled:       settings.EmergencyAccessEnabled,
+		DurationHours: settings.EmergencyAccessHours,
+		MaxCount:      settings.EmergencyAccessMaxCount,
+		QuotaBytes:    int64(settings.EmergencyAccessQuotaGB) * 1024 * 1024 * 1024,
+	}
+	if u != nil {
+		st.UsedCount = u.EmergencyUsedCount
+		st.Until = u.EmergencyUntil
+		if u.EmergencyUntil != nil && u.EmergencyUntil.After(now) {
+			used := u.LifetimeTotalBytes - u.EmergencyBaselineBytes
+			if used < 0 {
+				used = 0
+			}
+			st.UsedBytes = used
+		}
+	}
+	st.Remaining = st.MaxCount - st.UsedCount
+	if st.Remaining < 0 {
+		st.Remaining = 0
+	}
+	if !st.Enabled {
+		st.Status = "disabled"
+		st.Reason = "emergency access is disabled"
+		return st
+	}
+	if st.DurationHours <= 0 || st.MaxCount <= 0 {
+		st.Status = "invalid_settings"
+		st.Reason = "emergency access settings are invalid"
+		return st
+	}
+	if u == nil {
+		st.Status = "user_not_found"
+		st.Reason = "user not found"
+		return st
+	}
+	// Check "active" BEFORE "remaining". A user mid-window has used_count >=
+	// 1 already (used it to open the window), so for single-use configs
+	// remaining is 0 — but they shouldn't see "次数已用完" while their
+	// granted window is still ticking. The remaining check is for "can I
+	// open ANOTHER window", which is moot when one is already open.
+	emergencyActive := u.EmergencyUntil != nil && u.EmergencyUntil.After(now)
+	if emergencyActive {
+		st.Status = "active"
+		st.Reason = "emergency access is already active"
+		return st
+	}
+	if st.Remaining <= 0 {
+		st.Status = "no_quota"
+		st.Reason = "emergency access limit reached"
+		return st
+	}
+	expired := u.ExpireAt != nil && !u.ExpireAt.After(now)
+	expiredEligible := expired && (u.Enabled || u.AutoDisabledReason == domain.DisabledExpired)
+	trafficExceeded := (u.AutoDisabledReason == domain.DisabledTrafficExceeded && (!u.Enabled || u.EmergencyUntil != nil)) ||
+		(trafficLimitExceeded && u.Enabled)
+	if !expiredEligible && !trafficExceeded {
+		st.Status = "not_eligible"
+		st.Reason = "emergency access is only available after expiry or traffic limit exceeded"
+		return st
+	}
+	st.Available = true
+	st.Status = "available"
+	return st
 }
 
 func (s *Service) ResetEmergencyUsage(ctx context.Context, userID int64) error {
@@ -744,10 +863,15 @@ func (s *Service) ResetEmergencyUsage(ctx context.Context, userID int64) error {
 	if err != nil {
 		return err
 	}
-	if u.EmergencyUsedCount == 0 {
+	if u.EmergencyUsedCount == 0 && u.EmergencyUntil == nil && u.EmergencyBaselineBytes == 0 {
 		return nil
 	}
 	u.EmergencyUsedCount = 0
+	// Clear the active window and quota baseline too — otherwise an admin
+	// "reset" leaves the user mid-window with a stale baseline that would mis-
+	// attribute future traffic the moment another window is granted.
+	u.EmergencyUntil = nil
+	u.EmergencyBaselineBytes = 0
 	return s.users.Update(ctx, u)
 }
 
@@ -953,6 +1077,20 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	for _, e := range entries {
 		info, err := s.inspectInboundByPanel(ctx, e.PanelID, e.InboundID)
 		if err != nil {
+			// 3X-UI returned "not found" — the inbound was deleted on the
+			// remote side, so this ownership row is stale. Drop it from our
+			// DB and skip; otherwise SetEnabledAndSync would queue an endless
+			// retry task for an inbound that will never come back.
+			if isInboundNotFoundErr(err) {
+				if rmErr := s.ownership.RemoveByMatch(ctx, e.PanelID, e.InboundID, e.ClientEmail); rmErr != nil {
+					log.Warn("stale ownership cleanup failed",
+						"panel_id", e.PanelID, "inbound_id", e.InboundID, "email", e.ClientEmail, "err", rmErr)
+				} else {
+					log.Info("removed stale ownership (3X-UI inbound deleted)",
+						"panel_id", e.PanelID, "inbound_id", e.InboundID, "email", e.ClientEmail)
+				}
+				continue
+			}
 			if firstErr == nil {
 				firstErr = fmt.Errorf("inspect %d/%d/%s: %w", e.PanelID, e.InboundID, e.ClientEmail, err)
 			}
@@ -967,6 +1105,20 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 		}
 	}
 	return firstErr
+}
+
+// isInboundNotFoundErr matches the "record not found" surface that the 3X-UI
+// HTTP client wraps when an inbound id is missing on the remote side. Used to
+// distinguish "permanently gone, drop the ownership row" from transient
+// network failures (which should keep retrying).
+func isInboundNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "record not found") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "404")
 }
 
 // ProcessDueTasks runs pending user-scoped sync tasks. It is safe to call
