@@ -90,7 +90,7 @@ export default function MaterialDemoView() {
     mode: appearanceStore.mode,
   }
   const language: AppLanguage = currentLanguage()
-  const onAppearanceChange = (patch: { userColor?: string | null; mode?: 'light' | 'dark' }) => {
+  const onAppearanceChange = (patch: { userColor?: string | null; mode?: 'light' | 'dark' | 'auto' }) => {
     if ('userColor' in patch) appearanceStore.setUserColor(patch.userColor ?? null)
     if (patch.mode) appearanceStore.setMode(patch.mode)
   }

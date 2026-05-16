@@ -155,7 +155,14 @@ func defaultSubClientRules() []ports.SubClientRule {
 		{Name: "Shadowrocket", Keywords: []string{"shadowrocket"}, RenderFormat: "mihomo", Enabled: true},
 		{Name: "Loon", Keywords: []string{"loon"}, RenderFormat: "mihomo", Enabled: true},
 		{Name: "Quantumult X", Keywords: []string{"quantumult x", "quantumultx"}, RenderFormat: "mihomo", Enabled: true},
-		{Name: "V2RayN", Keywords: []string{"v2rayn", "v2ray"}, RenderFormat: "mihomo", Enabled: true},
+		// V2rayN consumes the base64 URI list as its native subscription
+		// format (it parses each vless://, vmess://, trojan://, ss:// line).
+		// Earlier defaults wrongly pointed it at the mihomo (Clash YAML)
+		// renderer which V2rayN can't read.
+		{Name: "V2RayN", Keywords: []string{"v2rayn", "v2ray"}, RenderFormat: "uri-list", Enabled: true},
+		// OpenWrt Passwall plugin subscriber. Same base64 URI list format
+		// — Passwall's UA contains "Passwall" verbatim.
+		{Name: "Passwall (OpenWrt)", Keywords: []string{"passwall"}, RenderFormat: "uri-list", Enabled: true},
 		{Name: "Stash", Keywords: []string{"stash"}, RenderFormat: "mihomo", Enabled: true},
 		{Name: "Surfboard", Keywords: []string{"surfboard"}, RenderFormat: "mihomo", Enabled: true},
 	}
@@ -211,6 +218,41 @@ func defaultSubImportClients() []ports.SubImportClient {
 			InstallURL:        "https://sing-box.sagernet.org/clients/",
 			Enabled:           true,
 			Sort:              40,
+		},
+		{
+			// V2rayN (Windows) has no native deep link — users right-click
+			// the tray → "Subscription" → paste URL. We still expose it as
+			// an entry so the user portal can show the install link + a
+			// "copy URL" affordance instead of a launchable button.
+			Name:              "V2rayN",
+			Platforms:         []string{"windows"},
+			RenderFormat:      "uri-list",
+			ImportURLTemplate: "{{ sub_url }}",
+			InstallURL:        "https://github.com/2dust/v2rayN/releases",
+			Enabled:           true,
+			Sort:              50,
+		},
+		{
+			// V2rayNG (Android) accepts a deep-link with the URL itself
+			// base64-encoded: v2rayng://install-sub/?url=BASE64.
+			Name:              "V2rayNG",
+			Platforms:         []string{"android"},
+			RenderFormat:      "uri-list",
+			ImportURLTemplate: "v2rayng://install-sub/?url={{ sub_url_b64 }}",
+			InstallURL:        "https://github.com/2dust/v2rayNG/releases",
+			Enabled:           true,
+			Sort:              55,
+		},
+		{
+			// Shadowrocket (iOS) takes the sub URL base64-encoded under the
+			// sub:// scheme, which it auto-imports as a subscription.
+			Name:              "Shadowrocket",
+			Platforms:         []string{"ios"},
+			RenderFormat:      "uri-list",
+			ImportURLTemplate: "sub://{{ sub_url_b64 }}",
+			InstallURL:        "https://apps.apple.com/app/shadowrocket/id932747118",
+			Enabled:           true,
+			Sort:              60,
 		},
 	}
 }

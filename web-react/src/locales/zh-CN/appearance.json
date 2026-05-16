@@ -5,6 +5,7 @@
   "custom_hint": "输入 HEX 色值（如 #6750A4）",
   "mode_section": "明暗",
   "mode": {
+    "auto": "自动",
     "light": "浅色",
     "dark": "深色"
   },

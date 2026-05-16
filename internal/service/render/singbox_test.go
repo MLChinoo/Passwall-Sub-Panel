@@ -2,8 +2,58 @@ package render
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
+
+// TestBuildSingBoxHysteria2Outbound checks the sing-box outbound JSON
+// shape per https://sing-box.sagernet.org/configuration/outbound/hysteria2/.
+// Mandatory: type, server, server_port, password. Optional: obfs object,
+// tls{enabled, server_name, alpn, insecure}.
+func TestBuildSingBoxHysteria2Outbound(t *testing.T) {
+	got := buildSingBoxHysteria2Outbound("hy2-us-1", "node.example.com", 8443, "secret-pwd", hysteria2Opts{
+		SNI:          "node.example.com",
+		ObfsType:     "salamander",
+		ObfsPassword: "obfs-secret",
+		ALPN:         []string{"h3"},
+		Insecure:     false,
+	})
+	want := map[string]any{
+		"tag":         "hy2-us-1",
+		"type":        "hysteria2",
+		"server":      "node.example.com",
+		"server_port": 8443,
+		"password":    "secret-pwd",
+		"obfs": map[string]any{
+			"type":     "salamander",
+			"password": "obfs-secret",
+		},
+		"tls": map[string]any{
+			"enabled":     true,
+			"server_name": "node.example.com",
+			"alpn":        []string{"h3"},
+			"insecure":    false,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+// TestBuildSingBoxHysteria2Outbound_NoObfs: when obfs isn't configured,
+// the "obfs" key MUST be omitted (sing-box treats it as enabled-with-
+// empty-password otherwise).
+func TestBuildSingBoxHysteria2Outbound_NoObfs(t *testing.T) {
+	got := buildSingBoxHysteria2Outbound("x", "1.2.3.4", 443, "p", hysteria2Opts{Insecure: true})
+	if _, ok := got["obfs"]; ok {
+		t.Fatalf("obfs key should be absent: %#v", got)
+	}
+	tls := got["tls"].(map[string]any)
+	if tls["insecure"] != true {
+		t.Fatalf("tls.insecure = %v, want true", tls["insecure"])
+	}
+}
+
 
 func TestBuildSingBoxRouteRules(t *testing.T) {
 	rules, final := buildSingBoxRouteRules(`

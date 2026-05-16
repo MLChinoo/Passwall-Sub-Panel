@@ -321,8 +321,14 @@ export default function MeView() {
   function buildImportURL(c: { import_url_template: string }): string {
     const subUrl = profile?.sub_url || ''
     const profileName = profile?.display_name || profile?.upn || 'Passwall'
+    // btoa requires latin-1; the sub URL is ASCII so unescape(encodeURIComponent())
+    // pre-encodes safely. Used by V2rayNG / Shadowrocket deep links which
+    // expect the URL itself to be base64-wrapped in the query.
+    let subUrlB64 = ''
+    try { subUrlB64 = btoa(unescape(encodeURIComponent(subUrl))) } catch { /* ignore */ }
     return c.import_url_template
       .replaceAll('{{ sub_url_encoded }}', encodeURIComponent(subUrl))
+      .replaceAll('{{ sub_url_b64 }}', subUrlB64)
       .replaceAll('{{ sub_url }}', subUrl)
       .replaceAll('{{ profile_name_encoded }}', encodeURIComponent(profileName))
       .replaceAll('{{ profile_name }}', profileName)

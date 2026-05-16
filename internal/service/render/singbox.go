@@ -74,6 +74,10 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 		{"type": "block", "tag": "block"},
 	}
 
+	// Same EmailRules resolution as mihomo's buildProxies — needed so the
+	// WireGuard dispatcher can look up the user's peer entry by email.
+	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
+	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 	nodeTags := make([]string, 0, len(items))
 	for _, it := range items {
 		if it.isSeparator {
@@ -85,7 +89,8 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID, "err", err)
 			continue
 		}
-		block, err := emitSingBoxOutbound(it.name, it.node, u, inb)
+		userEmail := u.ClientEmail(it.node.ID, emailRules)
+		block, err := emitSingBoxOutbound(it.name, it.node, u, inb, userEmail)
 		if err != nil {
 			log.Warn("render: skip node, emit sing-box failed", "node_id", it.node.ID, "err", err)
 			continue
@@ -104,7 +109,7 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 	return out
 }
 
-func emitSingBoxOutbound(tag string, n *domain.Node, u *domain.User, inb *ports.Inbound) (map[string]any, error) {
+func emitSingBoxOutbound(tag string, n *domain.Node, u *domain.User, inb *ports.Inbound, userEmail string) (map[string]any, error) {
 	var settings xuiInboundSettings
 	_ = json.Unmarshal([]byte(inb.Settings), &settings)
 	var stream xuiStreamSettings
@@ -158,8 +163,48 @@ func emitSingBoxOutbound(tag string, n *domain.Node, u *domain.User, inb *ports.
 		base["method"] = settings.Method
 		base["password"] = settings.Password + ":" + crypto.DeriveProxyPassword(u.UUID, protocol)
 		return base, nil
+	case domain.ProtoHysteria2:
+		// buildSingBoxHysteria2Outbound takes its own base map shape, so
+		// we hand it the tag/server/port directly rather than mutating the
+		// shared base map.
+		return buildSingBoxHysteria2Outbound(tag, n.ServerAddress, inb.Port, u.UUID,
+			parseHysteria2Opts(inb.Settings, inb.StreamSettings)), nil
 	}
 	return nil, nil
+}
+
+// buildSingBoxHysteria2Outbound emits the sing-box outbound JSON per
+// https://sing-box.sagernet.org/configuration/outbound/hysteria2/. Obfs
+// is encoded as a nested object and only included when configured —
+// passing `obfs: {}` would enable salamander with an empty password,
+// which the server rejects.
+func buildSingBoxHysteria2Outbound(tag, server string, port int, password string, opts hysteria2Opts) map[string]any {
+	out := map[string]any{
+		"tag":         tag,
+		"type":        "hysteria2",
+		"server":      server,
+		"server_port": port,
+		"password":    password,
+	}
+	if opts.ObfsType != "" {
+		obfs := map[string]any{"type": opts.ObfsType}
+		if opts.ObfsPassword != "" {
+			obfs["password"] = opts.ObfsPassword
+		}
+		out["obfs"] = obfs
+	}
+	tls := map[string]any{
+		"enabled":  true,
+		"insecure": opts.Insecure,
+	}
+	if opts.SNI != "" {
+		tls["server_name"] = opts.SNI
+	}
+	if len(opts.ALPN) > 0 {
+		tls["alpn"] = opts.ALPN
+	}
+	out["tls"] = tls
+	return out
 }
 
 func applySingBoxTLS(base map[string]any, stream xuiStreamSettings) {

@@ -5,7 +5,8 @@ package render
 // about; anything else passes through silently.
 
 type xuiInboundSettings struct {
-	// SS / SS-2022
+	// SS / SS-2022 — settings.method / settings.password are root-level
+	// in 3X-UI's ShadowsocksSettings model.
 	Method   string `json:"method"`
 	Password string `json:"password"`
 	Network  string `json:"network"`
@@ -18,6 +19,20 @@ type xuiStreamSettings struct {
 	TLSSettings     *xuiTLSSettings     `json:"tlsSettings"`
 	WSSettings      *xuiWSSettings      `json:"wsSettings"`
 	GRPCSettings    *xuiGRPCSettings    `json:"grpcSettings"`
+	// Finalmask is the xray-core extension where 3X-UI stores Hysteria 2
+	// salamander obfs (under .udp[] as type=salamander). Documented in
+	// frontend/src/models/inbound.js FinalMaskStreamSettings.
+	FinalMask *xuiFinalMask `json:"finalmask,omitempty"`
+}
+
+type xuiFinalMask struct {
+	TCP []xuiMaskEntry `json:"tcp"`
+	UDP []xuiMaskEntry `json:"udp"`
+}
+
+type xuiMaskEntry struct {
+	Type     string         `json:"type"`
+	Settings map[string]any `json:"settings"`
 }
 
 type xuiRealitySettings struct {

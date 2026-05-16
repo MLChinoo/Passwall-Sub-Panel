@@ -87,6 +87,12 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if ct == domain.ClientSingBox {
 		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder)
 	}
+	if ct == domain.ClientURIList {
+		// V2rayN / Passwall / Shadowrocket-style base64 URI list. Template
+		// and rules don't apply — these clients only consume nodes and do
+		// their own local routing.
+		return s.renderURIList(ctx, u, items)
+	}
 	proxyGroupsYAML, err := buildProxyGroupsYAML(strings.Join([]string{u.PersonalRules, rulesCommon}, "\n"), proxyGroupOrder)
 	if err != nil {
 		return nil, fmt.Errorf("build proxy groups: %w", err)
@@ -179,6 +185,10 @@ func absoluteURL(base, raw string) string {
 }
 
 func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []renderItem) []map[string]any {
+	// Pre-resolve EmailRules once per render. ClientEmail is per-(user,
+	// node), so the rules can be reused across the loop.
+	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
+	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		if it.isSeparator {
@@ -191,7 +201,8 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID, "err", err)
 			continue
 		}
-		block, err := emitProxy(it.node.DisplayName, it.node, u, inb)
+		userEmail := u.ClientEmail(it.node.ID, emailRules)
+		block, err := emitProxy(it.node.DisplayName, it.node, u, inb, userEmail)
 		if err != nil {
 			log.Warn("render: skip node, emit failed", "node_id", it.node.ID, "err", err)
 			continue

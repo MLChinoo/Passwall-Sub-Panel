@@ -54,6 +54,8 @@ func NormalizeRenderFormat(client string) string {
 	switch c {
 	case "sing-box", "singbox", "sing_box":
 		return "sing-box"
+	case "uri-list", "uri_list", "urilist", "v2ray", "v2rayn", "passwall", "shadowrocket":
+		return "uri-list"
 	default:
 		return "mihomo"
 	}

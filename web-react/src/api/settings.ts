@@ -4,14 +4,14 @@ import type { LoginMode } from './types'
 export interface SubClientRule {
   name: string
   keywords: string[]
-  render_format: 'mihomo' | 'sing-box'
+  render_format: 'mihomo' | 'sing-box' | 'uri-list'
   enabled: boolean
 }
 
 export interface SubImportClient {
   name: string
   platforms: Array<'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'other'>
-  render_format: 'mihomo' | 'sing-box'
+  render_format: 'mihomo' | 'sing-box' | 'uri-list'
   import_url_template: string
   install_url: string
   enabled: boolean

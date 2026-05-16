@@ -14,6 +14,7 @@ import {
   FormControlLabel,
   IconButton,
   InputAdornment,
+  Menu,
   MenuItem,
   Popover,
   Switch,
@@ -1063,10 +1064,11 @@ function ClientRulesEditor({ rules, onChange, md }: { rules: SubClientRule[]; on
                 sx={{ flex: '2 1 240px' }} />
               <TextField select size="small" label={t('settings.subscription.rule_field.render_format')}
                 value={r.render_format}
-                onChange={e => update(i, { render_format: e.target.value as 'mihomo' | 'sing-box' })}
+                onChange={e => update(i, { render_format: e.target.value as 'mihomo' | 'sing-box' | 'uri-list' })}
                 sx={{ width: 150 }}>
                 <MenuItem value="mihomo">mihomo</MenuItem>
                 <MenuItem value="sing-box">sing-box</MenuItem>
+                <MenuItem value="uri-list">URI 列表 (V2rayN / Passwall)</MenuItem>
               </TextField>
               <FormControlLabel
                 label={t('settings.subscription.rule_field.enabled')}
@@ -1090,8 +1092,83 @@ function ClientRulesEditor({ rules, onChange, md }: { rules: SubClientRule[]; on
   )
 }
 
+// IMPORT_CLIENT_PRESETS is the known-client cheat sheet for the
+// "Add preset" menu. Each entry mirrors the shape an admin would type in
+// by hand; clicking it appends a fully-configured row that they can then
+// tweak (re-order, rename, toggle off, etc).
+//
+// Sort defaults to 100; the add handler bumps it based on the current
+// tail position so freshly-added presets always land at the bottom.
+const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = [
+  {
+    name: 'Clash Verge Rev',
+    platforms: ['windows', 'macos', 'linux'],
+    render_format: 'mihomo',
+    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}',
+    install_url: 'https://github.com/clash-verge-rev/clash-verge-rev/releases',
+    recommended_for: ['windows', 'macos', 'linux'],
+  },
+  {
+    name: 'Clash Meta for Android',
+    platforms: ['android'],
+    render_format: 'mihomo',
+    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}',
+    install_url: 'https://github.com/MetaCubeX/ClashMetaForAndroid/releases',
+    recommended_for: ['android'],
+  },
+  {
+    name: 'Clash Mi',
+    platforms: ['windows', 'macos', 'linux', 'android', 'ios'],
+    render_format: 'mihomo',
+    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}',
+    install_url: 'https://github.com/KaringX/clashmi/releases',
+    recommended_for: ['ios'],
+  },
+  {
+    name: 'Stash',
+    platforms: ['ios'],
+    render_format: 'mihomo',
+    import_url_template: 'stash://install-config?url={{ sub_url_encoded }}',
+    install_url: 'https://apps.apple.com/app/stash-rule-based-proxy/id1596063349',
+    recommended_for: [],
+  },
+  {
+    name: 'sing-box',
+    platforms: ['ios', 'macos', 'android'],
+    render_format: 'sing-box',
+    import_url_template: 'sing-box://import-remote-profile?url={{ sub_url_encoded }}#{{ profile_name_encoded }}',
+    install_url: 'https://sing-box.sagernet.org/clients/',
+    recommended_for: [],
+  },
+  {
+    name: 'V2rayN',
+    platforms: ['windows'],
+    render_format: 'uri-list',
+    import_url_template: '{{ sub_url }}',
+    install_url: 'https://github.com/2dust/v2rayN/releases',
+    recommended_for: [],
+  },
+  {
+    name: 'V2rayNG',
+    platforms: ['android'],
+    render_format: 'uri-list',
+    import_url_template: 'v2rayng://install-sub/?url={{ sub_url_b64 }}',
+    install_url: 'https://github.com/2dust/v2rayNG/releases',
+    recommended_for: [],
+  },
+  {
+    name: 'Shadowrocket',
+    platforms: ['ios'],
+    render_format: 'uri-list',
+    import_url_template: 'sub://{{ sub_url_b64 }}',
+    install_url: 'https://apps.apple.com/app/shadowrocket/id932747118',
+    recommended_for: [],
+  },
+]
+
 function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClient[]; onChange: (v: SubImportClient[]) => void; md: MdShape }) {
   const { t } = useTranslation('admin')
+  const [presetAnchor, setPresetAnchor] = useState<HTMLElement | null>(null)
   const update = (i: number, patch: Partial<SubImportClient>) =>
     onChange(clients.map((c, idx) => idx === i ? { ...c, ...patch } : c))
   const remove = (i: number) => onChange(clients.filter((_, idx) => idx !== i))
@@ -1104,6 +1181,13 @@ function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClie
       recommended_for: [],
     },
   ])
+  function addPreset(preset: Omit<SubImportClient, 'sort' | 'enabled'>) {
+    onChange([
+      ...clients,
+      { ...preset, sort: (clients.at(-1)?.sort ?? 0) + 10, enabled: true },
+    ])
+    setPresetAnchor(null)
+  }
   const PLATFORM_OPTIONS: Array<SubImportClient['platforms'][number]> = ['windows', 'macos', 'linux', 'android', 'ios', 'other']
   return (
     <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
@@ -1127,10 +1211,11 @@ function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClie
                   sx={{ flex: '1 1 200px' }} />
                 <TextField select size="small" label={t('settings.subscription.client_field.render_format')}
                   value={c.render_format}
-                  onChange={e => update(i, { render_format: e.target.value as 'mihomo' | 'sing-box' })}
-                  sx={{ width: 150 }}>
+                  onChange={e => update(i, { render_format: e.target.value as 'mihomo' | 'sing-box' | 'uri-list' })}
+                  sx={{ width: 180 }}>
                   <MenuItem value="mihomo">mihomo</MenuItem>
                   <MenuItem value="sing-box">sing-box</MenuItem>
+                  <MenuItem value="uri-list">URI 列表</MenuItem>
                 </TextField>
                 <TextField size="small" type="number" label={t('settings.subscription.client_field.sort')}
                   value={c.sort} onChange={e => update(i, { sort: Number(e.target.value) })}
@@ -1214,10 +1299,33 @@ function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClie
           ))}
         </Box>
       )}
-      <Box sx={{ mt: 2 }}>
+      <Box sx={{ mt: 2, display: 'flex', gap: 1.25 }}>
         <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={add}>
           {t('settings.subscription.add_client')}
         </Button>
+        <Button variant="text" size="small" onClick={e => setPresetAnchor(e.currentTarget)}>
+          {t('settings.subscription.add_preset', { defaultValue: '从预设添加…' })}
+        </Button>
+        <Menu anchorEl={presetAnchor} open={!!presetAnchor} onClose={() => setPresetAnchor(null)}
+          PaperProps={{ sx: { maxHeight: 360 } }}>
+          {IMPORT_CLIENT_PRESETS.map(p => {
+            // Existence check helps the admin avoid double-adding the
+            // same client by accident — disabled MenuItems show the
+            // entry but don't re-add.
+            const exists = clients.some(c => c.name === p.name)
+            return (
+              <MenuItem key={p.name} disabled={exists} onClick={() => addPreset(p)}>
+                <Box>
+                  <Typography sx={{ fontSize: 14 }}>{p.name}</Typography>
+                  <Typography sx={{ fontSize: 12, opacity: 0.7 }}>
+                    {p.platforms.join(', ')} · {p.render_format}
+                    {exists ? ` · ${t('settings.subscription.preset_exists', { defaultValue: '已存在' })}` : ''}
+                  </Typography>
+                </Box>
+              </MenuItem>
+            )
+          })}
+        </Menu>
       </Box>
     </Card>
   )

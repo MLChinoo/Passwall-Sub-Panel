@@ -50,6 +50,8 @@ func DetectProtocol(inboundProtocol, ssMethod string) domain.Protocol {
 			return domain.ProtoSS2022
 		}
 		return domain.ProtoSS
+	case "hysteria2", "hy2":
+		return domain.ProtoHysteria2
 	}
 	return ""
 }

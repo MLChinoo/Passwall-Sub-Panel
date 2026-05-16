@@ -73,14 +73,14 @@ export default function LoginView() {
         setMethods(m)
         if (m.login_mode === 'sso_redirect' && m.sso) {
           // Show the redirect-pending screen (rendered when methods is set
-          // and login_mode === sso_redirect). 2s gives the user enough time
+          // and login_mode === sso_redirect). 3s gives the user enough time
           // to register what's happening and read the message before the
           // browser hands off to the IdP.
           setProbing(false)
           setTimeout(() => {
             if (cancelled) return
             window.location.href = m.saml ? samlLoginURL(returnTo ?? '/user/me') : oidcLoginURL(returnTo ?? '/user/me')
-          }, 2000)
+          }, 3000)
           return
         }
       } catch {
@@ -120,8 +120,8 @@ export default function LoginView() {
     const url = methods?.saml ? samlLoginURL(returnTo ?? '/user/me') : oidcLoginURL(returnTo ?? '/user/me')
     setManualSsoRedirect(true)
     // Brief intermediate so the user sees what's happening before the
-    // browser hands off to the IdP. 1.2s ≈ enough to read one short line.
-    setTimeout(() => { window.location.href = url }, 2000)
+    // browser hands off to the IdP. 3s matches the sso_redirect path.
+    setTimeout(() => { window.location.href = url }, 3000)
   }
 
   const localEnabled = methods?.local !== false  // default to true if probe failed

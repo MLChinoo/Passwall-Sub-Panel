@@ -5,6 +5,7 @@
   "custom_hint": "Enter a HEX color (e.g. #6750A4)",
   "mode_section": "Mode",
   "mode": {
+    "auto": "Auto",
     "light": "Light",
     "dark": "Dark"
   },

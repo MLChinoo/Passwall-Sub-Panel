@@ -16,13 +16,15 @@ import PaletteIcon from '@mui/icons-material/Palette'
 import CheckIcon from '@mui/icons-material/Check'
 import LightModeIcon from '@mui/icons-material/LightMode'
 import DarkModeIcon from '@mui/icons-material/DarkMode'
+import SettingsBrightnessIcon from '@mui/icons-material/SettingsBrightness'
 import { useTranslation } from 'react-i18next'
 import { COLOR_PRESETS, isValidHex } from '@/theme'
+import type { ThemeMode } from '@/stores/appearance'
 
 export interface AppearanceState {
   systemColor: string
   userColor: string | null
-  mode: 'light' | 'dark'
+  mode: ThemeMode
 }
 
 interface Props {
@@ -108,13 +110,13 @@ export default function AppearanceMenu({ state, onChange }: Props) {
           exclusive
           fullWidth
           size="small"
-          onChange={(_, v) => v && onChange({ mode: v })}
+          onChange={(_, v: ThemeMode | null) => v && onChange({ mode: v })}
           sx={{
             mb: 2.5,
             gap: 1,
             '& .MuiToggleButton-root': {
               // Cancel MUI's default negative margin / shared-border collapsing
-              // — we want two distinct pills, not a fused segmented control.
+              // — we want three distinct pills, not a fused segmented control.
               borderRadius: '9999px !important',
               border: `1px solid ${md.outlineVariant}`,
               ml: '0 !important',
@@ -127,6 +129,7 @@ export default function AppearanceMenu({ state, onChange }: Props) {
             },
           }}
         >
+          <ToggleButton value="auto"><SettingsBrightnessIcon fontSize="small" sx={{ mr: 1 }} />{t('mode.auto')}</ToggleButton>
           <ToggleButton value="light"><LightModeIcon fontSize="small" sx={{ mr: 1 }} />{t('mode.light')}</ToggleButton>
           <ToggleButton value="dark"><DarkModeIcon fontSize="small" sx={{ mr: 1 }} />{t('mode.dark')}</ToggleButton>
         </ToggleButtonGroup>

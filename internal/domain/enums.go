@@ -39,11 +39,12 @@ const (
 type Protocol string
 
 const (
-	ProtoVLESS  Protocol = "vless"
-	ProtoVMess  Protocol = "vmess"
-	ProtoTrojan Protocol = "trojan"
-	ProtoSS     Protocol = "shadowsocks"
-	ProtoSS2022 Protocol = "ss2022"
+	ProtoVLESS     Protocol = "vless"
+	ProtoVMess     Protocol = "vmess"
+	ProtoTrojan    Protocol = "trojan"
+	ProtoSS        Protocol = "shadowsocks"
+	ProtoSS2022    Protocol = "ss2022"
+	ProtoHysteria2 Protocol = "hysteria2"
 )
 
 type ClientType string
@@ -51,6 +52,12 @@ type ClientType string
 const (
 	ClientMihomo  ClientType = "mihomo"
 	ClientSingBox ClientType = "sing-box"
+	// ClientURIList is the base64-encoded list of proxy URIs (one per line)
+	// that V2rayN, OpenWrt Passwall, Shadowrocket and most other "classic"
+	// V2Ray-family clients consume as their subscription format. Carries
+	// nodes only — routing rules live in the client because this format has
+	// no concept of a ruleset.
+	ClientURIList ClientType = "uri-list"
 )
 
 type SyncTaskType string

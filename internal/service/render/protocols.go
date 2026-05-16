@@ -15,10 +15,15 @@ import (
 // emitProxy turns one (Node, Inbound, User) triple into a mihomo proxy
 // block represented as map[string]any (later marshaled by yaml.v3).
 //
+// userEmail is the 3X-UI client.email this user maps to on the given
+// inbound — required for WireGuard's per-peer lookup; ignored by every
+// other protocol whose per-user credential is derived from the UUID
+// directly.
+//
 // Returns (nil, nil) when the protocol is recognised but not yet supported;
 // returns (nil, err) on configuration errors such as a missing server
 // address. Callers skip the node on either nil return value.
-func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.Inbound) (map[string]any, error) {
+func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.Inbound, userEmail string) (map[string]any, error) {
 	var settings xuiInboundSettings
 	_ = json.Unmarshal([]byte(inb.Settings), &settings)
 	var stream xuiStreamSettings
@@ -51,6 +56,10 @@ func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.In
 	case domain.ProtoSS2022:
 		return emitSS2022(base, settings.Method, settings.Password,
 			crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+	case domain.ProtoHysteria2:
+		// Per-user password is the user's UUID (same convention as VLESS:
+		// the panel-managed credential is what 3X-UI stores per client).
+		return emitHysteria2(base, u.UUID, parseHysteria2Opts(inb.Settings, inb.StreamSettings)), nil
 	}
 	return nil, nil
 }
@@ -139,6 +148,61 @@ func emitSSProxy(base map[string]any, method, password string) map[string]any {
 	base["type"] = "ss"
 	base["cipher"] = method
 	base["password"] = password
+	return base
+}
+
+// parseHysteria2Opts pulls the renderer-friendly options out of 3X-UI's
+// settings + stream JSON. Per frontend/src/models/inbound.js, salamander
+// obfs lives in streamSettings.finalmask.udp[] (NOT settings.obfs);
+// SNI / ALPN are on tlsSettings.
+//
+// Designed to be lenient — malformed or missing fields produce a
+// zero-value option, and downstream builders gate their own emissions
+// on presence (e.g. empty ObfsType skips obfs keys).
+func parseHysteria2Opts(_settingsJSON, streamJSON string) hysteria2Opts {
+	var stream xuiStreamSettings
+	_ = json.Unmarshal([]byte(streamJSON), &stream)
+	opts := hysteria2Opts{ALPN: []string{"h3"}}
+	if stream.FinalMask != nil {
+		for _, m := range stream.FinalMask.UDP {
+			if m.Type == "salamander" {
+				if pwd, ok := m.Settings["password"].(string); ok {
+					opts.ObfsType = "salamander"
+					opts.ObfsPassword = pwd
+				}
+				break
+			}
+		}
+	}
+	if stream.TLSSettings != nil {
+		opts.SNI = stream.TLSSettings.ServerName
+		if len(stream.TLSSettings.ALPN) > 0 {
+			opts.ALPN = stream.TLSSettings.ALPN
+		}
+	}
+	return opts
+}
+
+// emitHysteria2 builds the mihomo proxy block. Mihomo's hysteria2 schema
+// is documented at https://wiki.metacubex.one/config/proxies/hysteria2/.
+// Obfs keys are conditionally added so clients don't initialise the
+// salamander handshake when the server isn't expecting it.
+func emitHysteria2(base map[string]any, password string, opts hysteria2Opts) map[string]any {
+	base["type"] = "hysteria2"
+	base["password"] = password
+	if opts.SNI != "" {
+		base["sni"] = opts.SNI
+	}
+	if len(opts.ALPN) > 0 {
+		base["alpn"] = opts.ALPN
+	}
+	base["skip-cert-verify"] = opts.Insecure
+	if opts.ObfsType != "" {
+		base["obfs"] = opts.ObfsType
+		if opts.ObfsPassword != "" {
+			base["obfs-password"] = opts.ObfsPassword
+		}
+	}
 	return base
 }
 
