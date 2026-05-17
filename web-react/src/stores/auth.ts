@@ -77,6 +77,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.removeItem('psp_refresh')
     localStorage.removeItem(STORAGE_KEY)
     set({ userId: null, upn: '', displayName: '', role: '' })
+    window.location.replace('/logged-out')
   },
 }))
 

@@ -13,7 +13,7 @@ import {
   Typography,
   useTheme,
 } from '@mui/material'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import LogoutIcon from '@mui/icons-material/Logout'
 
@@ -30,7 +30,6 @@ export default function UserLayout() {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation('common')
-  const navigate = useNavigate()
   const auth = useAuthStore()
   const label = selectLabel(auth)
   const site = useSiteStore()
@@ -48,8 +47,6 @@ export default function UserLayout() {
   function handleLogout() {
     setUserAnchor(null)
     auth.logout()
-    // See AdminLayout — /logged-out avoids the sso_redirect bounce-back.
-    navigate('/logged-out', { replace: true })
   }
 
   function handleLanguageChange(lng: AppLanguage) { setLanguage(lng) }
