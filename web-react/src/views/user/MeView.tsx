@@ -558,9 +558,21 @@ export default function MeView() {
             {!subUrlRevealed && (
               <Box sx={{
                 position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
-                bgcolor: 'rgba(255,255,255,0.6)', borderRadius: 2,
+                borderRadius: 2,
               }}>
-                <VisibilityIcon sx={{ color: md.onSurfaceVariant }} />
+                {/* Eye sits on a fixed-dark chip so it stays readable in
+                    both themes — the QR container itself is forced
+                    white (QR codes need white background, black
+                    modules), which makes a theme-aware icon nearly
+                    invisible in dark mode. */}
+                <Box sx={{
+                  width: 48, height: 48, borderRadius: '50%',
+                  bgcolor: 'rgba(0,0,0,0.55)',
+                  display: 'grid', placeItems: 'center',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                }}>
+                  <VisibilityIcon sx={{ color: '#fff', fontSize: 24 }} />
+                </Box>
               </Box>
             )}
           </Box>
