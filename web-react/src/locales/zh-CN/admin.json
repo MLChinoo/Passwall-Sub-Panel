@@ -592,10 +592,17 @@
       "remark": "备注"
     },
     "create": "新增节点",
+    "create_separator": "新增分隔标题",
     "edit_title": "编辑节点",
     "import": "纳管",
     "imported": "已纳管",
     "import_validate": "请填写连接地址和 Region",
+    "create_separator_dialog": {
+      "title": "新增分隔标题",
+      "hint": "分隔标题以 DIRECT 形式出现在客户端的节点列表中，仅用于视觉分组，不参与 3X-UI、流量统计、健康检查。可用区域/标签控制它出现在哪些用户的订阅里。",
+      "region_hint": "可留空。如果分组按 region 过滤，填上才会在对应分组里出现。",
+      "tags_hint": "可留空，多个标签用英文逗号分隔。tag_filter 匹配会让该分隔出现在对应分组里。"
+    },
     "edit_inbound": "编辑 Inbound 配置",
     "edit_inbound_dialog": {
       "title": "编辑 Inbound 配置",
@@ -741,7 +748,8 @@
       "batch_deleted": "已删除 {{count}} 个节点",
       "batch_partial": "已处理 {{ok}} 个，失败 {{fail}} 个",
       "reordered": "排序已更新",
-      "reorder_failed": "排序更新失败"
+      "reorder_failed": "排序更新失败",
+      "separator_created": "分隔标题已创建"
     },
     "confirm": {
       "delete_title": "删除节点",
