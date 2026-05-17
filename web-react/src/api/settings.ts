@@ -212,6 +212,9 @@ export interface SSORoleRule {
   value: string
   role: string
   keep: boolean
+  /** Admin-facing free-form note. Never affects matching — UI label
+   *  only, so admins can document what each rule represents. */
+  note: string
 }
 
 export interface SAMLUpdateRequest extends Omit<SAMLConfig, 'sp'> {

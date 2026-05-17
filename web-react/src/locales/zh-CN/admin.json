@@ -123,6 +123,9 @@
       "role_rules_role": "面板角色",
       "role_rules_keep": "未命中时保留",
       "role_rules_keep_hint": "打开后：本条规则没命中、且用户当前正是本规则赋予的角色时，保留该角色。关闭则按规则集结果撤销。",
+      "role_rules_note": "备注",
+      "role_rules_note_placeholder": "可选：标注此规则用途",
+      "role_rules_drag": "拖拽调整顺序（顺序决定优先级）",
       "role_rules_add": "添加规则",
       "role_rules_remove": "删除",
       "saml": {

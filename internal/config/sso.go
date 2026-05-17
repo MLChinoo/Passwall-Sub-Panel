@@ -36,4 +36,9 @@ type SSORoleRule struct {
 	Value     string `yaml:"value" json:"value"`
 	Role      string `yaml:"role" json:"role"`
 	Keep      bool   `yaml:"keep" json:"keep"`
+	// Note is admin-facing free-form text for documenting the rule
+	// ("Entra global admins", "ops on-call group", etc.). Never read
+	// by the resolver — exists purely to make the rules table
+	// readable when the rule count grows.
+	Note string `yaml:"note" json:"note"`
 }

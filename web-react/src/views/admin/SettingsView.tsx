@@ -23,6 +23,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  alpha,
   useTheme,
 } from '@mui/material'
 import SaveIcon from '@mui/icons-material/Save'
@@ -1470,9 +1471,12 @@ function Pair({ children }: { children: React.ReactNode }) {
 }
 
 // RoleRulesEditor: attribute-driven role mapping. Each row maps an IdP
-// attribute value to a panel role plus a per-rule Keep switch. Panel
-// role accepts arbitrary strings (free-form Autocomplete) so admins
-// can plan for custom roles before the backend recognises them.
+// attribute value to a panel role plus a per-rule Keep switch + free-
+// form admin note. Panel role accepts arbitrary strings (free-form
+// Autocomplete) so admins can plan for custom roles before the
+// backend recognises them. Order matters — first-match wins — so the
+// editor exposes drag-to-reorder with a left-side handle, identical
+// to the pattern NodesView uses for admin reordering.
 const builtinRoleSuggestions = ['admin', 'operator', 'user']
 
 function RoleRulesEditor({ value, onChange, md }: {
@@ -1482,15 +1486,26 @@ function RoleRulesEditor({ value, onChange, md }: {
 }) {
   const { t } = useTranslation('admin')
   const rules = value ?? []
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+
   function patchRule(idx: number, patch: Partial<SSORoleRule>) {
     onChange(rules.map((r, i) => i === idx ? { ...r, ...patch } : r))
   }
   function addRule() {
-    onChange([...rules, { attribute: '', value: '', role: 'admin', keep: false }])
+    onChange([...rules, { attribute: '', value: '', role: 'admin', keep: false, note: '' }])
   }
   function removeRule(idx: number) {
     onChange(rules.filter((_, i) => i !== idx))
   }
+  function moveRule(from: number, to: number) {
+    if (from === to) return
+    const next = rules.slice()
+    const [m] = next.splice(from, 1)
+    next.splice(to, 0, m)
+    onChange(next)
+  }
+
   return (
     <Box>
       <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, mb: 1 }}>
@@ -1501,40 +1516,88 @@ function RoleRulesEditor({ value, onChange, md }: {
           {t('settings.sso.role_rules_empty')}
         </Typography>
       )}
-      {rules.map((r, i) => (
-        <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', mb: 1 }}>
-          <TextField size="small" sx={{ flex: '2 1 200px' }}
-            label={t('settings.sso.role_rules_attribute')}
-            placeholder={t('settings.sso.role_rules_attribute_placeholder')}
-            value={r.attribute}
-            onChange={e => patchRule(i, { attribute: e.target.value })} />
-          <TextField size="small" sx={{ flex: '2 1 160px' }}
-            label={t('settings.sso.role_rules_value')}
-            value={r.value}
-            onChange={e => patchRule(i, { value: e.target.value })} />
-          <Autocomplete
-            size="small" freeSolo disableClearable
-            sx={{ flex: '1 1 140px' }}
-            options={builtinRoleSuggestions}
-            value={r.role}
-            onChange={(_, v) => patchRule(i, { role: typeof v === 'string' ? v : '' })}
-            onInputChange={(_, v) => patchRule(i, { role: v })}
-            renderInput={(params) => (
-              <TextField {...params} label={t('settings.sso.role_rules_role')} />
-            )} />
-          <Tooltip title={t('settings.sso.role_rules_keep_hint') as string}>
-            <FormControlLabel
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { fontSize: 12, ml: 0.5 } }}
-              control={<Switch size="small" checked={!!r.keep}
-                onChange={(_, c) => patchRule(i, { keep: c })} />}
-              label={t('settings.sso.role_rules_keep')} />
-          </Tooltip>
-          <IconButton size="small" onClick={() => removeRule(i)}
-            aria-label={t('settings.sso.role_rules_remove')}>
-            <DeleteIcon fontSize="small" />
-          </IconButton>
-        </Box>
-      ))}
+      {rules.map((r, i) => {
+        const isBeingDragged = dragIndex === i
+        const isDropTarget = dropIndex === i && dragIndex !== null && dragIndex !== i
+        return (
+          <Box key={i}
+            draggable
+            onDragStart={e => {
+              setDragIndex(i)
+              try { e.dataTransfer.setData('text/plain', String(i)) } catch { /* Firefox */ }
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            onDragOver={e => {
+              if (dragIndex === null) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              if (dropIndex !== i) setDropIndex(i)
+            }}
+            onDragLeave={() => {
+              if (dropIndex === i) setDropIndex(null)
+            }}
+            onDrop={e => {
+              e.preventDefault()
+              const from = dragIndex
+              setDragIndex(null)
+              setDropIndex(null)
+              if (from === null || from === i) return
+              moveRule(from, i)
+            }}
+            onDragEnd={() => {
+              setDragIndex(null)
+              setDropIndex(null)
+            }}
+            sx={{
+              display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap',
+              mb: 1, py: 0.75, px: 0.5, borderRadius: 1,
+              opacity: isBeingDragged ? 0.4 : 1,
+              bgcolor: isDropTarget ? alpha(md.primary, 0.08) : 'transparent',
+              transition: 'background-color 120ms',
+            }}>
+            <Tooltip title={t('settings.sso.role_rules_drag') as string}>
+              <Box sx={{ cursor: 'grab', display: 'inline-flex', color: md.onSurfaceVariant, px: 0.25 }}>
+                <DragIndicatorIcon fontSize="small" sx={{ opacity: 0.7 }} />
+              </Box>
+            </Tooltip>
+            <TextField size="small" sx={{ flex: '2 1 180px' }}
+              label={t('settings.sso.role_rules_attribute')}
+              placeholder={t('settings.sso.role_rules_attribute_placeholder')}
+              value={r.attribute}
+              onChange={e => patchRule(i, { attribute: e.target.value })} />
+            <TextField size="small" sx={{ flex: '2 1 140px' }}
+              label={t('settings.sso.role_rules_value')}
+              value={r.value}
+              onChange={e => patchRule(i, { value: e.target.value })} />
+            <Autocomplete
+              size="small" freeSolo disableClearable
+              sx={{ flex: '1 1 130px' }}
+              options={builtinRoleSuggestions}
+              value={r.role}
+              onChange={(_, v) => patchRule(i, { role: typeof v === 'string' ? v : '' })}
+              onInputChange={(_, v) => patchRule(i, { role: v })}
+              renderInput={(params) => (
+                <TextField {...params} label={t('settings.sso.role_rules_role')} />
+              )} />
+            <Tooltip title={t('settings.sso.role_rules_keep_hint') as string}>
+              <FormControlLabel
+                sx={{ ml: 0, '& .MuiFormControlLabel-label': { fontSize: 12, ml: 0.5 } }}
+                control={<Switch size="small" checked={!!r.keep}
+                  onChange={(_, c) => patchRule(i, { keep: c })} />}
+                label={t('settings.sso.role_rules_keep')} />
+            </Tooltip>
+            <TextField size="small" sx={{ flex: '3 1 200px' }}
+              label={t('settings.sso.role_rules_note')}
+              placeholder={t('settings.sso.role_rules_note_placeholder')}
+              value={r.note ?? ''}
+              onChange={e => patchRule(i, { note: e.target.value })} />
+            <IconButton size="small" onClick={() => removeRule(i)}
+              aria-label={t('settings.sso.role_rules_remove')}>
+              <DeleteIcon fontSize="small" />
+            </IconButton>
+          </Box>
+        )
+      })}
       <Button size="small" variant="outlined" startIcon={<AddIcon />} onClick={addRule}>
         {t('settings.sso.role_rules_add')}
       </Button>

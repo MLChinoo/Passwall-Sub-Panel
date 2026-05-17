@@ -123,6 +123,9 @@
       "role_rules_role": "Panel role",
       "role_rules_keep": "Keep on miss",
       "role_rules_keep_hint": "When on: if THIS rule doesn't match this login AND the user's current role equals this rule's role, leave the role alone. Off means the rule set as a whole decides (demote on miss).",
+      "role_rules_note": "Note",
+      "role_rules_note_placeholder": "Optional: describe what this rule represents",
+      "role_rules_drag": "Drag to reorder (order = priority)",
       "role_rules_add": "Add rule",
       "role_rules_remove": "Remove",
       "saml": {
