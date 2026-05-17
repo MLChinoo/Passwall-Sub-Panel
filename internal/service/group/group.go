@@ -131,16 +131,25 @@ func matchAny(n *domain.Node, conds []string) bool {
 }
 
 func matchOne(n *domain.Node, cond string) bool {
+	// Trim the whole condition AND each side of the colon. The settings UI
+	// shows examples like "region:XX / tag:YY" without spaces, but admins
+	// commonly type "tag: reality" with a space after the colon — without
+	// trimming, val would be " reality" and HasTag(" reality") wouldn't
+	// match the stored tag "reality".
+	cond = strings.TrimSpace(cond)
 	if i := strings.IndexByte(cond, ':'); i > 0 {
-		key, val := cond[:i], cond[i+1:]
+		key := strings.TrimSpace(cond[:i])
+		val := strings.TrimSpace(cond[i+1:])
 		switch key {
 		case "region":
 			return strings.EqualFold(n.Region, val)
 		case "tag":
 			return n.HasTag(val)
 		default:
-			// server:xxx / vendor:yyy / any custom key — stored as a tag verbatim
-			return n.HasTag(cond)
+			// server:xxx / vendor:yyy / any custom key — stored as a tag
+			// verbatim. Reassemble from the trimmed parts so "server: foo"
+			// still matches a stored "server:foo".
+			return n.HasTag(key + ":" + val)
 		}
 	}
 	// no colon: treat the whole condition as a tag

@@ -115,3 +115,31 @@ func TestMatches_CondTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestMatches_TrimsSpaces guards the user-reported bug where typing
+// "tag: Premium" (with a space after the colon) silently matched nothing
+// — historically the val side kept its leading space and HasTag would
+// compare " Premium" to the stored "Premium". Whole-condition,
+// pre-colon and post-colon all need to tolerate stray whitespace.
+func TestMatches_TrimsSpaces(t *testing.T) {
+	node := n("TW", "reality", "server:tw-hinet", "Premium")
+	cases := []struct {
+		cond string
+		want bool
+	}{
+		{"tag: reality", true},        // space after colon (the reported bug)
+		{"tag :reality", true},        // space before colon
+		{"  tag : reality  ", true},   // spaces all over
+		{"region: TW", true},          // region prefix with space
+		{"tag: Premium", true},        // capitalized tag with space (literal report)
+		{"server: tw-hinet", true},    // unknown prefix path also normalises
+		{" Premium ", true},           // no-colon path: outer whitespace trimmed
+		{"tag: missing", false},       // still false when value truly absent
+	}
+	for _, tc := range cases {
+		f := domain.TagFilter{Tags: []string{tc.cond}}
+		if got := Matches(node, f); got != tc.want {
+			t.Errorf("cond %q: got %v, want %v", tc.cond, got, tc.want)
+		}
+	}
+}
