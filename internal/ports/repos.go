@@ -220,6 +220,14 @@ type UISettings struct {
 	// subscription URLs ("<base>/sub/<token>"). Empty falls back to relative
 	// paths.
 	SubBaseURL string `yaml:"sub_base_url" json:"sub_base_url"`
+	// Timezone is the IANA name (e.g. "Asia/Shanghai", "America/Los_Angeles")
+	// used for system-level time calculations: monthly/quarterly traffic
+	// resets, user expire_at "X days from now" math, and as the default
+	// timezone for the admin traffic chart. Empty falls back to the server
+	// process's time.Local so existing installs keep working unchanged.
+	// User-facing views (subscription page, /user/me) stay on the browser's
+	// timezone — this knob is only for the system "calendar day" boundary.
+	Timezone string `yaml:"timezone" json:"timezone"`
 
 	// ---- Runtime tuning (restart required for changes to take effect) ----
 	// Background cron intervals; minutes. 0 keeps the previous default.

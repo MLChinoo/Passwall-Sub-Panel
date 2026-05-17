@@ -459,6 +459,7 @@ type uiSettingsRow struct {
 	EmailDomain        string `gorm:"size:255"`
 	AuditRetentionDays int
 	SubBaseURL         string `gorm:"size:512"`
+	Timezone           string `gorm:"size:64"`
 	// Runtime tuning (restart required to take effect).
 	CronTrafficPullMinutes     int
 	CronReconcileMinutes       int

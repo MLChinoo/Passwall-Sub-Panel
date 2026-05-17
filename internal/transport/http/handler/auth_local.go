@@ -89,6 +89,7 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 		"logo_url_dark": s.LogoURLDark,
 		"footer_text":   s.FooterText,
 		"theme_color":   s.ThemeColor,
+		"timezone":      s.Timezone,
 	})
 }
 
