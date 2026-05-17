@@ -478,6 +478,7 @@ type uiSettingsRow struct {
 	// Runtime tuning (restart required to take effect).
 	CronTrafficPullMinutes     int
 	CronReconcileMinutes       int
+	MaxPanelConcurrency        int
 	JWTAccessTTLMinutes        int
 	JWTRefreshTTLMinutes       int
 	JWTIssuer                  string `gorm:"size:128"`

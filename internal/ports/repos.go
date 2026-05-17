@@ -234,6 +234,18 @@ type UISettings struct {
 	CronTrafficPullMinutes int `json:"cron_traffic_pull_minutes"`
 	CronReconcileMinutes   int `json:"cron_reconcile_minutes"`
 
+	// MaxPanelConcurrency caps the fan-out of concurrent ListInbounds
+	// calls during traffic poll + reconcile (v2.2.5 perf path). 0 or
+	// negative falls back to the built-in default (8) so existing
+	// installs keep working with no settings touched. Values larger
+	// than 64 are clamped down to avoid accidentally slamming 3X-UI
+	// with simultaneous HTTP requests on a misconfigured admin. Bigger
+	// only helps when the deployment has many panels (10+) AND 3X-UI
+	// can handle the parallel load; smaller is useful when 3X-UI is
+	// resource-constrained or shares a CPU with the panel itself.
+	// Dynamic — picked up at the start of each poll/reconcile cycle.
+	MaxPanelConcurrency int `json:"max_panel_concurrency"`
+
 	// JWT signing parameters. AccessTTL/RefreshTTL in minutes; Issuer is the
 	// "iss" claim.
 	JWTAccessTTLMinutes  int    `json:"jwt_access_ttl_minutes"`

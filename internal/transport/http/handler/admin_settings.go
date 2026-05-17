@@ -38,6 +38,7 @@ type settingsDTO struct {
 	Timezone                   string                   `json:"timezone"`
 	CronTrafficPullMinutes     int                      `json:"cron_traffic_pull_minutes"`
 	CronReconcileMinutes       int                      `json:"cron_reconcile_minutes"`
+	MaxPanelConcurrency        int                      `json:"max_panel_concurrency"`
 	JWTAccessTTLMinutes        int                      `json:"jwt_access_ttl_minutes"`
 	JWTRefreshTTLMinutes       int                      `json:"jwt_refresh_ttl_minutes"`
 	JWTIssuer                  string                   `json:"jwt_issuer"`
@@ -99,6 +100,7 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		Timezone:                   s.Timezone,
 		CronTrafficPullMinutes:     s.CronTrafficPullMinutes,
 		CronReconcileMinutes:       s.CronReconcileMinutes,
+		MaxPanelConcurrency:        s.MaxPanelConcurrency,
 		JWTAccessTTLMinutes:        s.JWTAccessTTLMinutes,
 		JWTRefreshTTLMinutes:       s.JWTRefreshTTLMinutes,
 		JWTIssuer:                  s.JWTIssuer,
@@ -161,6 +163,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		Timezone:                   strings.TrimSpace(req.Timezone),
 		CronTrafficPullMinutes:     req.CronTrafficPullMinutes,
 		CronReconcileMinutes:       req.CronReconcileMinutes,
+		MaxPanelConcurrency:        req.MaxPanelConcurrency,
 		JWTAccessTTLMinutes:        req.JWTAccessTTLMinutes,
 		JWTRefreshTTLMinutes:       req.JWTRefreshTTLMinutes,
 		JWTIssuer:                  strings.TrimSpace(req.JWTIssuer),
@@ -250,6 +253,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		Timezone:                   s.Timezone,
 		CronTrafficPullMinutes:     s.CronTrafficPullMinutes,
 		CronReconcileMinutes:       s.CronReconcileMinutes,
+		MaxPanelConcurrency:        s.MaxPanelConcurrency,
 		JWTAccessTTLMinutes:        s.JWTAccessTTLMinutes,
 		JWTRefreshTTLMinutes:       s.JWTRefreshTTLMinutes,
 		JWTIssuer:                  s.JWTIssuer,

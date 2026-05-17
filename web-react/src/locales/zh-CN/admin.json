@@ -79,6 +79,8 @@
       "timezone_hint": "用于流量重置、用户到期日计算、图表默认时区。订阅页和用户自助页始终使用浏览器时区。",
       "cron_traffic_pull_minutes": "流量采集间隔（分钟）",
       "cron_reconcile_minutes": "Reconcile 间隔（分钟）",
+      "max_panel_concurrency": "面板并发上限（流量采集/Reconcile）",
+      "max_panel_concurrency_hint": "并发拉取每个 3X-UI 面板入站数据的上限。0 = 使用默认值 8。单面板部署调高无意义；多面板（5+）且 3X-UI 服务器空闲时可调到 16-32。> 64 会被自动夹回 64。",
       "audit_retention_days": "审计日志保留（天）",
       "sync_task_retention_days": "同步任务保留（天）",
       "emergency_section": "紧急访问",

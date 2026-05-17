@@ -39,6 +39,31 @@ func Now(ctx context.Context, settings ports.SettingsRepo) time.Time {
 	return time.Now().In(Location(ctx, settings))
 }
 
+// defaultPanelConcurrency is the fallback fan-out cap used when the
+// admin hasn't configured one. 8 is comfortable for the typical 1-5
+// panel deployment and large enough that single-panel installs (where
+// concurrency is a no-op anyway) don't notice.
+const defaultPanelConcurrency = 8
+
+// maxPanelConcurrencyCeiling clamps a misconfigured very-high value so
+// a typo in the settings UI ("80" instead of "8") can't slam 3X-UI
+// with 80 simultaneous HTTP requests.
+const maxPanelConcurrencyCeiling = 64
+
+// ResolveMaxPanelConcurrency turns the raw settings integer into the
+// usable concurrency cap for traffic poll / reconcile fan-out: <= 0
+// falls back to the default, values above the ceiling clamp down.
+// Centralized so both PollOnce and RunOnce agree on bounds.
+func ResolveMaxPanelConcurrency(raw int) int {
+	if raw <= 0 {
+		return defaultPanelConcurrency
+	}
+	if raw > maxPanelConcurrencyCeiling {
+		return maxPanelConcurrencyCeiling
+	}
+	return raw
+}
+
 // Validate checks that a tz string is something this binary's tzdata can
 // resolve. Empty is allowed (it means "use server local"). Used by the
 // admin settings PUT handler to reject saves the browser offered but Go

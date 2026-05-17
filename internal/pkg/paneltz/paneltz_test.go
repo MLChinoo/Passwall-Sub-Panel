@@ -88,6 +88,34 @@ func TestValidate_Accepts(t *testing.T) {
 	}
 }
 
+// TestResolveMaxPanelConcurrency covers the three buckets:
+//   - <= 0 (unset / blank in settings) → default 8
+//   - within range → echoed back verbatim
+//   - > ceiling → clamped to 64 so a misconfigured "800" can't slam
+//     3X-UI with 800 simultaneous HTTP requests.
+func TestResolveMaxPanelConcurrency(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero falls back to default", 0, 8},
+		{"negative falls back to default", -1, 8},
+		{"one is honored", 1, 1},
+		{"middle value is honored", 16, 16},
+		{"at ceiling", 64, 64},
+		{"above ceiling clamps to ceiling", 65, 64},
+		{"large typo clamps to ceiling", 800, 64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveMaxPanelConcurrency(tc.in); got != tc.want {
+				t.Errorf("ResolveMaxPanelConcurrency(%d) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidate_Rejects: typos and bogus IANA names must be flagged so
 // the admin settings PUT handler can return a clear 400 instead of
 // silently accepting and falling back to time.Local at use time.

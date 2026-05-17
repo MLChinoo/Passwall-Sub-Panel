@@ -19,6 +19,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xrayspec"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
@@ -116,16 +117,27 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 		uniquePanels[n.PanelID] = struct{}{}
 	}
 
+	// Load runtime settings ONCE per run so the user loop (and prefetch
+	// fan-out below) all share the same configured panel concurrency
+	// without re-hitting the settings repo per-iteration.
+	cfg := ports.UISettings{}
+	if s.settings != nil {
+		if loaded, ierr := s.settings.Load(ctx, ports.UISettings{}); ierr == nil {
+			cfg = loaded
+		}
+	}
+	concurrency := paneltz.ResolveMaxPanelConcurrency(cfg.MaxPanelConcurrency)
+
 	// Prefetch every panel's inbound list in parallel and seed the
 	// shared cache. Before this, RunOnce did per-inbound c.GetInbound
 	// calls inside the user loop: N ownership rows = N serial network
 	// round-trips against 3X-UI (~200ms each), driving a single-digit
 	// reconcile to multi-second wall-clock. Now one ListInbounds per
-	// panel runs concurrently and downstream loadInbound calls become
-	// cache hits — saved time is proportional to panel × inbound count.
-	// Errors here aren't fatal: per-inbound loadInbound stays as the
-	// fallback if a particular ListInbounds failed.
-	prefetchInbounds(ctx, s.pool, uniquePanels, cache)
+	// panel runs concurrently (capped by `concurrency`) and downstream
+	// loadInbound calls become cache hits. Errors aren't fatal:
+	// per-inbound loadInbound stays as the fallback if a particular
+	// ListInbounds failed.
+	prefetchInbounds(ctx, s.pool, uniquePanels, cache, concurrency)
 
 	page := 1
 	const pageSize = 100
@@ -263,28 +275,22 @@ func (s *Service) checkMissingOwnerships(ctx context.Context, u *domain.User, re
 	}
 }
 
-// maxPanelConcurrency caps fan-out when prefetching ListInbounds across
-// many panels in parallel. Picked to be larger than typical home / small
-// SMB deployments (1-5 panels) but small enough that a 50-panel setup
-// can't slam 3X-UI with 50 simultaneous requests and exhaust its worker
-// pool. Tune up if reconcile reports become significantly bound by
-// network latency on large deployments.
-const maxPanelConcurrency = 8
-
 // prefetchInbounds pulls ListInbounds from every supplied panel in
-// parallel (bounded by maxPanelConcurrency) and seeds the shared
-// inboundCache. Errors per panel are non-fatal: the user loop's
-// per-inbound loadInbound is left as a fallback if a particular panel
-// failed here. Concurrency is bounded by a buffered-channel semaphore
-// so 50-panel deployments don't fan-out to 50 simultaneous network
-// calls — that would both overload 3X-UI's worker pool and burn an
-// unnecessary number of goroutines on the panel side.
+// parallel (bounded by the caller-provided concurrency, normalized
+// upstream via paneltz.ResolveMaxPanelConcurrency) and seeds the
+// shared inboundCache. Errors per panel are non-fatal: the user
+// loop's per-inbound loadInbound is left as a fallback if a
+// particular ListInbounds failed.
 func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 	panels map[int64]struct{},
-	cache map[inboundCacheKey]*inboundCacheEntry) {
+	cache map[inboundCacheKey]*inboundCacheEntry,
+	concurrency int) {
 
 	if len(panels) == 0 {
 		return
+	}
+	if concurrency <= 0 {
+		concurrency = 1
 	}
 	type result struct {
 		panelID  int64
@@ -292,7 +298,7 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 		err      error
 	}
 	results := make(chan result, len(panels))
-	sem := make(chan struct{}, maxPanelConcurrency)
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for pid := range panels {
 		wg.Add(1)

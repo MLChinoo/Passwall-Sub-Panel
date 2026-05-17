@@ -79,6 +79,8 @@
       "timezone_hint": "Used for traffic resets, user expire_at math, and the default timezone of the admin traffic chart. Subscription and end-user views always follow the browser's timezone.",
       "cron_traffic_pull_minutes": "Traffic poll interval (min)",
       "cron_reconcile_minutes": "Reconcile interval (min)",
+      "max_panel_concurrency": "Panel fan-out concurrency (traffic poll / reconcile)",
+      "max_panel_concurrency_hint": "Maximum parallel ListInbounds fan-out across 3X-UI panels. 0 uses the built-in default of 8. Raising it does nothing for single-panel deployments; useful only with 5+ panels where 3X-UI has spare CPU. Values above 64 clamp down.",
       "audit_retention_days": "Audit log retention (days)",
       "sync_task_retention_days": "Sync task retention (days)",
       "emergency_section": "Emergency access",

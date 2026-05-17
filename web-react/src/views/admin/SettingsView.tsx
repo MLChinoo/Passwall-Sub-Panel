@@ -359,6 +359,12 @@ export default function SettingsView() {
               <NumField label={t('settings.general.cron_reconcile_minutes')} value={settings.cron_reconcile_minutes}
                 onChange={v => patch('cron_reconcile_minutes', v)} />
             </Pair>
+            <NumField label={t('settings.general.max_panel_concurrency')}
+              value={settings.max_panel_concurrency}
+              onChange={v => patch('max_panel_concurrency', v)}
+              helperText={t('settings.general.max_panel_concurrency_hint', {
+                defaultValue: '并发拉取每个 3X-UI 面板入站数据的上限。0 = 使用默认值 8。单面板部署调高无意义；多面板（5+）+ 3X-UI 服务器空闲时可调到 16-32。> 64 会被自动夹回 64。',
+              })} />
             <Pair>
               <NumField label={t('settings.general.audit_retention_days')} value={settings.audit_retention_days}
                 onChange={v => patch('audit_retention_days', v)} />

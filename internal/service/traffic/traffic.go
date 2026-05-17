@@ -104,14 +104,6 @@ func (s *Service) panelNow(ctx context.Context) time.Time {
 	return paneltz.Now(ctx, s.settings)
 }
 
-// maxPanelConcurrency caps the fan-out when fetching ListInbounds in
-// parallel across panels. 8 is a generous ceiling for the typical 1-5
-// panel deployment but small enough that a 50-panel admin can't flood
-// 3X-UI workers (or the local goroutine scheduler) with simultaneous
-// HTTP requests. Tune upward only when measurements show the poll
-// becoming network-latency bound on large deployments.
-const maxPanelConcurrency = 8
-
 // PollOnce walks every user, pulls aggregated traffic, writes a snapshot,
 // and enforces quotas + period resets.
 //
@@ -182,7 +174,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 	panelData := make(map[int64]panelListResult, len(byPanel))
 	var panelMu sync.Mutex
 	var panelWG sync.WaitGroup
-	panelSem := make(chan struct{}, maxPanelConcurrency)
+	panelSem := make(chan struct{}, paneltz.ResolveMaxPanelConcurrency(pollCfg.MaxPanelConcurrency))
 	for panelID := range byPanel {
 		panelWG.Add(1)
 		go func(pid int64) {

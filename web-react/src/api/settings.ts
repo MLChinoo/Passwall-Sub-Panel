@@ -57,6 +57,9 @@ export interface UISettings {
   timezone: string
   cron_traffic_pull_minutes: number
   cron_reconcile_minutes: number
+  /** Concurrency cap for parallel ListInbounds fan-out during traffic poll
+   *  and reconcile. 0 / unset falls back to 8; values > 64 clamp down. */
+  max_panel_concurrency: number
   jwt_access_ttl_minutes: number
   jwt_refresh_ttl_minutes: number
   jwt_issuer: string
