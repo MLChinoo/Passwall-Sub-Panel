@@ -1898,19 +1898,15 @@ function SamlPanel() {
         </Pair>
       </Section>
 
-      {/* Group resolution — admin groups + default group are admin policy
-          (not derived from IdP metadata), so they stay editable in both modes. */}
+      {/* Group resolution holds rule-based role assignment only. The
+          default group slug is provisioning-time policy and lives with
+          the other "what does a fresh SSO user look like" defaults
+          below. */}
       <Section title={t('settings.sso.saml.group_section', { defaultValue: '分组解析' })} md={md}>
         <RoleRulesEditor
           value={cfg.role_rules ?? []}
           onChange={rules => patch('role_rules', rules)}
           md={md}
-        />
-        <GroupSlugPicker
-          label={t('settings.sso.saml.default_group')}
-          value={cfg.default_group_slug}
-          onChange={slug => patch('default_group_slug', slug)}
-          groups={groups}
         />
       </Section>
 
@@ -1925,6 +1921,12 @@ function SamlPanel() {
             defaultValue: '关闭后，未在面板中预先创建的账户首次 SSO 登录会被跳转到“联系管理员”页；IdP 管理员组不受影响。',
           })}
         </Typography>
+        <GroupSlugPicker
+          label={t('settings.sso.saml.default_group')}
+          value={cfg.default_group_slug}
+          onChange={slug => patch('default_group_slug', slug)}
+          groups={groups}
+        />
         <Pair>
           <NumField label={t('settings.sso.saml.expire_days')} value={cfg.new_user_defaults.expire_days}
             onChange={v => patchDef('expire_days', v)} />
@@ -2076,12 +2078,6 @@ function OidcPanel() {
           onChange={rules => patch('role_rules', rules)}
           md={md}
         />
-        <GroupSlugPicker
-          label={t('settings.sso.oidc.default_group')}
-          value={cfg.default_group_slug}
-          onChange={slug => patch('default_group_slug', slug)}
-          groups={groups}
-        />
       </Section>
 
       <Section title={t('settings.sso.oidc.new_user_section')} md={md}>
@@ -2095,6 +2091,12 @@ function OidcPanel() {
             defaultValue: '关闭后，未在面板中预先创建的账户首次 SSO 登录会被跳转到"联系管理员"页；IdP 管理员组不受影响。',
           })}
         </Typography>
+        <GroupSlugPicker
+          label={t('settings.sso.oidc.default_group')}
+          value={cfg.default_group_slug}
+          onChange={slug => patch('default_group_slug', slug)}
+          groups={groups}
+        />
         <Pair>
           <NumField label={t('settings.sso.oidc.expire_days')} value={cfg.new_user_defaults.expire_days}
             onChange={v => patchDef('expire_days', v)} />
