@@ -62,6 +62,7 @@ import {
 } from '@/api/settings'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteIcon from '@mui/icons-material/DeleteOutline'
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import type { LoginMode } from '@/api/types'
 import { pushSnack } from '@/components/SnackbarHost'
 import { confirm } from '@/components/ConfirmHost'
@@ -972,6 +973,18 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
     ...links,
     { label: '', url: '', new_window: true, enabled: true, sort: (links.at(-1)?.sort ?? 0) + 10 },
   ])
+  // Drag-to-reorder. Unlike the nodes table, quick links are part of the
+  // settings doc and only persist when admin hits Save — so reordering is
+  // purely a local-array swap + sort_order renumber. No server roundtrip.
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  function commitDrop(from: number, to: number) {
+    if (from === to) return
+    const next = [...links]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    onChange(next.map((l, idx) => ({ ...l, sort: (idx + 1) * 10 })))
+  }
   // Live URL validation for each row — disabled links can stay blank, but
   // an enabled row with a bad URL would silently 404 in the portal.
   function urlError(l: QuickLink): string {
@@ -989,17 +1002,42 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           {links.map((l, i) => (
-            // alignItems: flex-start so the URL field's helperText doesn't
-            // push the row's vertical centre — switches and the delete
-            // icon stay anchored at the input's top edge instead.
-            <Box key={i} sx={{
-              display: 'flex', flexWrap: 'wrap', gap: 1.25, alignItems: 'flex-start',
-              p: 1.5, borderRadius: 2, border: `1px solid ${md.outlineVariant}`,
-              bgcolor: md.surfaceContainerHigh,
-            }}>
+            <Box key={i}
+              draggable
+              onDragStart={e => {
+                setDragIndex(i)
+                try { e.dataTransfer.setData('text/plain', String(i)) } catch { /* ignore */ }
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              onDragOver={e => {
+                if (dragIndex === null) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                if (dropIndex !== i) setDropIndex(i)
+              }}
+              onDragLeave={() => { if (dropIndex === i) setDropIndex(null) }}
+              onDrop={e => {
+                e.preventDefault()
+                const from = dragIndex
+                setDragIndex(null)
+                setDropIndex(null)
+                if (from === null) return
+                commitDrop(from, i)
+              }}
+              onDragEnd={() => { setDragIndex(null); setDropIndex(null) }}
+              sx={{
+                display: 'flex', flexWrap: 'wrap', gap: 1.25, alignItems: 'center',
+                p: 1.5, borderRadius: 2,
+                border: `1px solid ${dropIndex === i && dragIndex !== null && dragIndex !== i ? md.primary : md.outlineVariant}`,
+                bgcolor: md.surfaceContainerHigh,
+                opacity: dragIndex === i ? 0.4 : 1,
+                transition: 'border-color 120ms, opacity 120ms',
+              }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', color: md.onSurfaceVariant, cursor: 'grab', mr: -0.5 }}>
+                <DragIndicatorIcon fontSize="small" sx={{ opacity: 0.7 }} />
+              </Box>
               <TextField size="small" required={l.enabled} label={t('settings.portal.link_table.label')}
                 value={l.label} onChange={e => update(i, { label: e.target.value })}
-                helperText=" "
                 sx={{ flex: '1 1 160px' }} />
               {(() => {
                 const err = urlError(l)
@@ -1007,30 +1045,26 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
                   <TextField size="small" required={l.enabled} label={t('settings.portal.link_table.url')}
                     value={l.url} onChange={e => update(i, { url: e.target.value })}
                     error={!!err}
-                    helperText={err ? t(`admin:${err}`) : ' '}
+                    helperText={err ? t(`admin:${err}`) : undefined}
                     sx={{ flex: '2 1 240px' }} />
                 )
               })()}
               <TextField size="small" type="number" label={t('settings.portal.link_table.sort')}
                 value={l.sort} onChange={e => update(i, { sort: Number(e.target.value) })}
-                helperText=" "
                 sx={{ width: 90 }} />
-              {/* mt aligns the switches+delete icon to the TextField's
-                  visual centre instead of the row's flex-start top —
-                  size="small" inputs are ~40px tall, switches ~38px. */}
               <FormControlLabel
                 label={t('settings.portal.link_table.new_window')}
                 control={<Switch size="small" checked={l.new_window}
                   onChange={(_, c) => update(i, { new_window: c })} />}
-                sx={{ ml: 0, mt: 0.5, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
+                sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
               />
               <FormControlLabel
                 label={t('settings.portal.link_table.enabled')}
                 control={<Switch size="small" checked={l.enabled}
                   onChange={(_, c) => update(i, { enabled: c })} />}
-                sx={{ ml: 0, mt: 0.5, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
+                sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
               />
-              <IconButton size="small" onClick={() => remove(i)} sx={{ color: md.onSurfaceVariant, mt: 0.75 }}>
+              <IconButton size="small" onClick={() => remove(i)} sx={{ color: md.onSurfaceVariant }}>
                 <DeleteIcon fontSize="small" />
               </IconButton>
             </Box>
