@@ -46,7 +46,13 @@ import { useAppearanceStore } from '@/stores/appearance'
 import { setLanguage, currentLanguage } from '@/i18n'
 import { DEFAULT_PRESET_HEX, type AppLanguage } from '@/theme'
 
-const DRAWER_WIDTH_EXPANDED = 256
+// Sidebar widths follow the global density setting: compact trims the
+// expanded rail to give admin pages another ~50px of horizontal room
+// (most felt in tables on smaller laptops), while the collapsed
+// (icon-only) state stays the same because icons + padding already
+// dominate the width.
+const DRAWER_WIDTH_EXPANDED_COMFORTABLE = 256
+const DRAWER_WIDTH_EXPANDED_COMPACT = 208
 const DRAWER_WIDTH_COLLAPSED = 76
 const COLLAPSED_STORAGE_KEY = 'psp-sidebar-collapsed'
 
@@ -104,6 +110,11 @@ export default function AdminLayout() {
   // Effective collapsed: only on desktop. Mobile drawer always renders the
   // full-width version regardless of the stored preference.
   const railCollapsed = collapsed && !isMobile
+  // Density-aware expanded width — see constants above for why only the
+  // expanded variant tightens.
+  const drawerWidthExpanded = appearance.density === 'compact'
+    ? DRAWER_WIDTH_EXPANDED_COMPACT
+    : DRAWER_WIDTH_EXPANDED_COMFORTABLE
 
   // Load site branding once on mount.
   useEffect(() => { void site.load() }, [site])
@@ -217,7 +228,7 @@ export default function AdminLayout() {
       {/* Persistent drawer (desktop) */}
       {!isMobile && (
         <Box component="nav" sx={{
-          width: railCollapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED,
+          width: railCollapsed ? DRAWER_WIDTH_COLLAPSED : drawerWidthExpanded,
           flexShrink: 0,
           transition: theme.transitions.create('width', { duration: theme.transitions.duration.shorter }),
         }}>
@@ -226,7 +237,7 @@ export default function AdminLayout() {
             open
             sx={{
               '& .MuiDrawer-paper': {
-                width: railCollapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED,
+                width: railCollapsed ? DRAWER_WIDTH_COLLAPSED : drawerWidthExpanded,
                 overflowX: 'hidden',
                 borderRight: `1px solid ${md.outlineVariant}`,
                 bgcolor: md.surfaceContainerLow,
@@ -245,7 +256,7 @@ export default function AdminLayout() {
           variant="temporary"
           open={mobileOpen}
           onClose={() => setMobileOpen(false)}
-          sx={{ '& .MuiDrawer-paper': { width: DRAWER_WIDTH_EXPANDED } }}
+          sx={{ '& .MuiDrawer-paper': { width: drawerWidthExpanded } }}
         >
           {drawerContent}
         </Drawer>
