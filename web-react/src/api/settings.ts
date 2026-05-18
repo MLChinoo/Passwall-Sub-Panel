@@ -93,9 +93,12 @@ export interface UISettings {
    *  in the global settings page now, not the mail page). */
   expire_before_days: number
   traffic_remain_percent: number
-  /** v9 added: how many days of traffic snapshots to retain before the
-   *  hourly cleanup cron prunes them. 0 disables auto-prune. */
-  traffic_snapshot_retention_days: number
+  /** How many days of traffic history the chart can render. Drives the
+   *  retention of the hourly rollup tables; raw 5-min snapshots live for
+   *  a fixed short window (~7 days) and aren't admin-tunable. 0 keeps
+   *  everything. Renamed from traffic_snapshot_retention_days in
+   *  v3.0.0-beta.6 when the rollup pipeline landed. */
+  traffic_history_days: number
 }
 
 export async function getUISettings() {

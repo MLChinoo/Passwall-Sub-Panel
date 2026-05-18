@@ -162,6 +162,12 @@ func (r *fakeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (in
 	return deleted, nil
 }
 
+// PruneHourlyBefore: rollup tables are not exercised by traffic.Service
+// unit tests, so this fake is a no-op satisfier for the interface.
+func (r *fakeTrafficRepo) PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return 0, nil
+}
+
 func snap(userID int64, at string, up, down int64) *domain.TrafficSnapshot {
 	t, err := time.ParseInLocation("2006-01-02 15:04", at, time.Local)
 	if err != nil {
@@ -598,6 +604,10 @@ func (r *fakeNodeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time)
 	}
 	r.snapshots = kept
 	return deleted, nil
+}
+
+func (r *fakeNodeTrafficRepo) PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return 0, nil
 }
 
 type fakeNodeKey struct {

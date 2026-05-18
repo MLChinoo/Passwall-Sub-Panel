@@ -38,7 +38,8 @@ Linear major upgrades only — see `docs/ARCHITECTURE.md §16`.
 | `oidc_config` | `oidc_settings` | Renamed; same fields. |
 | `xui_clients` | `user_xui_clients` | Renamed; `panel_name` dropped; `last_raw_*_bytes` seeded from the latest legacy `client_traffic_snapshots` row per (panel, inbound, email) so the first post-migration traffic poll does not double-count history. |
 | `nodes` | `nodes` | `panel_name` column dropped. |
-| `users` / `groups_` / `xui_panels` / `traffic_snapshots` / `node_traffic_snapshots` / `audit_log` / `sub_logs` / `sync_tasks` / `mail_templates` / `mail_sent` | same name in v3.0.0 | Copied verbatim. `users.period_baseline_bytes` backfilled from pre-period_start snapshot. |
+| `users` / `groups_` / `xui_panels` / `audit_log` / `sub_logs` / `sync_tasks` / `mail_templates` / `mail_sent` | same name in v3.0.0 | Copied verbatim. `users.period_baseline_bytes` backfilled from pre-period_start snapshot. |
+| `traffic_snapshots` / `node_traffic_snapshots` | (not copied) | v3.0.0 replaces the 5-min raw-only table with a two-tier `raw + hourly UTC` rollup pipeline. The legacy 5-min rows would need rolling-up to slot in, and the upgrade is one-way, so we drop them — the post-migration panel starts accumulating fresh history from boot. Lifetime counters on `users` / `nodes` survive (those are not in the snapshot tables), so quota math and "all-time used" continue uninterrupted. |
 | `client_traffic_snapshots` | (not copied) | Pre-v3.0.0 stored raw counters; v3.0.0 stores lifetime. Mixing the two would corrupt history graphs. The latest raw value per client is preserved on the new `user_xui_clients.last_raw_*` columns so live traffic accounting continues correctly. |
 | `rule_sets` | (dropped) | Dead code — rule sets actually live in `config/rulesets/*.yaml`. |
 

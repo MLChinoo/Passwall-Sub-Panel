@@ -374,12 +374,10 @@ export default function SettingsView() {
               <NumField label={t('settings.general.sync_task_retention_days')} value={settings.sync_task_retention_days}
                 onChange={v => patch('sync_task_retention_days', v)} />
             </Pair>
-            <NumField label={t('settings.general.traffic_snapshot_retention_days', { defaultValue: '流量快照保留天数' })}
-              value={settings.traffic_snapshot_retention_days}
-              onChange={v => patch('traffic_snapshot_retention_days', v)}
-              helperText={t('settings.general.traffic_snapshot_retention_days_hint', {
-                defaultValue: '三张流量快照表（用户/客户端/节点）的自动清理阈值。0 = 永不清理（不推荐，client_traffic_snapshots 每年数百万行级增长）。默认 180。',
-              })} />
+            <NumField label={t('settings.general.traffic_history_days')}
+              value={settings.traffic_history_days}
+              onChange={v => patch('traffic_history_days', v)}
+              helperText={t('settings.general.traffic_history_days_hint')} />
             <Pair>
               <NumField label={t('settings.general.expire_before_days', { defaultValue: '到期前 N 天提醒' })}
                 value={settings.expire_before_days}

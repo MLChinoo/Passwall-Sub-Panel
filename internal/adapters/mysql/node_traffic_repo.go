@@ -103,3 +103,12 @@ func (r *nodeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (in
 		Delete(&nodeTrafficRow{})
 	return res.RowsAffected, res.Error
 }
+
+// PruneHourlyBefore deletes node_traffic_snapshots_hourly rows with
+// bucket_start strictly before cutoff. Driven by TrafficHistoryDays.
+func (r *nodeTrafficRepo) PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Where("bucket_start < ?", cutoff).
+		Delete(&nodeTrafficHourlyRow{})
+	return res.RowsAffected, res.Error
+}

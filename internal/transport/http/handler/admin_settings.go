@@ -45,7 +45,7 @@ type settingsDTO struct {
 	SubPerIPPerMin             int                      `json:"sub_per_ip_per_min"`
 	LoginPerIPPerMin           int                      `json:"login_per_ip_per_min"`
 	SyncTaskRetentionDays      int                      `json:"sync_task_retention_days"`
-	TrafficSnapshotRetentionDays int                    `json:"traffic_snapshot_retention_days"`
+	TrafficHistoryDays           int                    `json:"traffic_history_days"`
 	DisallowUserLocalLogin     bool                     `json:"disallow_user_local_login"`
 	DisallowUserPasswordChange bool                     `json:"disallow_user_password_change"`
 	AllowUserPersonalRules     bool                     `json:"allow_user_personal_rules"`
@@ -110,8 +110,8 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		JWTIssuer:                  s.JWTIssuer,
 		SubPerIPPerMin:             s.SubPerIPPerMin,
 		LoginPerIPPerMin:           s.LoginPerIPPerMin,
-		SyncTaskRetentionDays:        s.SyncTaskRetentionDays,
-		TrafficSnapshotRetentionDays: s.TrafficSnapshotRetentionDays,
+		SyncTaskRetentionDays:      s.SyncTaskRetentionDays,
+		TrafficHistoryDays:         s.TrafficHistoryDays,
 		DisallowUserLocalLogin:     s.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: s.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     s.AllowUserPersonalRules,
@@ -176,8 +176,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		JWTIssuer:                  strings.TrimSpace(req.JWTIssuer),
 		SubPerIPPerMin:             req.SubPerIPPerMin,
 		LoginPerIPPerMin:           req.LoginPerIPPerMin,
-		SyncTaskRetentionDays:        req.SyncTaskRetentionDays,
-		TrafficSnapshotRetentionDays: req.TrafficSnapshotRetentionDays,
+		SyncTaskRetentionDays:      req.SyncTaskRetentionDays,
+		TrafficHistoryDays:         req.TrafficHistoryDays,
 		DisallowUserLocalLogin:     req.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: req.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     req.AllowUserPersonalRules,
@@ -269,8 +269,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		JWTIssuer:                  s.JWTIssuer,
 		SubPerIPPerMin:             s.SubPerIPPerMin,
 		LoginPerIPPerMin:           s.LoginPerIPPerMin,
-		SyncTaskRetentionDays:        s.SyncTaskRetentionDays,
-		TrafficSnapshotRetentionDays: s.TrafficSnapshotRetentionDays,
+		SyncTaskRetentionDays:      s.SyncTaskRetentionDays,
+		TrafficHistoryDays:         s.TrafficHistoryDays,
 		DisallowUserLocalLogin:     s.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: s.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     s.AllowUserPersonalRules,

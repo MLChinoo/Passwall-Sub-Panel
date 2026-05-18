@@ -28,6 +28,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/rollup"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
@@ -55,6 +56,7 @@ type App struct {
 	// poll-cycle concern), so app.go reaches into the repos directly.
 	trafficRepo ports.TrafficRepo
 	nodeTraffic ports.NodeTrafficRepo
+	rollup    *rollup.Service
 	saml      *auth.SAMLService
 	// repos kept around so Run() can call initAdminIfNeeded AFTER the
 	// listen socket is bound — that way a bind failure (port busy / TLS
@@ -235,6 +237,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		syncTasks:         repos.SyncTask,
 		trafficRepo:       repos.Traffic,
 		nodeTraffic:       repos.NodeTraffic,
+		rollup:            rollup.New(db),
 		repos:             repos,
 		saml:              samlSvc,
 		trafficInterval:   time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute,
@@ -320,6 +323,12 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 	defer t.Stop()
 	log.Info("audit cleanup loop started", "interval", interval.String())
 	for {
+		// Rollup before prune so the freshly-completed hour is captured in
+		// hourly BEFORE raw retention has a chance to delete it. Without
+		// this ordering the first tick after a panel boot could lose data
+		// older than `rawTrafficRetentionDays` that hadn't yet been
+		// downsampled.
+		a.runRollup(ctx)
 		a.pruneAudit(ctx)
 		a.pruneSyncTasks(ctx)
 		a.pruneTrafficSnapshots(ctx)
@@ -328,6 +337,15 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+	}
+}
+
+func (a *App) runRollup(ctx context.Context) {
+	if a.rollup == nil {
+		return
+	}
+	if err := a.rollup.RollupOnce(ctx); err != nil {
+		log.Warn("traffic rollup", "err", err)
 	}
 }
 
@@ -353,12 +371,23 @@ func (a *App) pruneSyncTasks(ctx context.Context) {
 	}
 }
 
-// pruneTrafficSnapshots clears user / per-client / node traffic snapshot rows
-// older than TrafficSnapshotRetentionDays (default 180). Without this the
-// per-client table grows at thousands of rows/user/year at the default
-// 5-minute poll cadence — the largest DB-growth liability before v3.
-// Mirrors pruneAudit / pruneSyncTasks: load settings, compute cutoff, call
-// repo.PruneBefore, log non-zero deletions.
+// rawTrafficRetentionDays is the fixed retention window on the raw 5-min
+// snapshot tables (traffic_snapshots / client_traffic_snapshots /
+// node_traffic_snapshots). It is NOT admin-tunable — its only job is to
+// cover the current incomplete day plus a small catch-up buffer for the
+// rollup cron. Long-window history lives on the *_hourly tables and is
+// gated by TrafficHistoryDays.
+const rawTrafficRetentionDays = 7
+
+// pruneTrafficSnapshots clears traffic snapshot rows the panel no longer
+// needs:
+//   - raw tables (5-min): pruned at the hardcoded `rawTrafficRetentionDays`
+//     window; covers today + a few days of headroom for chart "today" math
+//   - *_hourly tables: pruned at the admin-tunable `TrafficHistoryDays`
+//     setting, which is also the user-visible chart history depth
+//
+// Mirrors pruneAudit / pruneSyncTasks: load settings, compute cutoffs,
+// call repo prune helpers, log non-zero deletions.
 func (a *App) pruneTrafficSnapshots(ctx context.Context) {
 	if a.settings == nil || a.trafficRepo == nil {
 		return
@@ -368,22 +397,38 @@ func (a *App) pruneTrafficSnapshots(ctx context.Context) {
 		log.Warn("traffic snapshot cleanup load settings", "err", err)
 		return
 	}
-	if settings.TrafficSnapshotRetentionDays <= 0 {
-		return
-	}
-	cutoff := time.Now().AddDate(0, 0, -settings.TrafficSnapshotRetentionDays)
-	deleted, err := a.trafficRepo.PruneBefore(ctx, cutoff)
+
+	rawCutoff := time.Now().AddDate(0, 0, -rawTrafficRetentionDays)
+	deleted, err := a.trafficRepo.PruneBefore(ctx, rawCutoff)
 	if err != nil {
 		log.Warn("traffic snapshot cleanup", "err", err)
 	} else if deleted > 0 {
-		log.Info("traffic snapshot cleanup", "deleted", deleted, "retention_days", settings.TrafficSnapshotRetentionDays)
+		log.Info("traffic snapshot cleanup", "deleted", deleted, "retention_days", rawTrafficRetentionDays)
 	}
 	if a.nodeTraffic != nil {
-		nodeDeleted, err := a.nodeTraffic.PruneBefore(ctx, cutoff)
+		nodeDeleted, err := a.nodeTraffic.PruneBefore(ctx, rawCutoff)
 		if err != nil {
 			log.Warn("node traffic snapshot cleanup", "err", err)
 		} else if nodeDeleted > 0 {
-			log.Info("node traffic snapshot cleanup", "deleted", nodeDeleted, "retention_days", settings.TrafficSnapshotRetentionDays)
+			log.Info("node traffic snapshot cleanup", "deleted", nodeDeleted, "retention_days", rawTrafficRetentionDays)
+		}
+	}
+
+	if settings.TrafficHistoryDays > 0 {
+		hourlyCutoff := time.Now().AddDate(0, 0, -settings.TrafficHistoryDays)
+		hourlyDeleted, err := a.trafficRepo.PruneHourlyBefore(ctx, hourlyCutoff)
+		if err != nil {
+			log.Warn("traffic hourly cleanup", "err", err)
+		} else if hourlyDeleted > 0 {
+			log.Info("traffic hourly cleanup", "deleted", hourlyDeleted, "retention_days", settings.TrafficHistoryDays)
+		}
+		if a.nodeTraffic != nil {
+			nodeHourlyDeleted, err := a.nodeTraffic.PruneHourlyBefore(ctx, hourlyCutoff)
+			if err != nil {
+				log.Warn("node traffic hourly cleanup", "err", err)
+			} else if nodeHourlyDeleted > 0 {
+				log.Info("node traffic hourly cleanup", "deleted", nodeHourlyDeleted, "retention_days", settings.TrafficHistoryDays)
+			}
 		}
 	}
 }

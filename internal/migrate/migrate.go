@@ -110,9 +110,9 @@ func (p *migrationPlan) print() {
 	fmt.Printf("    xui_clients:     %d → user_xui_clients (panel_name dropped, lifetime/last_raw added)\n", p.xuiClients)
 	fmt.Printf("    mail_templates:  %d\n", p.mailTemplates)
 	fmt.Println("  ─ time series ─")
-	fmt.Printf("    traffic_snapshots:      %d\n", p.trafficSnaps)
+	fmt.Printf("    traffic_snapshots:      %d (NOT copied — v3 rollup pipeline rebuilds history fresh)\n", p.trafficSnaps)
 	fmt.Printf("    client_traffic_snapshots: %d (NOT copied — semantics changed; LastRaw seeded from latest row per client)\n", p.clientSnapshots)
-	fmt.Printf("    node_traffic_snapshots: %d\n", p.nodeTrafficSnap)
+	fmt.Printf("    node_traffic_snapshots: %d (NOT copied — v3 rollup pipeline rebuilds history fresh)\n", p.nodeTrafficSnap)
 	fmt.Println("  ─ logs / tasks ─")
 	fmt.Printf("    audit_log:   %d\n", p.auditLog)
 	fmt.Printf("    sub_logs:    %d\n", p.subLogs)
@@ -148,8 +148,11 @@ func runMigration(ctx context.Context, src, dst *gorm.DB, plan *migrationPlan) e
 		{"user_xui_clients (renamed from xui_clients)", copyOwnerships},
 		{"mail_templates", copyTableRaw("mail_templates")},
 		{"mail_sent", copyTableRaw("mail_sent")},
-		{"traffic_snapshots", copyTableRaw("traffic_snapshots")},
-		{"node_traffic_snapshots", copyTableRaw("node_traffic_snapshots")},
+		// traffic_snapshots / node_traffic_snapshots NOT copied — v3 introduces
+		// the rollup pipeline (raw + hourly UTC) and the legacy 5-min rows
+		// would need rolling-up to fit. The post-migration panel starts
+		// accumulating fresh history from boot; the trade-off is documented
+		// in docs/UPGRADE-v3.0.0.md.
 		{"audit_log", copyTableRaw("audit_log")},
 		{"sub_logs", copyTableRaw("sub_logs")},
 		{"sync_tasks", copyTableRaw("sync_tasks")},

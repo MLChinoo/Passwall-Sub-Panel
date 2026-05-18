@@ -419,6 +419,54 @@ func (r *nodeTrafficRow) toDomain() *domain.NodeTrafficSnapshot {
 	}
 }
 
+// ---- Hourly rollup tables (v3.0.0-beta.6+) -----------------------------
+//
+// Each *_hourly table stores per-entity *delta* within a 1-hour UTC bucket.
+// Populated by the rollup service from the raw 5-min snapshot tables, then
+// served to chart queries that want Day/Week/Month granularity in any
+// caller-provided timezone — the query layer fetches the UTC range, then
+// converts and groups by local day/week/month in Go.
+//
+// Idempotency: the (entity_id, ..., bucket_start) unique index lets rollup
+// be re-run safely (ON DUPLICATE KEY UPDATE / ON CONFLICT DO UPDATE),
+// which is what makes the first run after upgrade act as a backfill.
+
+type trafficHourlyRow struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement"`
+	UserID      int64     `gorm:"not null;uniqueIndex:uk_user_bucket_h,priority:1"`
+	BucketStart time.Time `gorm:"not null;uniqueIndex:uk_user_bucket_h,priority:2;index:idx_traffic_hourly_bucket"`
+	UpBytes     int64
+	DownBytes   int64
+	TotalBytes  int64
+}
+
+func (trafficHourlyRow) TableName() string { return "traffic_snapshots_hourly" }
+
+type clientTrafficHourlyRow struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement"`
+	UserID      int64     `gorm:"not null;index:idx_client_hourly_user"`
+	PanelID     int64     `gorm:"not null;uniqueIndex:uk_client_bucket_h,priority:1"`
+	InboundID   int       `gorm:"not null;uniqueIndex:uk_client_bucket_h,priority:2"`
+	ClientEmail string    `gorm:"size:255;not null;uniqueIndex:uk_client_bucket_h,priority:3"`
+	BucketStart time.Time `gorm:"not null;uniqueIndex:uk_client_bucket_h,priority:4;index:idx_client_hourly_bucket"`
+	UpBytes     int64
+	DownBytes   int64
+	TotalBytes  int64
+}
+
+func (clientTrafficHourlyRow) TableName() string { return "client_traffic_snapshots_hourly" }
+
+type nodeTrafficHourlyRow struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement"`
+	NodeID      int64     `gorm:"not null;uniqueIndex:uk_node_bucket_h,priority:1"`
+	BucketStart time.Time `gorm:"not null;uniqueIndex:uk_node_bucket_h,priority:2;index:idx_node_hourly_bucket"`
+	UpBytes     int64
+	DownBytes   int64
+	TotalBytes  int64
+}
+
+func (nodeTrafficHourlyRow) TableName() string { return "node_traffic_snapshots_hourly" }
+
 type auditRow struct {
 	ID         int64     `gorm:"primaryKey;autoIncrement"`
 	Actor      string    `gorm:"size:255;not null"`
@@ -793,6 +841,9 @@ func EnsureSchema(db *gorm.DB) error {
 		&trafficRow{},
 		&clientTrafficRow{},
 		&nodeTrafficRow{},
+		&trafficHourlyRow{},
+		&clientTrafficHourlyRow{},
+		&nodeTrafficHourlyRow{},
 		&auditRow{},
 		&subLogRow{},
 		&syncTaskRow{},

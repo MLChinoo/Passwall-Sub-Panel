@@ -138,6 +138,12 @@ type TrafficRepo interface {
 	// SubLogRepo retention pattern. Returns deleted row count summed across
 	// both tables.
 	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// PruneHourlyBefore deletes rows from traffic_snapshots_hourly and
+	// client_traffic_snapshots_hourly older than cutoff. The raw and hourly
+	// tables get different retentions (raw covers "today + buffer", hourly
+	// covers the admin-tunable chart depth), so they prune through separate
+	// methods.
+	PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type NodeTrafficRepo interface {
@@ -150,6 +156,9 @@ type NodeTrafficRepo interface {
 	InsertBatch(ctx context.Context, snaps []*domain.NodeTrafficSnapshot) error
 	// PruneBefore deletes node_traffic_snapshots rows older than cutoff.
 	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// PruneHourlyBefore deletes node_traffic_snapshots_hourly rows older
+	// than cutoff. See TrafficRepo.PruneHourlyBefore for the rationale.
+	PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type AuditRepo interface {
@@ -285,12 +294,17 @@ type UISettings struct {
 	// (worth keeping for diagnosis). 0 disables auto-cleanup.
 	SyncTaskRetentionDays int `json:"sync_task_retention_days"`
 
-	// TrafficSnapshotRetentionDays controls automatic cleanup of traffic /
-	// client_traffic / node_traffic snapshot tables. 0 disables auto-prune.
-	// At default cron cadence (5 min) these tables grow at thousands of
-	// rows/user/year, so unbounded retention is the largest DB-growth
-	// liability — added in the v3 schema cleanup as the P0 fix.
-	TrafficSnapshotRetentionDays int `json:"traffic_snapshot_retention_days"`
+	// TrafficHistoryDays controls how far back the traffic chart can render
+	// AND the hourly rollup table's retention. raw 5-min snapshots are kept
+	// for a fixed-internal window (covers "today" + a small buffer) and are
+	// not configurable here. Range queries beyond this window return empty
+	// buckets. 0 keeps everything.
+	//
+	// Replaces the v3.0.0-beta.5 setting `traffic_snapshot_retention_days`,
+	// which was raw-only and tied to a single 5-min table; v3.0.0-beta.6+
+	// stores aggregated history in `*_hourly` tables, so the user-visible
+	// "history depth" knob lives here.
+	TrafficHistoryDays int `json:"traffic_history_days"`
 
 	// Hard policies that apply REGARDLESS of LoginMode. These knobs let admins
 	// reject ordinary users' local-password login even when /login/local remains

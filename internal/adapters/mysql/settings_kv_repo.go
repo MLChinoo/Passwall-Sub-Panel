@@ -171,7 +171,7 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		intField("security", "login_per_ip_per_min", &s.LoginPerIPPerMin),
 		intField("security", "audit_retention_days", &s.AuditRetentionDays),
 		intField("security", "sync_task_retention_days", &s.SyncTaskRetentionDays),
-		intField("security", "traffic_snapshot_retention_days", &s.TrafficSnapshotRetentionDays),
+		intField("security", "traffic_history_days", &s.TrafficHistoryDays),
 		boolField("security", "emergency_access_enabled", &s.EmergencyAccessEnabled),
 		intField("security", "emergency_access_hours", &s.EmergencyAccessHours),
 		intField("security", "emergency_access_max_count", &s.EmergencyAccessMaxCount),
@@ -315,8 +315,8 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 	if out.SyncTaskRetentionDays <= 0 {
 		out.SyncTaskRetentionDays = 30
 	}
-	if out.TrafficSnapshotRetentionDays <= 0 {
-		out.TrafficSnapshotRetentionDays = 180
+	if out.TrafficHistoryDays <= 0 {
+		out.TrafficHistoryDays = 365
 	}
 	if out.SubClientRules == nil {
 		out.SubClientRules = defaultSubClientRules()

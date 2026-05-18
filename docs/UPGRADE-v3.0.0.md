@@ -29,6 +29,11 @@ minor / patch 升级不变 schema，按 [[feedback_semver]] 规则。
 
 4. **新库名 admin 自己定**。下面示例用 `psp_v3`（或 SQLite `panel_v3.db`），你可以叫任何名字；迁移程序通过 `--src` / `--dst` 参数接收。
 
+5. **流量图表历史会清零**。v3.0.0 重做了流量存储为 `raw + hourly UTC` 两层 rollup 流水线，旧的 5 分钟快照表（`traffic_snapshots` / `client_traffic_snapshots` / `node_traffic_snapshots`）**不迁移**，新库从空表起步、面板启动后 5 分钟开始攒新数据。
+   - **不丢的**：用户 / 节点上的 `lifetime_*_bytes` 累计计数（quota 计算、"all-time used" 都基于这个，跟快照表无关）
+   - **会丢的**：历史曲线图（"上个月 5 号 14 点流量是多少" 这种细节）
+   - 想保留的话先在旧版面板里截图存档；v3.0.0 启动后旧的曲线就回不来了
+
 ---
 
 ## 1. 通用前置步骤（任何部署方式都做）

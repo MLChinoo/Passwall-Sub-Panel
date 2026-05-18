@@ -146,11 +146,11 @@ func (r *trafficRepo) InsertClient(ctx context.Context, s *domain.ClientTrafficS
 }
 
 // PruneBefore deletes user-level and per-client traffic snapshots captured
-// strictly before cutoff. Driven by the TrafficSnapshotRetentionDays setting
-// (default 180) — without this cleanup, client_traffic_snapshots grows at
-// thousands of rows/user/year at the default 5-minute poll cadence. The
-// (user_id, captured_at) and idx_client_time composite indexes already
-// support efficient range deletes; no extra index needed.
+// strictly before cutoff. Driven by the fixed rawTrafficRetentionDays
+// constant in internal/app — raw covers "today + a few days buffer", with
+// long-window history living on the *_hourly tables (see
+// PruneHourlyBefore). The (user_id, captured_at) and idx_client_time
+// composite indexes already support efficient range deletes.
 func (r *trafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	userRes := r.db.WithContext(ctx).
 		Where("captured_at < ?", cutoff).
@@ -161,6 +161,27 @@ func (r *trafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64,
 	clientRes := r.db.WithContext(ctx).
 		Where("captured_at < ?", cutoff).
 		Delete(&clientTrafficRow{})
+	if clientRes.Error != nil {
+		return userRes.RowsAffected, clientRes.Error
+	}
+	return userRes.RowsAffected + clientRes.RowsAffected, nil
+}
+
+// PruneHourlyBefore deletes rolled-up hourly rows from both
+// traffic_snapshots_hourly and client_traffic_snapshots_hourly with
+// bucket_start strictly before cutoff. Driven by TrafficHistoryDays (admin-
+// tunable; default 365). idx_traffic_hourly_bucket / idx_client_hourly_bucket
+// cover the range delete.
+func (r *trafficRepo) PruneHourlyBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	userRes := r.db.WithContext(ctx).
+		Where("bucket_start < ?", cutoff).
+		Delete(&trafficHourlyRow{})
+	if userRes.Error != nil {
+		return 0, userRes.Error
+	}
+	clientRes := r.db.WithContext(ctx).
+		Where("bucket_start < ?", cutoff).
+		Delete(&clientTrafficHourlyRow{})
 	if clientRes.Error != nil {
 		return userRes.RowsAffected, clientRes.Error
 	}
