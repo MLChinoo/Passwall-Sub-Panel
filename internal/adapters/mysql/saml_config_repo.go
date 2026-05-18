@@ -27,8 +27,13 @@ type samlConfigRow struct {
 	SPCertPEM  string `gorm:"type:text"`
 	SPKeyPEM   string `gorm:"type:text"`
 
-	IDPMetadataURL        string `gorm:"size:255"`
-	IDPMetadataRefreshSec int64
+	// Explicit column tags: GORM's snake_case converter doesn't treat "IDP"
+	// as a known initialism (its commonInitialisms list has ID/IP/URL/UUID
+	// but not IDP), so AutoMigrate would otherwise produce
+	// `id_p_metadata_url` / `id_p_metadata_refresh_sec` — ugly, and they
+	// collide with the migrator which expects `idp_*`.
+	IDPMetadataURL        string `gorm:"column:idp_metadata_url;size:255"`
+	IDPMetadataRefreshSec int64  `gorm:"column:idp_metadata_refresh_sec"`
 
 	AttrUPN         string `gorm:"size:255"`
 	AttrEmail       string `gorm:"size:255"`
