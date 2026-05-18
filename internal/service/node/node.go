@@ -138,6 +138,17 @@ func (s *Service) CreateSeparator(ctx context.Context, e *domain.SeparatorEntry)
 		return fmt.Errorf("separator repo not configured")
 	}
 	e.DisplayName = strings.TrimSpace(e.DisplayName)
+	// SortOrder <= 0 means "place at tail" — the admin UI no longer asks
+	// for the value because the drag-to-reorder flow re-numbers everything
+	// in 10-step increments anyway. Compute max across BOTH nodes and
+	// separators (they share one ordering scale) and add 10.
+	if e.SortOrder <= 0 {
+		next, err := s.nextSortOrder(ctx)
+		if err != nil {
+			return err
+		}
+		e.SortOrder = next
+	}
 	return s.separators.Create(ctx, e)
 }
 
@@ -149,7 +160,43 @@ func (s *Service) UpdateSeparator(ctx context.Context, e *domain.SeparatorEntry)
 		return fmt.Errorf("separator repo not configured")
 	}
 	e.DisplayName = strings.TrimSpace(e.DisplayName)
+	// Edit dialog no longer surfaces sort_order; the absent field arrives
+	// as 0 and must not clobber the position the admin set via drag. Load
+	// the existing row and preserve it when the caller didn't specify one.
+	if e.SortOrder <= 0 {
+		existing, err := s.separators.GetByID(ctx, e.ID)
+		if err != nil {
+			return err
+		}
+		e.SortOrder = existing.SortOrder
+	}
 	return s.separators.Update(ctx, e)
+}
+
+// nextSortOrder returns max(sort_order across nodes + separators) + 10,
+// or 10 if both tables are empty. Used to drop new separators at the tail
+// of the merged list without forcing the admin to pick a number.
+func (s *Service) nextSortOrder(ctx context.Context) (int, error) {
+	nodes, err := s.nodes.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	seps, err := s.separators.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	maxSort := 0
+	for _, n := range nodes {
+		if n.SortOrder > maxSort {
+			maxSort = n.SortOrder
+		}
+	}
+	for _, sep := range seps {
+		if sep.SortOrder > maxSort {
+			maxSort = sep.SortOrder
+		}
+	}
+	return maxSort + 10, nil
 }
 
 func (s *Service) DeleteSeparator(ctx context.Context, id int64) error {

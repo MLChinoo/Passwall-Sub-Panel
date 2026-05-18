@@ -757,8 +757,7 @@
       "server_address": "连接地址",
       "flow": "Flow（可选）",
       "region": "Region",
-      "tags": "Tags",
-      "sort_order": "排序权重"
+      "tags": "Tags"
     },
     "action": {
       "edit": "编辑",

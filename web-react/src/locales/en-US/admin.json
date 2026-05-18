@@ -758,8 +758,6 @@
       "flow": "Flow (optional)",
       "region": "Region",
       "tags": "Tags",
-      "sort_order": "Sort weight",
-      "sort_order_hint": "Shares one ordering scale with real nodes; on a tie the separator sits above the node it labels.",
       "enabled": "Enabled",
       "separator_show_in_all": "Show in all groups",
       "separator_groups": "Show in these groups",

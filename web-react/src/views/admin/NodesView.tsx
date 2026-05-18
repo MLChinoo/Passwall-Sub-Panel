@@ -1406,15 +1406,18 @@ export default function NodesView() {
   // Group binding is explicit via show_in_all_groups + group_ids — the
   // old "region/tags + tag_filter" matching pathway is gone (admins
   // hated guessing which groups it would land in).
+  // sort_order is intentionally NOT in the form. Create-time the backend
+  // tails it onto max(sort_order)+10; edit-time the backend preserves the
+  // existing value. Admins place separators via drag-to-reorder, same as
+  // real nodes.
   type SeparatorForm = {
     display_name: string
-    sort_order: number
     enabled: boolean
     show_in_all_groups: boolean
     group_ids: number[]
   }
   const EMPTY_SEPARATOR_FORM: SeparatorForm = {
-    display_name: '', sort_order: 100, enabled: true,
+    display_name: '', enabled: true,
     show_in_all_groups: true, group_ids: [],
   }
   const [separatorOpen, setSeparatorOpen] = useState(false)
@@ -1433,7 +1436,6 @@ export default function NodesView() {
     setSeparatorEditingId(sep.id)
     setSeparatorForm({
       display_name: sep.display_name,
-      sort_order: sep.sort_order,
       enabled: sep.enabled,
       show_in_all_groups: sep.show_in_all_groups,
       group_ids: [...sep.group_ids],
@@ -1449,7 +1451,6 @@ export default function NodesView() {
     try {
       const payload = {
         display_name: separatorForm.display_name.trim(),
-        sort_order: separatorForm.sort_order,
         enabled: separatorForm.enabled,
         show_in_all_groups: separatorForm.show_in_all_groups,
         group_ids: separatorForm.show_in_all_groups ? [] : separatorForm.group_ids,
@@ -2573,10 +2574,6 @@ export default function NodesView() {
               value={separatorForm.display_name}
               onChange={e => setSeparatorForm({ ...separatorForm, display_name: e.target.value })}
               placeholder="---- Taiwan HiNet ----" />
-            <TextField fullWidth type="number" label={t('admin:nodes.field.sort_order')}
-              value={separatorForm.sort_order}
-              onChange={e => setSeparatorForm({ ...separatorForm, sort_order: Number(e.target.value) })}
-              helperText={t('admin:nodes.field.sort_order_hint', { defaultValue: '跟真节点共享同一排序刻度，相同 sort_order 时分隔会排在节点上方。' })} />
             <FormControlLabel
               label={t('admin:nodes.field.separator_show_in_all', { defaultValue: '显示在所有分组' })}
               control={
