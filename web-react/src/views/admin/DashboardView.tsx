@@ -84,9 +84,16 @@ function MetricCard({ labelKey, value, subtitle, Icon, tone, loading }: MetricCa
             ? <CircularProgress size={20} sx={{ mt: 0.5 }} />
             : <>
                 <Typography sx={{ fontSize: 32, fontWeight: 500, lineHeight: 1.1, mt: 0.25 }}>{value}</Typography>
-                {subtitle && (
-                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: 0.5 }}>{subtitle}</Typography>
-                )}
+                {/* Always reserve the subtitle row's vertical space so all
+                    four MetricCards in the dashboard row stay the same
+                    height regardless of which ones have a breakdown line
+                    — otherwise the icon on a subtitle-less card (Groups)
+                    sits visibly higher than its neighbours. */}
+                <Box sx={{ mt: 0.5, minHeight: 18 }}>
+                  {subtitle && (
+                    <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>{subtitle}</Typography>
+                  )}
+                </Box>
               </>}
         </Box>
       </CardContent>
