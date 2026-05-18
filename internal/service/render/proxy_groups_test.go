@@ -56,6 +56,40 @@ func TestBuildProxyGroupsYAML(t *testing.T) {
 	}
 }
 
+func TestBuildProxyGroupsYAMLDomesticServiceGroupHasNodeSelector(t *testing.T) {
+	raw, err := buildProxyGroupsYAML(`
+- DOMAIN-SUFFIX,bing.com,Ⓜ️ 微软Bing
+- DOMAIN-SUFFIX,apple.com,🍎 苹果服务
+- MATCH,🐟 漏网之鱼
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var groups []proxyGroup
+	if err := yaml.Unmarshal([]byte(raw), &groups); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]proxyGroup{}
+	for _, g := range groups {
+		byName[g.Name] = g
+	}
+	for _, name := range []string{"Ⓜ️ 微软Bing", "🍎 苹果服务"} {
+		g, ok := byName[name]
+		if !ok {
+			t.Fatalf("expected group %q in output, got %#v", name, byName)
+		}
+		want := []string{"DIRECT", "🚀 节点选择", "@all"}
+		if len(g.Proxies) != len(want) {
+			t.Fatalf("%s proxies = %#v, want %#v", name, g.Proxies, want)
+		}
+		for i := range want {
+			if g.Proxies[i] != want[i] {
+				t.Fatalf("%s proxies[%d] = %q, want %q (full=%#v)", name, i, g.Proxies[i], want[i], g.Proxies)
+			}
+		}
+	}
+}
+
 func TestBuildProxyGroupsYAMLUsesManualDisplayOrder(t *testing.T) {
 	raw, err := buildProxyGroupsYAML(`
 - DOMAIN-SUFFIX,direct.example,🎯 全球直连
