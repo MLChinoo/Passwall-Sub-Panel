@@ -22,16 +22,17 @@ type samlConfigRow struct {
 	Enabled bool
 	Mode    string `gorm:"size:16"`
 
+	// Explicit column tags on the SP/IDP-prefixed fields: GORM's snake_case
+	// converter only handles initialisms it knows (ID/IP/URL/UUID/...). "SP"
+	// and "IDP" are not in that list, so AutoMigrate would otherwise emit
+	// `spacs_url` / `id_p_metadata_url` / `id_p_metadata_refresh_sec`. The
+	// migrator's hand-built INSERT map keys them under their natural names
+	// (sp_acs_url, idp_*), and those names also read better in raw SQL.
 	SPEntityID string `gorm:"size:255"`
-	SPACSURL   string `gorm:"size:255"`
+	SPACSURL   string `gorm:"column:sp_acs_url;size:255"`
 	SPCertPEM  string `gorm:"type:text"`
 	SPKeyPEM   string `gorm:"type:text"`
 
-	// Explicit column tags: GORM's snake_case converter doesn't treat "IDP"
-	// as a known initialism (its commonInitialisms list has ID/IP/URL/UUID
-	// but not IDP), so AutoMigrate would otherwise produce
-	// `id_p_metadata_url` / `id_p_metadata_refresh_sec` — ugly, and they
-	// collide with the migrator which expects `idp_*`.
 	IDPMetadataURL        string `gorm:"column:idp_metadata_url;size:255"`
 	IDPMetadataRefreshSec int64  `gorm:"column:idp_metadata_refresh_sec"`
 
