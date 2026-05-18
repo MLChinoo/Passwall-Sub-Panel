@@ -48,27 +48,29 @@ type ClientSyncer interface {
 }
 
 type Service struct {
-	nodes    ports.NodeRepo
-	pool     ports.XUIPool
-	cleaner  InboundCleaner
-	tasks    ports.SyncTaskRepo
-	groups   ports.GroupRepo
-	users    ports.UserRepo
-	syncer   ClientSyncer
-	settings ports.SettingsRepo
+	nodes      ports.NodeRepo
+	separators ports.SeparatorRepo
+	pool       ports.XUIPool
+	cleaner    InboundCleaner
+	tasks      ports.SyncTaskRepo
+	groups     ports.GroupRepo
+	users      ports.UserRepo
+	syncer     ClientSyncer
+	settings   ports.SettingsRepo
 }
 
-func New(nodes ports.NodeRepo, pool ports.XUIPool, cleaner InboundCleaner,
+func New(nodes ports.NodeRepo, separators ports.SeparatorRepo, pool ports.XUIPool, cleaner InboundCleaner,
 	tasks ports.SyncTaskRepo, groups ports.GroupRepo, users ports.UserRepo, syncer ClientSyncer, settings ports.SettingsRepo) *Service {
 	return &Service{
-		nodes:    nodes,
-		pool:     pool,
-		cleaner:  cleaner,
-		tasks:    tasks,
-		groups:   groups,
-		users:    users,
-		syncer:   syncer,
-		settings: settings,
+		nodes:      nodes,
+		separators: separators,
+		pool:       pool,
+		cleaner:    cleaner,
+		tasks:      tasks,
+		groups:     groups,
+		users:      users,
+		syncer:     syncer,
+		settings:   settings,
 	}
 }
 
@@ -108,34 +110,59 @@ func (s *Service) List(ctx context.Context) ([]*domain.Node, error) {
 
 // ---- Create flows ----
 
+// ---- Separator CRUD --------------------------------------------------------
+//
+// Separators live in their own `nodes_separator` table (see
+// internal/adapters/mysql/separator_repo.go) and are bound to groups by an
+// explicit list, not by tag_filter. The pre-v3.0.0-beta.7 design that
+// stashed them in `nodes` with kind='separator' + synthetic negative
+// inbound_id is gone — legacy rows are dropped by cleanupLegacyState.
+//
+// These methods stay on node.Service rather than in their own package
+// because the operations are trivial pass-throughs to SeparatorRepo and
+// admin UI surfaces them on the same Nodes page anyway. Promote to a
+// dedicated package if non-trivial business logic ever attaches.
+
+func (s *Service) ListSeparators(ctx context.Context) ([]*domain.SeparatorEntry, error) {
+	if s.separators == nil {
+		return nil, nil
+	}
+	return s.separators.List(ctx)
+}
+
+func (s *Service) CreateSeparator(ctx context.Context, e *domain.SeparatorEntry) error {
+	if e == nil || strings.TrimSpace(e.DisplayName) == "" {
+		return fmt.Errorf("%w: display_name is required", domain.ErrValidation)
+	}
+	if s.separators == nil {
+		return fmt.Errorf("separator repo not configured")
+	}
+	e.DisplayName = strings.TrimSpace(e.DisplayName)
+	return s.separators.Create(ctx, e)
+}
+
+func (s *Service) UpdateSeparator(ctx context.Context, e *domain.SeparatorEntry) error {
+	if e == nil || strings.TrimSpace(e.DisplayName) == "" {
+		return fmt.Errorf("%w: display_name is required", domain.ErrValidation)
+	}
+	if s.separators == nil {
+		return fmt.Errorf("separator repo not configured")
+	}
+	e.DisplayName = strings.TrimSpace(e.DisplayName)
+	return s.separators.Update(ctx, e)
+}
+
+func (s *Service) DeleteSeparator(ctx context.Context, id int64) error {
+	if s.separators == nil {
+		return fmt.Errorf("separator repo not configured")
+	}
+	return s.separators.Delete(ctx, id)
+}
+
 // ImportExisting registers an inbound that already lives in 3X-UI under
 // panel management. No 3X-UI inbound-level write happens; only metadata is
 // persisted, and clients are synced for any matching groups so newly
 // added users immediately see this node in their subscriptions.
-// CreateSeparator inserts a layout-only node that renders as a DIRECT
-// proxy in subscriptions. Doesn't touch 3X-UI, doesn't enqueue sync
-// tasks. PanelID is fixed at 0 and InboundID is generated from the
-// current nanosecond timestamp (truncated to a positive int then
-// negated) so the existing (panel_id, inbound_id) uniqueIndex never
-// rejects multiple separators — each gets a distinct negative
-// inbound_id. Region/Tags are admin-optional metadata used by
-// tag_filter matching so admins can stash a separator into specific
-// groups (e.g. only show "---- TW ----" inside the TW user's group).
-func (s *Service) CreateSeparator(ctx context.Context, n *domain.Node) error {
-	if n == nil || strings.TrimSpace(n.DisplayName) == "" {
-		return fmt.Errorf("%w: display_name is required", domain.ErrValidation)
-	}
-	n.Kind = domain.NodeKindSeparator
-	n.PanelID = 0
-	// A signed-int32 negative value derived from the nanosecond clock.
-	// Collisions require two CreateSeparator calls within the same
-	// nanosecond — DB unique constraint catches the (vanishingly rare)
-	// case and the admin sees a normal duplicate error.
-	n.InboundID = -int(time.Now().UnixNano() & 0x7fffffff)
-	n.Enabled = true
-	return s.nodes.Create(ctx, n)
-}
-
 func (s *Service) ImportExisting(ctx context.Context, n *domain.Node) error {
 	if n.DisplayName == "" || n.Region == "" {
 		return fmt.Errorf("%w: display_name and region required", domain.ErrValidation)

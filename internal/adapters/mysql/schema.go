@@ -714,7 +714,86 @@ func (r *subLogRow) toDomain() *domain.SubLog {
 	}
 }
 
+// separatorRow stores subscription-list separators (the "----- Taiwan -----"
+// decoration rows). Lives in its own table so node-iterating workers
+// (traffic / health / reconcile) never see them and don't need a runtime
+// IsSeparator() check on every row. Replaces the pre-v3.0.0-beta.7 model
+// of mixing separators into `nodes` with a `kind` column + a synthetic
+// negative inbound_id; legacy rows are cleaned up by cleanupLegacyState.
+type separatorRow struct {
+	ID              int64       `gorm:"primaryKey;autoIncrement"`
+	DisplayName     string      `gorm:"size:255;not null"`
+	SortOrder       int         `gorm:"default:0"`
+	Enabled         bool        `gorm:"default:true"`
+	ShowInAllGroups bool        `gorm:"default:true"`
+	// GroupIDs picks which groups render this separator when
+	// ShowInAllGroups=false. Empty list under that mode means "no group
+	// renders it" (explicit hidden state, parallel to a node disabled
+	// with no enabled flag).
+	GroupIDs  jsonInt64s
+	CreatedAt time.Time
+}
+
+func (separatorRow) TableName() string { return "nodes_separator" }
+
+func (r *separatorRow) toDomain() *domain.SeparatorEntry {
+	return &domain.SeparatorEntry{
+		ID:              r.ID,
+		DisplayName:     r.DisplayName,
+		SortOrder:       r.SortOrder,
+		Enabled:         r.Enabled,
+		ShowInAllGroups: r.ShowInAllGroups,
+		GroupIDs:        []int64(r.GroupIDs),
+		CreatedAt:       r.CreatedAt,
+	}
+}
+
+func separatorFromDomain(s *domain.SeparatorEntry) *separatorRow {
+	return &separatorRow{
+		ID:              s.ID,
+		DisplayName:     s.DisplayName,
+		SortOrder:       s.SortOrder,
+		Enabled:         s.Enabled,
+		ShowInAllGroups: s.ShowInAllGroups,
+		GroupIDs:        jsonInt64s(s.GroupIDs),
+		CreatedAt:       s.CreatedAt,
+	}
+}
+
 // ---- JSON field wrappers (driver.Valuer / sql.Scanner) ----
+
+// jsonInt64s persists []int64 as a JSON array column. Mirrors jsonStrings
+// — used for separatorRow.GroupIDs.
+type jsonInt64s []int64
+
+func (j jsonInt64s) Value() (driver.Value, error) {
+	if j == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(j)
+	return string(b), err
+}
+
+func (j *jsonInt64s) Scan(value any) error {
+	if value == nil {
+		*j = nil
+		return nil
+	}
+	var b []byte
+	switch v := value.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("unsupported scan type for jsonInt64s: %T", value)
+	}
+	if len(b) == 0 {
+		*j = nil
+		return nil
+	}
+	return json.Unmarshal(b, j)
+}
 
 type jsonStrings []string
 
@@ -848,6 +927,7 @@ func EnsureSchema(db *gorm.DB) error {
 		&subLogRow{},
 		&syncTaskRow{},
 		&xuiPanelRow{},
+		&separatorRow{},
 		&settingRow{},
 		&mailSettingsRow{},
 		&mailTemplateRow{},
@@ -857,7 +937,46 @@ func EnsureSchema(db *gorm.DB) error {
 	); err != nil {
 		return err
 	}
-	return backfillTrafficCounterNulls(db)
+	if err := backfillTrafficCounterNulls(db); err != nil {
+		return err
+	}
+	return cleanupLegacyState(db)
+}
+
+// cleanupLegacyState is the curated home for "one-time cleanups after a
+// breaking same-major schema evolution". Mirrors how MariaDB / Postgres
+// ship `pg_upgrade` finalize steps — every block is idempotent, version-
+// tagged, and gets evicted when the next major version ships (per
+// docs/ARCHITECTURE.md §16.4).
+//
+// Rules:
+//  1. Idempotent: re-running on a clean DB MUST be a no-op
+//  2. Version-tagged in the comment: makes the v(N+1) reset trivially safe
+//  3. NEVER auto-DROP an unknown table or column — admin custom state is
+//     out of scope; we only touch what we explicitly removed
+//  4. log.Warn when a block actually fires, so an upgrade leaves an
+//     audit trail in docker logs
+func cleanupLegacyState(db *gorm.DB) error {
+	// v3.0.0-beta.7: separators moved out of `nodes` (where they lived as
+	// rows with kind='separator' + a synthetic negative inbound_id) into
+	// the dedicated `nodes_separator` table. Drop any leftover rows so
+	// the post-upgrade panel doesn't show ghost separators that the new
+	// CRUD has no idea how to edit. Admins recreate under the new model.
+	var legacySeparators int64
+	if err := db.Model(&nodeRow{}).Where("kind = ?", "separator").Count(&legacySeparators).Error; err != nil {
+		// kind column might not exist on a very old install — that's fine,
+		// such installs go through `psp migrate` first which doesn't carry
+		// the column forward.
+		return nil
+	}
+	if legacySeparators > 0 {
+		if err := db.Where("kind = ?", "separator").Delete(&nodeRow{}).Error; err != nil {
+			return fmt.Errorf("cleanup legacy separators: %w", err)
+		}
+		fmt.Printf("[cleanupLegacyState] dropped %d legacy kind='separator' rows from `nodes`; recreate under the new `nodes_separator` table\n", legacySeparators)
+	}
+
+	return nil
 }
 
 func backfillTrafficCounterNulls(db *gorm.DB) error {

@@ -18,32 +18,56 @@ type renderItem struct {
 //  1. Explicit sort weights from layout.Sort.
 //  2. Fallback sort strategy from layout.DefaultSortStrategy for un-weighted
 //     nodes (defaults to "by_region_then_id").
-//  3. Separator insertion at layout.Separators[].Position, with positions
-//     resolved against the post-sort node sequence.
+//  3. Standalone separators (from the nodes_separator table, filtered by
+//     SeparatorEntry.VisibleInGroup), inserted into the node sequence by
+//     their SortOrder — the same int space nodes use so admins can
+//     interleave a divider between two specific nodes.
+//  4. Per-group layout.Separators[] positional inserts (the legacy
+//     group-config divider; still supported as it serves a different use
+//     case — "always between position N and N+1" rather than
+//     "between regions tagged X and Y").
 //
-// Out-of-range separator positions clamp to either end of the list rather
-// than failing the render.
-func applyLayout(nodes []*domain.Node, layout domain.Layout) []renderItem {
+// Out-of-range positional separators clamp to either end rather than
+// failing the render.
+func applyLayout(nodes []*domain.Node, separators []*domain.SeparatorEntry, layout domain.Layout) []renderItem {
 	sorted := sortNodes(nodes, layout.Sort, layout.DefaultSortStrategy)
 
-	items := make([]renderItem, 0, len(sorted)+len(layout.Separators))
+	items := make([]renderItem, 0, len(sorted)+len(separators)+len(layout.Separators))
+
+	// Merge nodes + separators by their shared SortOrder space. Stable
+	// sort so equal SortOrder values preserve "separator above node"
+	// (separator preferred as anchor) for predictable layouts.
+	type pre struct {
+		sortOrder   int
+		isSeparator bool
+		name        string
+		node        *domain.Node
+	}
+	pres := make([]pre, 0, len(sorted)+len(separators))
 	for _, n := range sorted {
-		// Node-kind separators participate in normal sort + tag_filter
-		// matching (so admins drag them into place from the Nodes page),
-		// but emit as isSeparator items so buildProxies / urilist /
-		// singbox render them through emitSeparator instead of fetching
-		// an inbound. The existing group-level Layout.Separators below
-		// still works in parallel for admins who'd rather configure
-		// dividers per-group.
-		if n.IsSeparator() {
-			items = append(items, renderItem{isSeparator: true, name: n.DisplayName})
-			continue
+		pres = append(pres, pre{sortOrder: n.SortOrder, name: n.DisplayName, node: n})
+	}
+	for _, s := range separators {
+		pres = append(pres, pre{sortOrder: s.SortOrder, isSeparator: true, name: s.DisplayName})
+	}
+	sort.SliceStable(pres, func(i, j int) bool {
+		if pres[i].sortOrder != pres[j].sortOrder {
+			return pres[i].sortOrder < pres[j].sortOrder
 		}
-		items = append(items, renderItem{node: n, name: n.DisplayName})
+		// On tie: separator first (so it sits above the node group it
+		// labels). Matches admin's mental model of "----- TW -----"
+		// followed by TW nodes.
+		if pres[i].isSeparator != pres[j].isSeparator {
+			return pres[i].isSeparator
+		}
+		return false
+	})
+	for _, p := range pres {
+		items = append(items, renderItem{isSeparator: p.isSeparator, name: p.name, node: p.node})
 	}
 
-	// Insert separators highest-position-first so earlier inserts don't shift
-	// the indices of later ones.
+	// Insert positional separators highest-position-first so earlier
+	// inserts don't shift the indices of later ones.
 	seps := append([]domain.Separator(nil), layout.Separators...)
 	sort.Slice(seps, func(i, j int) bool {
 		return seps[i].Position > seps[j].Position

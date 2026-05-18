@@ -172,7 +172,13 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.POST("/nodes/:id/set-enabled", nodes.SetEnabled)
 		staffGroup.GET("/nodes/unmanaged", nodes.ListUnmanaged)
 		adminGroup.POST("/nodes/import", nodes.ImportExisting)
+		// Separator endpoints: dedicated table since v3.0.0-beta.7, but URL
+		// path stays under /admin/nodes/separator so the existing front-end
+		// router doesn't need to learn a new top-level prefix.
+		staffGroup.GET("/nodes/separator", nodes.ListSeparators)
 		adminGroup.POST("/nodes/separator", nodes.CreateSeparator)
+		adminGroup.PUT("/nodes/separator/:id", nodes.UpdateSeparator)
+		adminGroup.DELETE("/nodes/separator/:id", nodes.DeleteSeparator)
 		adminGroup.POST("/nodes", nodes.CreateInbound)
 		adminGroup.PUT("/nodes/reorder", nodes.Reorder)
 		adminGroup.PUT("/nodes/:id/metadata", nodes.UpdateMetadata)

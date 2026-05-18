@@ -6,23 +6,26 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 )
 
-// TestApplyLayout_SeparatorNodeEmitsSeparatorItem documents that a node
-// whose Kind is "separator" must collapse into a renderItem with
-// isSeparator=true so buildProxies routes it through emitSeparator
-// (DIRECT proxy named display_name) instead of trying to fetch a 3X-UI
-// inbound that doesn't exist for that row.
-func TestApplyLayout_SeparatorNodeEmitsSeparatorItem(t *testing.T) {
-	real := &domain.Node{ID: 1, DisplayName: "TW Static", Kind: domain.NodeKindReal, SortOrder: 10, Region: "TW"}
-	sep := &domain.Node{ID: 2, DisplayName: "---- Taiwan HiNet ----", Kind: domain.NodeKindSeparator, SortOrder: 5, Region: "TW"}
-	real2 := &domain.Node{ID: 3, DisplayName: "TW Dynamic", Kind: domain.NodeKindReal, SortOrder: 20, Region: "TW"}
+// TestApplyLayout_SeparatorMergedBySortOrder documents that standalone
+// separators (from the v3.0.0-beta.7 nodes_separator table) are merged
+// into the node sequence by their shared SortOrder space, with the
+// separator preferred above an equally-weighted node so admins can
+// label a region group.
+func TestApplyLayout_SeparatorMergedBySortOrder(t *testing.T) {
+	nodes := []*domain.Node{
+		{ID: 1, DisplayName: "TW Static", SortOrder: 10, Region: "TW"},
+		{ID: 3, DisplayName: "TW Dynamic", SortOrder: 20, Region: "TW"},
+	}
+	seps := []*domain.SeparatorEntry{
+		{ID: 2, DisplayName: "---- Taiwan HiNet ----", SortOrder: 5, Enabled: true, ShowInAllGroups: true},
+	}
 
-	items := applyLayout([]*domain.Node{real, sep, real2}, domain.Layout{})
+	items := applyLayout(nodes, seps, domain.Layout{})
 	if len(items) != 3 {
 		t.Fatalf("got %d items, want 3", len(items))
 	}
-	// sort_order 5 < 10 < 20, so separator should be first
 	if !items[0].isSeparator {
-		t.Errorf("items[0].isSeparator = false, want true (separator with smallest sort_order)")
+		t.Errorf("items[0].isSeparator = false, want true (separator at SortOrder 5)")
 	}
 	if items[0].name != "---- Taiwan HiNet ----" {
 		t.Errorf("items[0].name = %q, want display_name verbatim", items[0].name)
@@ -30,7 +33,6 @@ func TestApplyLayout_SeparatorNodeEmitsSeparatorItem(t *testing.T) {
 	if items[0].node != nil {
 		t.Errorf("items[0].node should be nil for separator entries (got %+v)", items[0].node)
 	}
-	// Real nodes come after, keep their node ptr
 	if items[1].isSeparator || items[1].node == nil || items[1].node.ID != 1 {
 		t.Errorf("items[1] should wrap the real node id=1, got %+v", items[1])
 	}
@@ -39,19 +41,38 @@ func TestApplyLayout_SeparatorNodeEmitsSeparatorItem(t *testing.T) {
 	}
 }
 
-// TestApplyLayout_LegacyEmptyKindStillReal: rows written before the
-// Kind column existed have Kind == "" — they must keep emitting as
-// real nodes (no silent reclassification to separator).
-func TestApplyLayout_LegacyEmptyKindStillReal(t *testing.T) {
-	n := &domain.Node{ID: 42, DisplayName: "legacy", Kind: "", SortOrder: 10}
-	items := applyLayout([]*domain.Node{n}, domain.Layout{})
+// TestApplyLayout_NoSeparators is the baseline: real-only node list with
+// nil separator slice should produce the same item count and ordering
+// as before — guards against accidental nil-deref in the merged sort.
+func TestApplyLayout_NoSeparators(t *testing.T) {
+	n := &domain.Node{ID: 42, DisplayName: "legacy", SortOrder: 10}
+	items := applyLayout([]*domain.Node{n}, nil, domain.Layout{})
 	if len(items) != 1 {
 		t.Fatalf("got %d items", len(items))
 	}
 	if items[0].isSeparator {
-		t.Errorf("legacy empty-Kind node should not render as separator")
+		t.Errorf("node should not render as separator")
 	}
 	if items[0].node == nil || items[0].node.ID != 42 {
-		t.Errorf("legacy node should still wrap as real node, got %+v", items[0])
+		t.Errorf("node should wrap as real node, got %+v", items[0])
+	}
+}
+
+// TestApplyLayout_SeparatorTieAboveNode covers the equal-SortOrder rule:
+// separator and node share weight 10, separator sorts first so it labels
+// the group below it.
+func TestApplyLayout_SeparatorTieAboveNode(t *testing.T) {
+	nodes := []*domain.Node{
+		{ID: 1, DisplayName: "n1", SortOrder: 10},
+	}
+	seps := []*domain.SeparatorEntry{
+		{ID: 2, DisplayName: "----", SortOrder: 10, Enabled: true, ShowInAllGroups: true},
+	}
+	items := applyLayout(nodes, seps, domain.Layout{})
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if !items[0].isSeparator {
+		t.Errorf("on tie, separator should sort before node")
 	}
 }

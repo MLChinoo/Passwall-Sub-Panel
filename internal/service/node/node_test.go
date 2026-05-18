@@ -117,65 +117,75 @@ func TestReorder_RepoErrorPropagates(t *testing.T) {
 	}
 }
 
-// captureNodeRepo records Node creates so CreateSeparator tests can
-// inspect the row that would have been written. Inherits fakeNodeRepo
-// stubs for the rest of the NodeRepo surface.
-type captureNodeRepo struct {
-	fakeNodeRepo
-	created []*domain.Node
+// captureSeparatorRepo records SeparatorEntry creates so CreateSeparator
+// tests can inspect the row that would have been written. Implements the
+// SeparatorRepo surface with no-op stubs for the methods we don't drive.
+type captureSeparatorRepo struct {
+	created []*domain.SeparatorEntry
 }
 
-func (r *captureNodeRepo) Create(_ context.Context, n *domain.Node) error {
-	cp := *n
+func (r *captureSeparatorRepo) Create(_ context.Context, s *domain.SeparatorEntry) error {
+	cp := *s
 	r.created = append(r.created, &cp)
-	n.ID = int64(len(r.created))
+	s.ID = int64(len(r.created))
 	return nil
 }
+func (r *captureSeparatorRepo) Update(context.Context, *domain.SeparatorEntry) error { return nil }
+func (r *captureSeparatorRepo) Delete(context.Context, int64) error                  { return nil }
+func (r *captureSeparatorRepo) GetByID(context.Context, int64) (*domain.SeparatorEntry, error) {
+	return nil, domain.ErrNotFound
+}
+func (r *captureSeparatorRepo) List(context.Context) ([]*domain.SeparatorEntry, error) {
+	return nil, nil
+}
+func (r *captureSeparatorRepo) ListEnabled(context.Context) ([]*domain.SeparatorEntry, error) {
+	return nil, nil
+}
 
-func TestCreateSeparator_StampsKindAndUniqueInboundID(t *testing.T) {
-	repo := &captureNodeRepo{}
-	svc := &Service{nodes: repo}
-	n := &domain.Node{DisplayName: "---- Taiwan HiNet ----", Region: "TW", SortOrder: 50}
-	if err := svc.CreateSeparator(context.Background(), n); err != nil {
+func TestCreateSeparator_StoresEntry(t *testing.T) {
+	repo := &captureSeparatorRepo{}
+	svc := &Service{separators: repo}
+	e := &domain.SeparatorEntry{
+		DisplayName:     "  ---- Taiwan HiNet ----  ",
+		SortOrder:       50,
+		Enabled:         true,
+		ShowInAllGroups: false,
+		GroupIDs:        []int64{1, 3},
+	}
+	if err := svc.CreateSeparator(context.Background(), e); err != nil {
 		t.Fatalf("CreateSeparator = %v", err)
 	}
 	if len(repo.created) != 1 {
 		t.Fatalf("got %d Create calls, want 1", len(repo.created))
 	}
 	got := repo.created[0]
-	if got.Kind != domain.NodeKindSeparator {
-		t.Errorf("Kind = %q, want separator", got.Kind)
-	}
-	if got.PanelID != 0 {
-		t.Errorf("PanelID = %d, want 0 (separator has no panel binding)", got.PanelID)
-	}
-	if got.InboundID >= 0 {
-		t.Errorf("InboundID = %d, want a negative value so the (panel_id, inbound_id) uniqueIndex never collides across separators", got.InboundID)
-	}
-	if !got.Enabled {
-		t.Errorf("new separator should default to enabled=true so it shows up in subscriptions immediately")
-	}
 	if got.DisplayName != "---- Taiwan HiNet ----" {
-		t.Errorf("DisplayName = %q, want preserved verbatim", got.DisplayName)
+		t.Errorf("DisplayName = %q, want surrounding whitespace trimmed", got.DisplayName)
 	}
 	if got.SortOrder != 50 {
-		t.Errorf("SortOrder = %d, want admin-supplied value preserved", got.SortOrder)
+		t.Errorf("SortOrder = %d, want 50", got.SortOrder)
+	}
+	if got.ShowInAllGroups {
+		t.Errorf("ShowInAllGroups should round-trip false")
+	}
+	if len(got.GroupIDs) != 2 || got.GroupIDs[0] != 1 || got.GroupIDs[1] != 3 {
+		t.Errorf("GroupIDs = %v, want [1 3]", got.GroupIDs)
 	}
 }
 
 func TestCreateSeparator_RejectsBlankDisplayName(t *testing.T) {
 	cases := []struct {
 		name string
-		in   *domain.Node
+		in   *domain.SeparatorEntry
 	}{
-		{"nil node", nil},
-		{"empty display_name", &domain.Node{DisplayName: ""}},
-		{"whitespace display_name", &domain.Node{DisplayName: "   "}},
+		{"nil entry", nil},
+		{"empty display_name", &domain.SeparatorEntry{DisplayName: ""}},
+		{"whitespace display_name", &domain.SeparatorEntry{DisplayName: "   "}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := &captureNodeRepo{}
-			svc := &Service{nodes: repo}
+			repo := &captureSeparatorRepo{}
+			svc := &Service{separators: repo}
 			err := svc.CreateSeparator(context.Background(), tc.in)
 			if !errors.Is(err, domain.ErrValidation) {
 				t.Errorf("err = %v, want ErrValidation", err)

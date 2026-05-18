@@ -206,35 +206,127 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// CreateSeparator inserts a layout-only node. No 3X-UI write side, so
-// the request body is far simpler than ImportExisting / CreateInbound —
-// just display name + optional region/tags/sort_order so the admin can
-// embed the row inside the correct group via tag_filter.
-type createSeparatorRequest struct {
-	DisplayName string   `json:"display_name" binding:"required"`
-	Region      string   `json:"region"`
-	Tags        []string `json:"tags"`
-	SortOrder   int      `json:"sort_order"`
+// ---- Separator CRUD --------------------------------------------------------
+//
+// As of v3.0.0-beta.7, separators live in their own `nodes_separator`
+// table and are bound to groups via an explicit ID list, not via
+// tag_filter on a shared `nodes` row. Endpoints below are 1-to-1 with
+// node.Service's separator methods.
+
+type separatorRequest struct {
+	DisplayName     string  `json:"display_name" binding:"required"`
+	SortOrder       int     `json:"sort_order"`
+	Enabled         *bool   `json:"enabled"`            // nil → true (create default)
+	ShowInAllGroups *bool   `json:"show_in_all_groups"` // nil → true (create default)
+	GroupIDs        []int64 `json:"group_ids"`
+}
+
+type separatorDTO struct {
+	ID              int64   `json:"id"`
+	DisplayName     string  `json:"display_name"`
+	SortOrder       int     `json:"sort_order"`
+	Enabled         bool    `json:"enabled"`
+	ShowInAllGroups bool    `json:"show_in_all_groups"`
+	GroupIDs        []int64 `json:"group_ids"`
+	CreatedAt       string  `json:"created_at,omitempty"`
+}
+
+func toSeparatorDTO(e *domain.SeparatorEntry) separatorDTO {
+	ids := e.GroupIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	return separatorDTO{
+		ID:              e.ID,
+		DisplayName:     e.DisplayName,
+		SortOrder:       e.SortOrder,
+		Enabled:         e.Enabled,
+		ShowInAllGroups: e.ShowInAllGroups,
+		GroupIDs:        ids,
+		CreatedAt:       e.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+func separatorFromRequest(req *separatorRequest) *domain.SeparatorEntry {
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	showAll := true
+	if req.ShowInAllGroups != nil {
+		showAll = *req.ShowInAllGroups
+	}
+	ids := req.GroupIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	return &domain.SeparatorEntry{
+		DisplayName:     req.DisplayName,
+		SortOrder:       req.SortOrder,
+		Enabled:         enabled,
+		ShowInAllGroups: showAll,
+		GroupIDs:        ids,
+	}
+}
+
+func (h *AdminNodeHandler) ListSeparators(c *gin.Context) {
+	items, err := h.node.ListSeparators(c.Request.Context())
+	if err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
+	out := make([]separatorDTO, 0, len(items))
+	for _, e := range items {
+		out = append(out, toSeparatorDTO(e))
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
 func (h *AdminNodeHandler) CreateSeparator(c *gin.Context) {
-	var req createSeparatorRequest
+	var req separatorRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	n := &domain.Node{
-		DisplayName: req.DisplayName,
-		Region:      req.Region,
-		Tags:        req.Tags,
-		SortOrder:   req.SortOrder,
-	}
-	if err := h.node.CreateSeparator(c.Request.Context(), n); err != nil {
+	e := separatorFromRequest(&req)
+	if err := h.node.CreateSeparator(c.Request.Context(), e); err != nil {
 		mapNodeServiceError(c, err)
 		return
 	}
-	panelNames := h.loadPanelNames(c.Request.Context())
-	c.JSON(http.StatusCreated, h.toNodeDTO(n, panelNames))
+	c.JSON(http.StatusCreated, toSeparatorDTO(e))
+}
+
+func (h *AdminNodeHandler) UpdateSeparator(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req separatorRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	e := separatorFromRequest(&req)
+	e.ID = id
+	if err := h.node.UpdateSeparator(c.Request.Context(), e); err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toSeparatorDTO(e))
+}
+
+func (h *AdminNodeHandler) DeleteSeparator(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := h.node.DeleteSeparator(c.Request.Context(), id); err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *AdminNodeHandler) ImportExisting(c *gin.Context) {

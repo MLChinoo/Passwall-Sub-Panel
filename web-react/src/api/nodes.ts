@@ -86,19 +86,45 @@ export async function importNode(req: ImportNodeRequest) {
   return data
 }
 
-/** Request body for POST /admin/nodes/separator. Separator nodes are
- *  layout-only entries: no panel/inbound binding, no server address,
- *  optional region/tags (used by group tag_filter matching). */
-export interface CreateSeparatorRequest {
+/** Separator: a layout-only divider rendered as a DIRECT proxy in the
+ *  subscription. Lives in the dedicated nodes_separator table since
+ *  v3.0.0-beta.7 — group binding is explicit (show_in_all_groups +
+ *  group_ids), not via tag_filter. */
+export interface Separator {
+  id: number
   display_name: string
-  region?: string
-  tags?: string[]
-  sort_order?: number
+  sort_order: number
+  enabled: boolean
+  show_in_all_groups: boolean
+  group_ids: number[]
+  created_at?: string
 }
 
-export async function createSeparatorNode(req: CreateSeparatorRequest) {
-  const { data } = await client.post<Node>('/admin/nodes/separator', req)
+export interface SeparatorRequest {
+  display_name: string
+  sort_order?: number
+  enabled?: boolean
+  show_in_all_groups?: boolean
+  group_ids?: number[]
+}
+
+export async function listSeparators() {
+  const { data } = await client.get<{ items: Separator[] }>('/admin/nodes/separator')
+  return data.items
+}
+
+export async function createSeparator(req: SeparatorRequest) {
+  const { data } = await client.post<Separator>('/admin/nodes/separator', req)
   return data
+}
+
+export async function updateSeparator(id: number, req: SeparatorRequest) {
+  const { data } = await client.put<Separator>(`/admin/nodes/separator/${id}`, req)
+  return data
+}
+
+export async function deleteSeparator(id: number) {
+  await client.delete(`/admin/nodes/separator/${id}`)
 }
 
 export async function createInbound(req: CreateInboundRequest) {

@@ -309,6 +309,50 @@ type Node struct {
 	HealthDetail string
 }
 
+// SeparatorEntry is a decoration row rendered as a DIRECT proxy in
+// subscription documents, used to visually group nodes (e.g. an entry
+// titled "----- Taiwan -----"). Lives in its own table (nodes_separator)
+// separate from real 3X-UI-backed nodes so traffic / health / reconcile
+// loops can iterate the Node list without ever needing a runtime
+// IsSeparator() filter — replaces the v3.0.0-beta.6 design where a
+// separator was a row in `nodes` with kind='separator' and a synthetic
+// negative inbound_id.
+//
+// Group binding semantics:
+//   - ShowInAllGroups=true  -> appears in every group's subscription
+//   - ShowInAllGroups=false -> appears only in groups whose ID is in GroupIDs
+//
+// The pattern mirrors Group.TagFilter.All vs explicit Tags. SortOrder
+// uses the same global integer space as Node.SortOrder so admins can
+// drag a separator to sit between two real nodes in the list.
+type SeparatorEntry struct {
+	ID              int64
+	DisplayName     string
+	SortOrder       int
+	Enabled         bool
+	ShowInAllGroups bool
+	GroupIDs        []int64
+	CreatedAt       time.Time
+}
+
+// VisibleInGroup reports whether the separator should appear when
+// rendering the given group. Encapsulates the ShowInAllGroups /
+// GroupIDs precedence so callers don't reimplement it.
+func (s *SeparatorEntry) VisibleInGroup(groupID int64) bool {
+	if s == nil || !s.Enabled {
+		return false
+	}
+	if s.ShowInAllGroups {
+		return true
+	}
+	for _, id := range s.GroupIDs {
+		if id == groupID {
+			return true
+		}
+	}
+	return false
+}
+
 // NodeHealthState classifies the outcome of the most recent health probe.
 type NodeHealthState string
 

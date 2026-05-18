@@ -102,6 +102,23 @@ type NodeSortUpdate struct {
 	SortOrder int
 }
 
+// SeparatorRepo backs the dedicated `nodes_separator` table introduced in
+// v3.0.0-beta.7 (see docs/ARCHITECTURE.md §16.4 / domain.SeparatorEntry).
+// Trivial CRUD — separators have no business state beyond the row itself,
+// so the service layer keeps these methods as 1-to-1 pass-throughs onto
+// node.Service rather than building a separate package.
+type SeparatorRepo interface {
+	Create(ctx context.Context, s *domain.SeparatorEntry) error
+	Update(ctx context.Context, s *domain.SeparatorEntry) error
+	Delete(ctx context.Context, id int64) error
+	GetByID(ctx context.Context, id int64) (*domain.SeparatorEntry, error)
+	List(ctx context.Context) ([]*domain.SeparatorEntry, error)
+	// ListEnabled is the render-time hot path: returns rows with
+	// enabled=true sorted by sort_order ascending. The render layer
+	// filters per-group on top via SeparatorEntry.VisibleInGroup.
+	ListEnabled(ctx context.Context) ([]*domain.SeparatorEntry, error)
+}
+
 type OwnershipRepo interface {
 	Add(ctx context.Context, e *domain.XUIClientEntry) error
 	Remove(ctx context.Context, id int64) error
@@ -469,6 +486,7 @@ type Repos struct {
 	User        UserRepo
 	Group       GroupRepo
 	Node        NodeRepo
+	Separator   SeparatorRepo
 	Ownership   OwnershipRepo
 	Traffic     TrafficRepo
 	NodeTraffic NodeTrafficRepo

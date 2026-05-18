@@ -80,6 +80,7 @@ func NewRepos(db *gorm.DB) ports.Repos {
 		User:       &userRepo{db: db},
 		Group:      &groupRepo{db: db},
 		Node:       &nodeRepo{db: db},
+		Separator:  &separatorRepo{db: db},
 		Ownership:  &ownershipRepo{db: db},
 		Traffic:    &trafficRepo{db: db},
 		NodeTraffic: &nodeTrafficRepo{db: db},

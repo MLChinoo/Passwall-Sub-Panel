@@ -1478,6 +1478,30 @@ minor / patch 内升级**不需要**跑 migrate（按 [[feedback_semver]] 规则
   - vN+1 二进制**新增** vN → vN+1 的迁移
   - 在 ARCHITECTURE.md 增补一节"vN → vN+1 schema 变更"
 
+### 16.4 同 major 内部演进：cleanupLegacyState
+
+某些"破坏性"改动**不需要**走完整的 `psp migrate` 流水线 —— 例如把 `nodes` 表里的某一类行抽出来放到新表、或者删除某个旧列。它们在同一个 major 内部发生（beta 期间尤其常见），目标是 admin 直接换二进制重启就完成迁移，不用手动跑命令。
+
+这类一次性清理由 [internal/adapters/mysql/schema.go](../internal/adapters/mysql/schema.go) 的 **`cleanupLegacyState`** 函数承担，在 `EnsureSchema` 的 AutoMigrate 之后跑一次。
+
+约束（必须严格遵守）：
+
+1. **每段必须幂等**：跑 100 次结果一样（`DELETE WHERE ...` 没有副作用、`UPDATE WHERE ...` 写回的值已经是新值的话再写也无害）
+2. **每段必须挂版本注释**：开头一行 `// v3.0.0-beta.7:` 之类的标签，便于 git blame 和后续回收
+3. **严格 curated，绝不"自动 DROP 不认识的表"**：admin 可能自己建了分析视图 / 缓存表 / 第三方集成中间表，自动 DROP 等于销毁用户数据
+4. **打 log**：每次实际命中了清理逻辑（有行被改/删）就 `log.Warn` 一条，让 admin 在 docker logs 里能看到"哦它确实清了什么"
+
+**大版本节点回收规则**：
+
+vN+1 发版时，**`cleanupLegacyState` 里所有 vN.x 标签的段全部删除**。理由：
+- vN-1 → vN 升级路径强制走 `psp migrate`（[§16.1](#161-大版本升级路径) 政策）
+- 所以任何到达 vN+1 的部署，必然先在 vN 的某个版本上跑过那些清理段（因为 `EnsureSchema` 每次启动都跑）
+- vN+1 binary 不再会遇到任何 vN.x 之前的 legacy 状态 → 那些 cleanup 段是死代码，删
+
+这条规则同时给了 `cleanupLegacyState` 一个**自然的尺寸上限**：最多累积一个 major 内的演进，约 10 段以内 / 100 行内。不会无限增长。
+
+**记录每一段**：当你在 `cleanupLegacyState` 里加新段时，**同时在 [`docs/CHANGELOG.md`](CHANGELOG.md) 对应版本下记一笔"legacy cleanup: ..."**（人话描述清的是什么），这样回看历史不用读代码。
+
 ---
 
 ## 17. 实施路线图

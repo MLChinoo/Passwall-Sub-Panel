@@ -69,7 +69,16 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		return nil, fmt.Errorf("resolve nodes: %w", err)
 	}
 
-	items := applyLayout(nodes, g.Layout)
+	// Separators are loaded fresh per-render; the table is small (single-
+	// digit rows in practice) so we don't memoize, and a stale list would
+	// make a freshly-added separator invisible until restart. Filtered by
+	// VisibleInGroup so only the ones bound to this group survive.
+	separators, err := s.resolveSeparators(ctx, g.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve separators: %w", err)
+	}
+
+	items := applyLayout(nodes, separators, g.Layout)
 	// Region-flag prefix is a render-time knob from UISettings. We load the
 	// settings once here for the flag toggle; downstream callers do their
 	// own Load when they need other fields.
@@ -138,6 +147,31 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		ContentType: "text/yaml; charset=utf-8",
 		Headers:     headers,
 	}, nil
+}
+
+// resolveSeparators returns the separators that should appear in group
+// groupID's subscription. Backed by the SeparatorRepo.ListEnabled hot
+// path (returns enabled rows in sort_order); we then filter to those
+// the admin actually wired to this group via SeparatorEntry.VisibleInGroup
+// (handles the "Show in all groups" toggle + the explicit group_ids list).
+//
+// Returns nil (not an error) when the repo isn't wired — tests that
+// construct Service without a SeparatorRepo still work.
+func (s *Service) resolveSeparators(ctx context.Context, groupID int64) ([]*domain.SeparatorEntry, error) {
+	if s.repos.Separator == nil {
+		return nil, nil
+	}
+	all, err := s.repos.Separator.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.SeparatorEntry, 0, len(all))
+	for _, e := range all {
+		if e.VisibleInGroup(groupID) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) profilePlaceholders(ctx context.Context, u *domain.User) map[string]string {
