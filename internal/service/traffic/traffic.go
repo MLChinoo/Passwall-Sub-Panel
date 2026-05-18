@@ -964,6 +964,7 @@ type UsageReport struct {
 type HistoryPeriod string
 
 const (
+	HistoryHour  HistoryPeriod = "hour"
 	HistoryDay   HistoryPeriod = "day"
 	HistoryWeek  HistoryPeriod = "week"
 	HistoryMonth HistoryPeriod = "month"
@@ -1096,7 +1097,7 @@ func normalizeHistoryPeriod(period HistoryPeriod) (HistoryPeriod, error) {
 	switch period {
 	case "", HistoryDay:
 		return HistoryDay, nil
-	case HistoryWeek, HistoryMonth:
+	case HistoryHour, HistoryWeek, HistoryMonth:
 		return period, nil
 	default:
 		return "", fmt.Errorf("%w: invalid history period", domain.ErrValidation)
@@ -1108,6 +1109,9 @@ func startOfDay(t time.Time) time.Time {
 }
 
 func bucketStartFor(t time.Time, period HistoryPeriod) time.Time {
+	if period == HistoryHour {
+		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+	}
 	t = startOfDay(t)
 	switch period {
 	case HistoryWeek:
@@ -1122,6 +1126,8 @@ func bucketStartFor(t time.Time, period HistoryPeriod) time.Time {
 
 func nextBucketStart(t time.Time, period HistoryPeriod) time.Time {
 	switch period {
+	case HistoryHour:
+		return t.Add(time.Hour)
 	case HistoryWeek:
 		return t.AddDate(0, 0, 7)
 	case HistoryMonth:
@@ -1132,8 +1138,11 @@ func nextBucketStart(t time.Time, period HistoryPeriod) time.Time {
 }
 
 func bucketLabel(t time.Time, period HistoryPeriod) string {
-	if period == HistoryMonth {
+	switch period {
+	case HistoryMonth:
 		return t.Format("2006-01")
+	case HistoryHour:
+		return t.Format("2006-01-02 15:04")
 	}
 	return t.Format("2006-01-02")
 }

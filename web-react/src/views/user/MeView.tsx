@@ -131,6 +131,14 @@ export default function MeView() {
   const [trendBusy, setTrendBusy] = useState(false)
   const [trendPeriod, setTrendPeriod] = useState<TrafficHistoryPeriod>('day')
   const [trendDays, setTrendDays] = useState(7)
+  // Hourly granularity is only meaningful within the raw retention window
+  // (7 days during beta.6 — chart still reads raw, the rollup-backed query
+  // path lands in beta.7). When the user switches to Hour, snap any wider
+  // range selection back to 7 days so they don't get a chart full of empty
+  // buckets older than retention.
+  useEffect(() => {
+    if (trendPeriod === 'hour' && trendDays > 7) setTrendDays(7)
+  }, [trendPeriod, trendDays])
 
   const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
@@ -647,6 +655,7 @@ export default function MeView() {
             <Select size="small" value={trendPeriod}
               onChange={e => setTrendPeriod(e.target.value as TrafficHistoryPeriod)}
               sx={{ height: 36, minWidth: 110 }}>
+              <MenuItem value="hour">{t('trend.period_hour', { defaultValue: '按小时' })}</MenuItem>
               <MenuItem value="day">{t('trend.period_day', { defaultValue: '按天' })}</MenuItem>
               <MenuItem value="week">{t('trend.period_week', { defaultValue: '按周' })}</MenuItem>
               <MenuItem value="month">{t('trend.period_month', { defaultValue: '按月' })}</MenuItem>
@@ -655,8 +664,8 @@ export default function MeView() {
               onChange={e => setTrendDays(Number(e.target.value))}
               sx={{ height: 36, minWidth: 130 }}>
               <MenuItem value={7}>{t('trend.range_7')}</MenuItem>
-              <MenuItem value={30}>{t('trend.range_30')}</MenuItem>
-              <MenuItem value={90}>{t('trend.range_90')}</MenuItem>
+              {trendPeriod !== 'hour' && <MenuItem value={30}>{t('trend.range_30')}</MenuItem>}
+              {trendPeriod !== 'hour' && <MenuItem value={90}>{t('trend.range_90')}</MenuItem>}
             </Select>
           </Box>
           <Suspense fallback={<Box sx={{ height: 280, display: 'grid', placeItems: 'center' }}><CircularProgress size={24} /></Box>}>

@@ -38,6 +38,7 @@ import {
   type TrafficRow,
 } from '@/api/traffic'
 import type { Node, User } from '@/api/types'
+import { getUISettings } from '@/api/settings'
 import { pushSnack } from '@/components/SnackbarHost'
 import { useTabParam } from '@/hooks/useTabParam'
 import { useSiteStore } from '@/stores/site'
@@ -121,6 +122,38 @@ export default function TrafficView() {
   const [selectedNodeId, setSelectedNodeId] = useState<number>(0)
   const [period, setPeriod] = useState<TrafficHistoryPeriod>('day')
   const [rangeDays, setRangeDays] = useState(30)
+  // Server-side history retention (TrafficHistoryDays admin setting). Drives
+  // which range options the dropdown exposes: a 30-day retention hides the
+  // 90-day option, etc. 0 in the setting means "keep everything" — we treat
+  // that as effectively unlimited (Infinity below). Loaded once on mount.
+  const [historyDays, setHistoryDays] = useState<number>(365)
+  useEffect(() => {
+    void getUISettings().then(s => {
+      const d = Number(s.traffic_history_days) || 0
+      setHistoryDays(d > 0 ? d : Number.POSITIVE_INFINITY)
+    }).catch(() => { /* leave default */ })
+  }, [])
+
+  // Range options: [7, 30, 90] filtered by retention. Hour granularity is
+  // additionally capped to the raw retention window (7 days during beta.6 —
+  // the chart still reads raw, and rollup-backed Hour queries land in
+  // beta.7). Keeping the cap on the frontend avoids the user staring at a
+  // mostly-empty chart for "30-day hourly".
+  const rawRetentionDays = 7
+  const rangeOptions = useMemo(() => {
+    const all = [7, 30, 90]
+    const cap = period === 'hour' ? Math.min(historyDays, rawRetentionDays) : historyDays
+    return all.filter(d => d <= cap)
+  }, [period, historyDays])
+  // Clamp rangeDays whenever the option set changes: pick the largest
+  // available option that isn't bigger than the current selection.
+  useEffect(() => {
+    if (rangeOptions.length === 0) return
+    if (!rangeOptions.includes(rangeDays)) {
+      const fallback = rangeOptions[rangeOptions.length - 1]
+      setRangeDays(fallback)
+    }
+  }, [rangeOptions, rangeDays])
   // Admin's effective chart timezone. Defaults to the panel-configured tz
   // (so the chart aligns with the rest of the panel's calendar math by
   // default) and falls back to the browser tz when panel tz is unset.
@@ -365,15 +398,16 @@ export default function TrafficView() {
             <ToggleButtonGroup value={period} exclusive size="small"
               onChange={(_, v) => v && setPeriod(v as TrafficHistoryPeriod)}
               sx={{ '& .MuiToggleButton-root': { px: 2, height: 40 } }}>
+              <ToggleButton value="hour">{t('traffic.trend.period_hour')}</ToggleButton>
               <ToggleButton value="day">{t('traffic.trend.period_day')}</ToggleButton>
               <ToggleButton value="week">{t('traffic.trend.period_week')}</ToggleButton>
               <ToggleButton value="month">{t('traffic.trend.period_month')}</ToggleButton>
             </ToggleButtonGroup>
             <Select size="small" value={rangeDays} onChange={e => setRangeDays(Number(e.target.value))}
               sx={{ width: 140, height: 40 }}>
-              <MenuItem value={7}>{t('traffic.trend.range_7')}</MenuItem>
-              <MenuItem value={30}>{t('traffic.trend.range_30')}</MenuItem>
-              <MenuItem value={90}>{t('traffic.trend.range_90')}</MenuItem>
+              {rangeOptions.includes(7) && <MenuItem value={7}>{t('traffic.trend.range_7')}</MenuItem>}
+              {rangeOptions.includes(30) && <MenuItem value={30}>{t('traffic.trend.range_30')}</MenuItem>}
+              {rangeOptions.includes(90) && <MenuItem value={90}>{t('traffic.trend.range_90')}</MenuItem>}
             </Select>
             <Autocomplete freeSolo size="small"
               options={buildTzOptions(panelTz)}

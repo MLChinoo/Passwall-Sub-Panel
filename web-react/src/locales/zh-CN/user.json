@@ -53,6 +53,7 @@
   },
   "trend": {
     "title": "流量趋势",
+    "period_hour": "按小时",
     "period_day": "按天",
     "period_week": "按周",
     "period_month": "按月",

@@ -73,6 +73,7 @@
   },
   "trend": {
     "title": "Traffic trend",
+    "period_hour": "Hourly",
     "period_day": "Daily",
     "period_week": "Weekly",
     "period_month": "Monthly",

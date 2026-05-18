@@ -11,7 +11,7 @@ export interface TrafficRow extends UsageReport {
   upn: string
 }
 
-export type TrafficHistoryPeriod = 'day' | 'week' | 'month'
+export type TrafficHistoryPeriod = 'hour' | 'day' | 'week' | 'month'
 
 export interface TrafficHistoryItem {
   date: string
