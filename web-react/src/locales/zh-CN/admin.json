@@ -974,6 +974,10 @@
       "match_all": "匹配所有节点",
       "mode": "条件组合",
       "tags": "Tag 条件",
+      "region": "Region",
+      "tag": "Tag",
+      "server": "Server",
+      "custom_conditions": "自定义条件",
       "remark": "备注"
     },
     "placeholder": {
@@ -981,7 +985,8 @@
     },
     "hint": {
       "mode": "AND = 每条都要满足；OR = 任一满足即可",
-      "tags": "从下拉选已有 region / tag，或输入自定义条件（如 server:foo）。"
+      "tags": "从下拉选已有 region / tag，或输入自定义条件（如 server:foo）。",
+      "custom_conditions": "逗号分隔。用于上面三个框覆盖不到的条件，例如 vendor:gcp。"
     },
     "mode": {
       "all": "AND（每条都要满足）",

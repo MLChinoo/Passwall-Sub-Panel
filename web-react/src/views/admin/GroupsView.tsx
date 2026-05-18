@@ -42,12 +42,104 @@ interface FormState {
   name: string
   all: boolean
   mode: 'all' | 'any'   // AND vs OR over tags
-  tags_text: string
+  // Conditions are split by prefix at edit time so the UI can render
+  // three dedicated multi-select fields, then rejoined on submit into the
+  // backend's `tag_filter.tags []string` shape ("region:US", "tag:Premium",
+  // "server:1.1.1.1"). Anything that doesn't match a known prefix lives in
+  // `custom_text` so admins running advanced conditions (e.g. "vendor:gcp"
+  // stored as a literal tag) can still round-trip them.
+  regions: string[]
+  tags: string[]
+  servers: string[]
+  custom_text: string
   remark: string
 }
 
 const EMPTY_FORM: FormState = {
-  slug: '', name: '', all: false, mode: 'all', tags_text: '', remark: '',
+  slug: '', name: '', all: false, mode: 'all',
+  regions: [], tags: [], servers: [], custom_text: '',
+  remark: '',
+}
+
+// parseTagConditions splits a stored tag_filter.tags array into the four
+// buckets the UI exposes. The backend's matchOne dispatch handles
+// region:/tag:/server: prefixes specially, anything else (including bare
+// strings) is treated as a literal tag lookup — see internal/service/group.
+function parseTagConditions(conds: string[]): {
+  regions: string[]
+  tags: string[]
+  servers: string[]
+  custom: string[]
+} {
+  const out = { regions: [] as string[], tags: [] as string[], servers: [] as string[], custom: [] as string[] }
+  for (const c of conds) {
+    const s = c.trim()
+    if (!s) continue
+    const i = s.indexOf(':')
+    if (i > 0) {
+      const key = s.slice(0, i).trim()
+      const val = s.slice(i + 1).trim()
+      if (key === 'region') { out.regions.push(val); continue }
+      if (key === 'tag') { out.tags.push(val); continue }
+      if (key === 'server') { out.servers.push(val); continue }
+    }
+    out.custom.push(s)
+  }
+  return out
+}
+
+// buildTagConditions packages the four buckets back into the backend's
+// flat conditions array. Empty/whitespace-only entries are dropped.
+function buildTagConditions(f: FormState): string[] {
+  const conds: string[] = []
+  for (const r of f.regions) { const v = r.trim(); if (v) conds.push(`region:${v}`) }
+  for (const tg of f.tags) { const v = tg.trim(); if (v) conds.push(`tag:${v}`) }
+  for (const sv of f.servers) { const v = sv.trim(); if (v) conds.push(`server:${v}`) }
+  for (const raw of f.custom_text.split(',')) {
+    const v = raw.trim()
+    if (v) conds.push(v)
+  }
+  return conds
+}
+
+// MultiPicker is the shared multi-select Autocomplete for the
+// region / tag / server fields in the group's tag_filter editor.
+// freeSolo so admins can introduce a value that doesn't appear in the
+// dropdown yet (e.g. a region they're about to use on a new node).
+function MultiPicker(props: {
+  label: string
+  options: string[]
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  return (
+    <Autocomplete
+      multiple
+      freeSolo
+      options={props.options}
+      value={props.value}
+      onChange={(_, v) => {
+        const seen = new Set<string>()
+        const cleaned: string[] = []
+        for (const raw of v as string[]) {
+          const s = raw.trim()
+          if (!s || seen.has(s)) continue
+          seen.add(s)
+          cleaned.push(s)
+        }
+        props.onChange(cleaned)
+      }}
+      renderTags={(value, getTagProps) =>
+        value.map((option, index) => {
+          const tagProps = getTagProps({ index })
+          return <Chip {...tagProps} key={option} label={option} size="small" />
+        })
+      }
+      renderInput={(params) => (
+        <TextField {...params} label={props.label} />
+      )}
+    />
+  )
 }
 
 export default function GroupsView() {
@@ -75,17 +167,24 @@ export default function GroupsView() {
   useEffect(() => {
     void listNodes().then(setAllNodes).catch(() => { /* leave empty */ })
   }, [])
-  const tagFilterOptions = useMemo(() => {
-    const regions = new Set<string>()
-    const tags = new Set<string>()
-    for (const n of allNodes) {
-      if (n.region) regions.add(n.region)
-      for (const tg of n.tags ?? []) if (tg) tags.add(tg)
-    }
-    const out: string[] = []
-    for (const r of Array.from(regions).sort()) out.push(`region:${r}`)
-    for (const tg of Array.from(tags).sort()) out.push(`tag:${tg}`)
-    return out
+  // Separate option pools per dropdown — the UI splits the prefix-based
+  // conditions into three dedicated fields (Region / Tag / Server) so
+  // admins don't have to remember the "key:value" syntax. Backend payload
+  // is still a flat conditions array; buildTagConditions reassembles it.
+  const regionOptions = useMemo(() => {
+    const s = new Set<string>()
+    for (const n of allNodes) if (n.region) s.add(n.region)
+    return Array.from(s).sort((a, b) => a.localeCompare(b))
+  }, [allNodes])
+  const tagOptions = useMemo(() => {
+    const s = new Set<string>()
+    for (const n of allNodes) for (const tg of n.tags ?? []) if (tg) s.add(tg)
+    return Array.from(s).sort((a, b) => a.localeCompare(b))
+  }, [allNodes])
+  const serverOptions = useMemo(() => {
+    const s = new Set<string>()
+    for (const n of allNodes) if (n.server_address) s.add(n.server_address)
+    return Array.from(s).sort((a, b) => a.localeCompare(b))
   }, [allNodes])
 
   // Only groups with zero members are eligible for selection (delete needs empty group).
@@ -115,12 +214,16 @@ export default function GroupsView() {
 
   function openEdit(g: Group) {
     setEditing(g)
+    const parsed = parseTagConditions(g.tag_filter.tags || [])
     setForm({
       slug: g.slug,
       name: g.name,
       all: g.tag_filter.all,
       mode: g.tag_filter.mode === 'any' ? 'any' : 'all',
-      tags_text: (g.tag_filter.tags || []).join(', '),
+      regions: parsed.regions,
+      tags: parsed.tags,
+      servers: parsed.servers,
+      custom_text: parsed.custom.join(', '),
       remark: g.remark || '',
     })
     setDialogOpen(true)
@@ -137,9 +240,7 @@ export default function GroupsView() {
         // Send "all" / "any" — backend treats empty as "all", but being
         // explicit makes the wire shape self-describing.
         mode: form.mode,
-        tags: form.all
-          ? []
-          : form.tags_text.split(',').map(s => s.trim()).filter(Boolean),
+        tags: form.all ? [] : buildTagConditions(form),
       }
       if (editing) {
         const res = await updateGroup(editing.id, {
@@ -415,38 +516,31 @@ export default function GroupsView() {
                   <MenuItem value="all">{t('admin:groups.mode.all')}</MenuItem>
                   <MenuItem value="any">{t('admin:groups.mode.any')}</MenuItem>
                 </TextField>
-                <Autocomplete
-                  multiple
-                  freeSolo
-                  options={tagFilterOptions}
-                  value={form.tags_text
-                    ? form.tags_text.split(',').map(s => s.trim()).filter(Boolean)
-                    : []}
-                  onChange={(_, v) => {
-                    const seen = new Set<string>()
-                    const cleaned: string[] = []
-                    for (const raw of v as string[]) {
-                      const s = raw.trim()
-                      if (!s || seen.has(s)) continue
-                      seen.add(s)
-                      cleaned.push(s)
-                    }
-                    setForm({ ...form, tags_text: cleaned.join(', ') })
-                  }}
-                  renderTags={(value, getTagProps) =>
-                    value.map((option, index) => {
-                      const tagProps = getTagProps({ index })
-                      return <Chip {...tagProps} key={option} label={option} size="small" />
-                    })
-                  }
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label={t('admin:groups.field.tags')}
-                      placeholder={t('admin:groups.placeholder.tags')}
-                      helperText={t('admin:groups.hint.tags')}
-                    />
-                  )}
+                <MultiPicker
+                  label={t('admin:groups.field.region')}
+                  options={regionOptions}
+                  value={form.regions}
+                  onChange={v => setForm({ ...form, regions: v })}
+                />
+                <MultiPicker
+                  label={t('admin:groups.field.tag')}
+                  options={tagOptions}
+                  value={form.tags}
+                  onChange={v => setForm({ ...form, tags: v })}
+                />
+                <MultiPicker
+                  label={t('admin:groups.field.server')}
+                  options={serverOptions}
+                  value={form.servers}
+                  onChange={v => setForm({ ...form, servers: v })}
+                />
+                <TextField
+                  fullWidth
+                  label={t('admin:groups.field.custom_conditions')}
+                  placeholder="vendor:gcp, ..."
+                  helperText={t('admin:groups.hint.custom_conditions')}
+                  value={form.custom_text}
+                  onChange={e => setForm({ ...form, custom_text: e.target.value })}
                 />
               </>
             )}

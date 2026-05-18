@@ -974,6 +974,10 @@
       "match_all": "Match all nodes",
       "mode": "Combine conditions",
       "tags": "Tag conditions",
+      "region": "Region",
+      "tag": "Tag",
+      "server": "Server",
+      "custom_conditions": "Custom conditions",
       "remark": "Remark"
     },
     "placeholder": {
@@ -981,7 +985,8 @@
     },
     "hint": {
       "mode": "AND = every condition must match; OR = at least one matches",
-      "tags": "Pick existing regions/tags from the dropdown, or type a custom condition (e.g. server:foo)."
+      "tags": "Pick existing regions/tags from the dropdown, or type a custom condition (e.g. server:foo).",
+      "custom_conditions": "Comma-separated. For conditions the three boxes above don't cover, e.g. vendor:gcp."
     },
     "mode": {
       "all": "AND (every condition matches)",
