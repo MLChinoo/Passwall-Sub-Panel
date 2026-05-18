@@ -139,20 +139,27 @@ func (r *fakeTrafficRepo) InsertClientBatch(ctx context.Context, snaps []*domain
 	return nil
 }
 
-func (r *fakeTrafficRepo) LatestForClient(ctx context.Context, userID int64, panelID int64, inboundID int, email string) (*domain.ClientTrafficSnapshot, error) {
-	var latest *domain.ClientTrafficSnapshot
-	for _, s := range r.clientSnapshots {
-		if s.UserID != userID || s.PanelID != panelID || s.InboundID != inboundID || s.ClientEmail != email {
+func (r *fakeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var deleted int64
+	kept := r.snapshots[:0]
+	for _, s := range r.snapshots {
+		if s.CapturedAt.Before(cutoff) {
+			deleted++
 			continue
 		}
-		if latest == nil || s.CapturedAt.After(latest.CapturedAt) {
-			latest = s
+		kept = append(kept, s)
+	}
+	r.snapshots = kept
+	keptC := r.clientSnapshots[:0]
+	for _, s := range r.clientSnapshots {
+		if s.CapturedAt.Before(cutoff) {
+			deleted++
+			continue
 		}
+		keptC = append(keptC, s)
 	}
-	if latest == nil {
-		return nil, domain.ErrNotFound
-	}
-	return latest, nil
+	r.clientSnapshots = keptC
+	return deleted, nil
 }
 
 func snap(userID int64, at string, up, down int64) *domain.TrafficSnapshot {
@@ -361,17 +368,111 @@ func TestRecordAndEnforceDoesNotDoubleCountFirstClientBaselineAfterMigration(t *
 }
 
 func TestRecordClientStatsHandlesOneClientReset(t *testing.T) {
-	repo := &fakeTrafficRepo{clientSnapshots: []*domain.ClientTrafficSnapshot{
-		{UserID: 1, PanelID: 10, InboundID: 20, ClientEmail: "a@example.test", UpBytes: 700, DownBytes: 300, TotalBytes: 1_000, CapturedAt: time.Now().Add(-time.Minute)},
-	}}
-	svc := New(nil, nil, repo, nil, nil, nil, nil)
+	// Ownership row carrying the last-observed raw counter (the v3 baseline).
+	// The current raw is far below the baseline, simulating an Xray restart
+	// that zeroed the upstream counter. monotonicDelta falls back to the
+	// current cumulative as the delta.
+	entry := &domain.XUIClientEntry{
+		ID:                1,
+		UserID:            1,
+		PanelID:           10,
+		InboundID:         20,
+		ClientEmail:       "a@example.test",
+		LastRawUpBytes:    700,
+		LastRawDownBytes:  300,
+		LastRawTotalBytes: 1_000,
+	}
+	ownership := &fakeOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{1: {entry}}}
+	repo := &fakeTrafficRepo{}
+	svc := New(nil, ownership, repo, nil, nil, nil, nil)
 
-	delta, err := svc.recordClientStats(context.Background(), 1, 10, 20, "a@example.test", 50, 70, nil)
+	delta, err := svc.recordClientStats(context.Background(), entry, 50, 70, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if delta.total != 120 {
 		t.Fatalf("delta total = %d, want current value 120 after reset", delta.total)
+	}
+	// Lifetime advanced by the delta; the new raw becomes the baseline.
+	if entry.LifetimeTotalBytes != 120 {
+		t.Fatalf("lifetime total = %d, want 120", entry.LifetimeTotalBytes)
+	}
+	if entry.LastRawTotalBytes != 120 {
+		t.Fatalf("last-raw total = %d, want 120", entry.LastRawTotalBytes)
+	}
+}
+
+// TestRecordClientStatsSkipsZeroDeltaSteadyState — P1-2 optimization core:
+// an offline client returns the same raw counters every cycle, so neither
+// the ownership row nor the snapshot table should be touched. Steady-state
+// branch (hadPrev=true, raw counter unchanged).
+func TestRecordClientStatsSkipsZeroDeltaSteadyState(t *testing.T) {
+	entry := &domain.XUIClientEntry{
+		ID: 7, UserID: 1, PanelID: 10, InboundID: 20,
+		ClientEmail:        "idle@example.test",
+		LifetimeUpBytes:    700,
+		LifetimeDownBytes:  300,
+		LifetimeTotalBytes: 1_000,
+		LastRawUpBytes:     700,
+		LastRawDownBytes:   300,
+		LastRawTotalBytes:  1_000,
+	}
+	ownership := &fakeOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{1: {entry}}}
+	repo := &fakeTrafficRepo{}
+	sink := &pollSink{}
+	svc := New(nil, ownership, repo, nil, nil, nil, nil)
+
+	delta, err := svc.recordClientStats(context.Background(), entry, 700, 300, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.up != 0 || delta.down != 0 || delta.total != 0 {
+		t.Fatalf("delta = %+v, want all zero", delta)
+	}
+	if !delta.hadPrev {
+		t.Fatalf("hadPrev should propagate true through the skip (caller bootstrap classification depends on it)")
+	}
+	if len(sink.clientSnaps) != 0 {
+		t.Fatalf("sink.clientSnaps = %d, want 0 (zero-delta should not emit snapshot)", len(sink.clientSnaps))
+	}
+	// Lifetime untouched — sanity check that the ownership row was NOT
+	// rewritten with the same values (UpdateCounters skipped).
+	if entry.LifetimeTotalBytes != 1_000 {
+		t.Fatalf("lifetime should be unchanged, got %d", entry.LifetimeTotalBytes)
+	}
+}
+
+// TestRecordClientStatsSkipsZeroDeltaIdleNewClient — the bootstrap-leak case
+// caught in the 5th audit pass. A freshly-imported client whose 3X-UI counter
+// is still 0 must NOT generate a zero-valued lifetime snapshot every cycle
+// (the pre-fix code did exactly that because hadPrev stayed false forever
+// when LastRawXxx remained 0).
+func TestRecordClientStatsSkipsZeroDeltaIdleNewClient(t *testing.T) {
+	entry := &domain.XUIClientEntry{
+		ID: 8, UserID: 1, PanelID: 10, InboundID: 20,
+		ClientEmail: "new-idle@example.test",
+		// All counter fields default-zero — never seen any traffic.
+	}
+	ownership := &fakeOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{1: {entry}}}
+	repo := &fakeTrafficRepo{}
+	sink := &pollSink{}
+	svc := New(nil, ownership, repo, nil, nil, nil, nil)
+
+	delta, err := svc.recordClientStats(context.Background(), entry, 0, 0, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.up != 0 || delta.down != 0 || delta.total != 0 {
+		t.Fatalf("delta = %+v, want all zero", delta)
+	}
+	if delta.hadPrev {
+		t.Fatalf("hadPrev should remain false for a never-observed client")
+	}
+	if len(sink.clientSnaps) != 0 {
+		t.Fatalf("idle new client should not emit a zero-snapshot every cycle, got %d", len(sink.clientSnaps))
+	}
+	if entry.LifetimeTotalBytes != 0 {
+		t.Fatalf("lifetime should stay 0, got %d", entry.LifetimeTotalBytes)
 	}
 }
 
@@ -485,6 +586,20 @@ func (r *fakeNodeTrafficRepo) ListByNode(ctx context.Context, nodeID int64, sinc
 	return out, nil
 }
 
+func (r *fakeNodeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var deleted int64
+	kept := r.snapshots[:0]
+	for _, s := range r.snapshots {
+		if s.CapturedAt.Before(cutoff) {
+			deleted++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	r.snapshots = kept
+	return deleted, nil
+}
+
 type fakeNodeKey struct {
 	panelID   int64
 	inboundID int
@@ -497,9 +612,6 @@ type fakeNodeRepo struct {
 
 func (r *fakeNodeRepo) Create(ctx context.Context, n *domain.Node) error { return nil }
 func (r *fakeNodeRepo) Delete(ctx context.Context, id int64) error       { return nil }
-func (r *fakeNodeRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
-	return nil
-}
 func (r *fakeNodeRepo) Update(ctx context.Context, n *domain.Node) error {
 	cp := *n
 	r.nodes[n.ID] = &cp
@@ -565,7 +677,18 @@ func (r *fakeOwnershipRepo) Exists(ctx context.Context, panelID int64, inboundID
 func (r *fakeOwnershipRepo) UpdateUUID(ctx context.Context, panelID int64, inboundID int, email, newUUID string) error {
 	return nil
 }
-func (r *fakeOwnershipRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
+func (r *fakeOwnershipRepo) UpdateCounters(ctx context.Context, e *domain.XUIClientEntry) error {
+	// Mirror the change back into byUser so subsequent ListByUser calls in
+	// the same test cycle see the freshly-updated lifetime + last-raw values.
+	for _, entries := range r.byUser {
+		for i, entry := range entries {
+			if entry.ID == e.ID {
+				cp := *e
+				entries[i] = &cp
+				return nil
+			}
+		}
+	}
 	return nil
 }
 

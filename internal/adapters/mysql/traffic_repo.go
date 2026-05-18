@@ -145,18 +145,24 @@ func (r *trafficRepo) InsertClient(ctx context.Context, s *domain.ClientTrafficS
 	return nil
 }
 
-func (r *trafficRepo) LatestForClient(ctx context.Context, userID int64, panelID int64, inboundID int, email string) (*domain.ClientTrafficSnapshot, error) {
-	var row clientTrafficRow
-	tx := r.db.WithContext(ctx).
-		Where("user_id = ? AND panel_id = ? AND inbound_id = ? AND client_email = ?", userID, panelID, inboundID, email).
-		Order("id DESC").
-		Limit(1).
-		Find(&row)
-	if tx.Error != nil {
-		return nil, tx.Error
+// PruneBefore deletes user-level and per-client traffic snapshots captured
+// strictly before cutoff. Driven by the TrafficSnapshotRetentionDays setting
+// (default 180) — without this cleanup, client_traffic_snapshots grows at
+// thousands of rows/user/year at the default 5-minute poll cadence. The
+// (user_id, captured_at) and idx_client_time composite indexes already
+// support efficient range deletes; no extra index needed.
+func (r *trafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	userRes := r.db.WithContext(ctx).
+		Where("captured_at < ?", cutoff).
+		Delete(&trafficRow{})
+	if userRes.Error != nil {
+		return 0, userRes.Error
 	}
-	if tx.RowsAffected == 0 {
-		return nil, domain.ErrNotFound
+	clientRes := r.db.WithContext(ctx).
+		Where("captured_at < ?", cutoff).
+		Delete(&clientTrafficRow{})
+	if clientRes.Error != nil {
+		return userRes.RowsAffected, clientRes.Error
 	}
-	return row.toDomain(), nil
+	return userRes.RowsAffected + clientRes.RowsAffected, nil
 }

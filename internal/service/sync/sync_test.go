@@ -85,7 +85,7 @@ func (r *fakeOwnership) Exists(ctx context.Context, panelID int64, inboundID int
 func (r *fakeOwnership) UpdateUUID(ctx context.Context, panelID int64, inboundID int, email, newUUID string) error {
 	return nil
 }
-func (r *fakeOwnership) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
+func (r *fakeOwnership) UpdateCounters(ctx context.Context, e *domain.XUIClientEntry) error {
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,12 +23,31 @@ import (
 type AdminTrafficHandler struct {
 	users    ports.UserRepo
 	nodes    ports.NodeRepo
+	panels   ports.XUIPanelRepo
 	traffic  *traffic.Service
 	settings ports.SettingsRepo
 }
 
-func NewAdminTrafficHandler(users ports.UserRepo, nodes ports.NodeRepo, trafficSvc *traffic.Service, settings ports.SettingsRepo) *AdminTrafficHandler {
-	return &AdminTrafficHandler{users: users, nodes: nodes, traffic: trafficSvc, settings: settings}
+func NewAdminTrafficHandler(users ports.UserRepo, nodes ports.NodeRepo, panels ports.XUIPanelRepo, trafficSvc *traffic.Service, settings ports.SettingsRepo) *AdminTrafficHandler {
+	return &AdminTrafficHandler{users: users, nodes: nodes, panels: panels, traffic: trafficSvc, settings: settings}
+}
+
+// loadPanelNames mirrors AdminNodeHandler.loadPanelNames — fetches all panels
+// and returns a panel_id → name map. Used to populate the panel_name DTO
+// field after the v3 schema dropped the redundant column from nodes.
+func (h *AdminTrafficHandler) loadPanelNames(ctx context.Context) map[int64]string {
+	names := make(map[int64]string)
+	if h.panels == nil {
+		return names
+	}
+	panels, err := h.panels.List(ctx)
+	if err != nil {
+		return names
+	}
+	for _, p := range panels {
+		names[p.ID] = p.Name
+	}
+	return names
 }
 
 type trafficRow struct {
@@ -355,6 +375,7 @@ func (h *AdminTrafficHandler) NodesTop(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	panelNames := h.loadPanelNames(c.Request.Context())
 	rows := make([]nodeTrafficRow, 0, len(nodes))
 	for _, node := range nodes {
 		if node.IsSeparator() {
@@ -367,7 +388,7 @@ func (h *AdminTrafficHandler) NodesTop(c *gin.Context) {
 		rows = append(rows, nodeTrafficRow{
 			NodeID:              node.ID,
 			DisplayName:         node.DisplayName,
-			PanelName:           node.PanelName,
+			PanelName:           panelNames[node.PanelID],
 			Region:              node.Region,
 			Tags:                node.Tags,
 			PermanentTotalBytes: report.PermanentTotalBytes,

@@ -25,13 +25,6 @@ func (r *nodeRepo) Update(ctx context.Context, n *domain.Node) error {
 	return r.db.WithContext(ctx).Save(nodeFromDomain(n)).Error
 }
 
-func (r *nodeRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
-	return r.db.WithContext(ctx).
-		Model(&nodeRow{}).
-		Where("panel_id = ?", panelID).
-		Update("panel_name", panelName).Error
-}
-
 // BatchUpdateSortOrder rewrites sort_order for the listed nodes inside one
 // transaction. Used by the drag-to-reorder UI: the admin drags a row, the
 // frontend re-numbers the visible list in 10-step increments, and POSTs the

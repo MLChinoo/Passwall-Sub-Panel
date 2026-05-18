@@ -140,7 +140,6 @@ func (s *Service) ImportExisting(ctx context.Context, n *domain.Node) error {
 	if n.DisplayName == "" || n.Region == "" {
 		return fmt.Errorf("%w: display_name and region required", domain.ErrValidation)
 	}
-	s.fillPanelName(n)
 	if existing, err := s.nodes.GetByPanelInbound(ctx, n.PanelID, n.InboundID); err == nil && existing != nil {
 		return domain.ErrAlreadyExists
 	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -170,7 +169,6 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 	if n.DisplayName == "" || n.Region == "" || n.PanelID == 0 {
 		return fmt.Errorf("%w: display_name, region and panel_id required", domain.ErrValidation)
 	}
-	s.fillPanelName(n)
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return s.enqueueNodeCreateTask(ctx, n, spec, fmt.Errorf("xui panel: %w", err))
@@ -192,18 +190,6 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 		log.Warn("sync users on create", "node_id", n.ID, "err", err)
 	}
 	return nil
-}
-
-func (s *Service) fillPanelName(n *domain.Node) {
-	if n.PanelName != "" {
-		return
-	}
-	for _, p := range s.pool.List() {
-		if p.ID == n.PanelID {
-			n.PanelName = p.Name
-			return
-		}
-	}
 }
 
 // ---- Update flows ----
@@ -424,7 +410,6 @@ func (s *Service) runNodeCreateTask(ctx context.Context, task *domain.SyncTask) 
 	}
 	n := p.Node
 	n.ID = 0
-	s.fillPanelName(&n)
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return err

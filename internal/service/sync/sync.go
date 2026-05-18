@@ -112,7 +112,6 @@ func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panelID 
 	entry := &domain.XUIClientEntry{
 		UserID:      userID,
 		PanelID:     panelID,
-		PanelName:   s.panelName(panelID),
 		InboundID:   inboundID,
 		ClientEmail: email,
 		ClientUUID:  userUUID,
@@ -311,7 +310,6 @@ func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, 
 	entry := &domain.XUIClientEntry{
 		UserID:      userID,
 		PanelID:     panelID,
-		PanelName:   s.panelName(panelID),
 		InboundID:   inboundID,
 		ClientEmail: email,
 		ClientUUID:  clientUUID,

@@ -50,6 +50,11 @@ type App struct {
 	health    *health.Service
 	settings  ports.SettingsRepo
 	syncTasks ports.SyncTaskRepo
+	// trafficRepo / nodeTraffic kept for the retention cron — PruneBefore is
+	// outside traffic.Service's surface (it's a maintenance concern, not a
+	// poll-cycle concern), so app.go reaches into the repos directly.
+	trafficRepo ports.TrafficRepo
+	nodeTraffic ports.NodeTrafficRepo
 	saml      *auth.SAMLService
 	// repos kept around so Run() can call initAdminIfNeeded AFTER the
 	// listen socket is bound — that way a bind failure (port busy / TLS
@@ -82,9 +87,10 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err := mysqlRepos.SyncTask.ResetRunning(ctx); err != nil {
 		return nil, fmt.Errorf("reset sync tasks: %w", err)
 	}
-	if err := syncPanelNameCaches(ctx, mysqlRepos); err != nil {
-		return nil, fmt.Errorf("sync server name caches: %w", err)
-	}
+	// Note: pre-v3 we ran syncPanelNameCaches here to refresh the
+	// (now-deleted) panel_name columns on nodes / user_xui_clients. v3
+	// resolves panel names at render time from the in-memory pool, so
+	// there's no cache to sync at startup.
 
 	templateRepo, err := yamladapter.NewTemplateRepo(cfg.ConfigDir)
 	if err != nil {
@@ -227,6 +233,8 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		health:            healthSvc,
 		settings:          repos.Settings,
 		syncTasks:         repos.SyncTask,
+		trafficRepo:       repos.Traffic,
+		nodeTraffic:       repos.NodeTraffic,
 		repos:             repos,
 		saml:              samlSvc,
 		trafficInterval:   time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute,
@@ -238,22 +246,6 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}, nil
-}
-
-func syncPanelNameCaches(ctx context.Context, repos ports.Repos) error {
-	panels, err := repos.XUIPanel.List(ctx)
-	if err != nil {
-		return err
-	}
-	for _, panel := range panels {
-		if err := repos.Node.UpdatePanelName(ctx, panel.ID, panel.Name); err != nil {
-			return err
-		}
-		if err := repos.Ownership.UpdatePanelName(ctx, panel.ID, panel.Name); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Run binds the listen socket, then bootstraps the initial admin (if
@@ -330,6 +322,7 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 	for {
 		a.pruneAudit(ctx)
 		a.pruneSyncTasks(ctx)
+		a.pruneTrafficSnapshots(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -357,6 +350,41 @@ func (a *App) pruneSyncTasks(ctx context.Context) {
 	}
 	if deleted > 0 {
 		log.Info("sync task cleanup", "deleted", deleted, "retention_days", settings.SyncTaskRetentionDays)
+	}
+}
+
+// pruneTrafficSnapshots clears user / per-client / node traffic snapshot rows
+// older than TrafficSnapshotRetentionDays (default 180). Without this the
+// per-client table grows at thousands of rows/user/year at the default
+// 5-minute poll cadence — the largest DB-growth liability before v3.
+// Mirrors pruneAudit / pruneSyncTasks: load settings, compute cutoff, call
+// repo.PruneBefore, log non-zero deletions.
+func (a *App) pruneTrafficSnapshots(ctx context.Context) {
+	if a.settings == nil || a.trafficRepo == nil {
+		return
+	}
+	settings, err := a.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		log.Warn("traffic snapshot cleanup load settings", "err", err)
+		return
+	}
+	if settings.TrafficSnapshotRetentionDays <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -settings.TrafficSnapshotRetentionDays)
+	deleted, err := a.trafficRepo.PruneBefore(ctx, cutoff)
+	if err != nil {
+		log.Warn("traffic snapshot cleanup", "err", err)
+	} else if deleted > 0 {
+		log.Info("traffic snapshot cleanup", "deleted", deleted, "retention_days", settings.TrafficSnapshotRetentionDays)
+	}
+	if a.nodeTraffic != nil {
+		nodeDeleted, err := a.nodeTraffic.PruneBefore(ctx, cutoff)
+		if err != nil {
+			log.Warn("node traffic snapshot cleanup", "err", err)
+		} else if nodeDeleted > 0 {
+			log.Info("node traffic snapshot cleanup", "deleted", nodeDeleted, "retention_days", settings.TrafficSnapshotRetentionDays)
+		}
 	}
 }
 

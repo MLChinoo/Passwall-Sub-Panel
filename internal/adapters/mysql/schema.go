@@ -11,7 +11,6 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
-	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
 // ---- GORM row types ----
@@ -48,6 +47,10 @@ type userRow struct {
 	LifetimeUpBytes     int64 `gorm:"default:0"`
 	LifetimeDownBytes   int64 `gorm:"default:0"`
 	LifetimeTotalBytes  int64 `gorm:"default:0"`
+	// PeriodBaselineBytes: LifetimeTotalBytes at the start of the current
+	// period. periodUsage simplifies to lifetime - baseline (O(1)). Pre-v3
+	// derived from a LastBefore(period_start) snapshot query on every read.
+	PeriodBaselineBytes int64 `gorm:"default:0"`
 	LifetimeBaselineAt  *time.Time
 	DisplayName         string `gorm:"size:128"`
 	Remark              string `gorm:"size:255"`
@@ -86,6 +89,7 @@ func (r *userRow) toDomain() *domain.User {
 		LifetimeDownBytes:   r.LifetimeDownBytes,
 		LifetimeTotalBytes:  r.LifetimeTotalBytes,
 		LifetimeBaselineAt:  r.LifetimeBaselineAt,
+		PeriodBaselineBytes: r.PeriodBaselineBytes,
 		DisplayName:         r.DisplayName,
 		Remark:              r.Remark,
 		Enabled:             r.Enabled,
@@ -122,6 +126,7 @@ func userFromDomain(u *domain.User) *userRow {
 		LifetimeDownBytes:   u.LifetimeDownBytes,
 		LifetimeTotalBytes:  u.LifetimeTotalBytes,
 		LifetimeBaselineAt:  u.LifetimeBaselineAt,
+		PeriodBaselineBytes: u.PeriodBaselineBytes,
 		DisplayName:         u.DisplayName,
 		Remark:              u.Remark,
 		Enabled:             u.Enabled,
@@ -174,10 +179,9 @@ func groupFromDomain(g *domain.Group) *groupRow {
 }
 
 type nodeRow struct {
-	ID                    int64  `gorm:"primaryKey;autoIncrement"`
-	PanelID               int64  `gorm:"not null;index;uniqueIndex:uk_panel_inbound,priority:1"`
-	PanelName             string `gorm:"size:64;index"`
-	InboundID             int    `gorm:"not null;uniqueIndex:uk_panel_inbound,priority:2"`
+	ID                    int64 `gorm:"primaryKey;autoIncrement"`
+	PanelID               int64 `gorm:"not null;index;uniqueIndex:uk_panel_inbound,priority:1"`
+	InboundID             int   `gorm:"not null;uniqueIndex:uk_panel_inbound,priority:2"`
 	DisplayName           string `gorm:"size:255;not null"`
 	ServerAddress         string `gorm:"size:255"`
 	Flow                  string `gorm:"size:64"`
@@ -212,7 +216,6 @@ func (r *nodeRow) toDomain() *domain.Node {
 	return &domain.Node{
 		ID:                    r.ID,
 		PanelID:               r.PanelID,
-		PanelName:             r.PanelName,
 		InboundID:             r.InboundID,
 		DisplayName:           r.DisplayName,
 		ServerAddress:         r.ServerAddress,
@@ -243,7 +246,6 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 	return &nodeRow{
 		ID:                    n.ID,
 		PanelID:               n.PanelID,
-		PanelName:             n.PanelName,
 		InboundID:             n.InboundID,
 		DisplayName:           n.DisplayName,
 		ServerAddress:         n.ServerAddress,
@@ -267,41 +269,70 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 }
 
 type ownershipRow struct {
-	ID          int64  `gorm:"primaryKey;autoIncrement"`
-	UserID      int64  `gorm:"index;not null"`
-	PanelID     int64  `gorm:"not null;index;uniqueIndex:uk_owner_match,priority:1"`
-	PanelName   string `gorm:"size:64;index"`
-	InboundID   int    `gorm:"not null;uniqueIndex:uk_owner_match,priority:2"`
+	ID          int64 `gorm:"primaryKey;autoIncrement"`
+	UserID      int64 `gorm:"index;not null"`
+	PanelID     int64 `gorm:"not null;index;uniqueIndex:uk_owner_match,priority:1"`
+	InboundID   int   `gorm:"not null;uniqueIndex:uk_owner_match,priority:2"`
 	ClientEmail string `gorm:"size:255;not null;uniqueIndex:uk_owner_match,priority:3"`
 	ClientUUID  string `gorm:"size:36;not null"`
 	CreatedAt   time.Time
+	// Lifetime counters accumulate monotonically across 3X-UI counter
+	// resets, mirroring the same fields on users / nodes. The traffic poll
+	// derives the per-cycle delta as monotonicDelta(current_raw, LastRawXxx),
+	// updates LastRawXxx to the new raw value, and adds the delta to
+	// LifetimeXxx in one transaction. Per-client lifetime makes "top clients
+	// by all-time usage" a single ORDER BY rather than a snapshot-table scan.
+	LifetimeUpBytes    int64 `gorm:"default:0"`
+	LifetimeDownBytes  int64 `gorm:"default:0"`
+	LifetimeTotalBytes int64 `gorm:"default:0"`
+	// LastRawXxx records the most recently observed raw 3X-UI cumulative
+	// counter. Treated as 0 on the first poll for a freshly-imported client
+	// (in that case the full current cumulative becomes the initial delta,
+	// matching the prior LatestForClient-based bootstrap).
+	LastRawUpBytes    int64 `gorm:"default:0"`
+	LastRawDownBytes  int64 `gorm:"default:0"`
+	LastRawTotalBytes int64 `gorm:"default:0"`
 }
 
-func (ownershipRow) TableName() string { return "xui_clients" }
+// user_xui_clients (renamed from xui_clients in v3): per-local-user ownership
+// of a 3X-UI client row identified by (panel_id, inbound_id, client_email).
+// The "user_" prefix makes the join-table semantics explicit — this is not a
+// cache of 3X-UI's own client list.
+func (ownershipRow) TableName() string { return "user_xui_clients" }
 
 func (r *ownershipRow) toDomain() *domain.XUIClientEntry {
 	return &domain.XUIClientEntry{
-		ID:          r.ID,
-		UserID:      r.UserID,
-		PanelID:     r.PanelID,
-		PanelName:   r.PanelName,
-		InboundID:   r.InboundID,
-		ClientEmail: r.ClientEmail,
-		ClientUUID:  r.ClientUUID,
-		CreatedAt:   r.CreatedAt,
+		ID:                 r.ID,
+		UserID:             r.UserID,
+		PanelID:            r.PanelID,
+		InboundID:          r.InboundID,
+		ClientEmail:        r.ClientEmail,
+		ClientUUID:         r.ClientUUID,
+		CreatedAt:          r.CreatedAt,
+		LifetimeUpBytes:    r.LifetimeUpBytes,
+		LifetimeDownBytes:  r.LifetimeDownBytes,
+		LifetimeTotalBytes: r.LifetimeTotalBytes,
+		LastRawUpBytes:     r.LastRawUpBytes,
+		LastRawDownBytes:   r.LastRawDownBytes,
+		LastRawTotalBytes:  r.LastRawTotalBytes,
 	}
 }
 
 func ownershipFromDomain(e *domain.XUIClientEntry) *ownershipRow {
 	return &ownershipRow{
-		ID:          e.ID,
-		UserID:      e.UserID,
-		PanelID:     e.PanelID,
-		PanelName:   e.PanelName,
-		InboundID:   e.InboundID,
-		ClientEmail: e.ClientEmail,
-		ClientUUID:  e.ClientUUID,
-		CreatedAt:   e.CreatedAt,
+		ID:                 e.ID,
+		UserID:             e.UserID,
+		PanelID:            e.PanelID,
+		InboundID:          e.InboundID,
+		ClientEmail:        e.ClientEmail,
+		ClientUUID:         e.ClientUUID,
+		CreatedAt:          e.CreatedAt,
+		LifetimeUpBytes:    e.LifetimeUpBytes,
+		LifetimeDownBytes:  e.LifetimeDownBytes,
+		LifetimeTotalBytes: e.LifetimeTotalBytes,
+		LastRawUpBytes:     e.LastRawUpBytes,
+		LastRawDownBytes:   e.LastRawDownBytes,
+		LastRawTotalBytes:  e.LastRawTotalBytes,
 	}
 }
 
@@ -311,7 +342,15 @@ type trafficRow struct {
 	UpBytes    int64
 	DownBytes  int64
 	TotalBytes int64
-	CapturedAt time.Time `gorm:"not null;index:idx_user_time,priority:2"`
+	// captured_at carries TWO indexes:
+	//   idx_user_time (user_id, captured_at) — covers per-user queries (Latest,
+	//     LastBefore, ListByUser).
+	//   idx_traffic_captured (captured_at) — covers the retention DELETE
+	//     (WHERE captured_at < cutoff). idx_user_time can't serve that query
+	//     because user_id is the leading column, so without this second index
+	//     the hourly prune degenerates to a full table scan once the table
+	//     grows past a few hundred thousand rows.
+	CapturedAt time.Time `gorm:"not null;index:idx_user_time,priority:2;index:idx_traffic_captured"`
 }
 
 func (trafficRow) TableName() string { return "traffic_snapshots" }
@@ -336,7 +375,10 @@ type clientTrafficRow struct {
 	UpBytes     int64
 	DownBytes   int64
 	TotalBytes  int64
-	CapturedAt  time.Time `gorm:"not null;index:idx_client_time,priority:5"`
+	// See trafficRow.CapturedAt for the second-index rationale —
+	// client_traffic_snapshots is the largest of the three time-series tables,
+	// so the dedicated captured_at index matters most here.
+	CapturedAt time.Time `gorm:"not null;index:idx_client_time,priority:5;index:idx_client_traffic_captured"`
 }
 
 func (clientTrafficRow) TableName() string { return "client_traffic_snapshots" }
@@ -361,7 +403,7 @@ type nodeTrafficRow struct {
 	UpBytes    int64
 	DownBytes  int64
 	TotalBytes int64
-	CapturedAt time.Time `gorm:"not null;index:idx_node_time,priority:2"`
+	CapturedAt time.Time `gorm:"not null;index:idx_node_time,priority:2;index:idx_node_traffic_captured"`
 }
 
 func (nodeTrafficRow) TableName() string { return "node_traffic_snapshots" }
@@ -478,267 +520,18 @@ type xuiPanelRow struct {
 	UpdatedAt time.Time
 }
 
-type uiSettingsRow struct {
-	ID                 int64  `gorm:"primaryKey"`
-	LoginMode          string `gorm:"size:32"`
-	SiteTitle          string `gorm:"size:128"`
-	AppTitle           string `gorm:"size:128"`
-	IconURL            string `gorm:"size:1024"`
-	LogoURL            string `gorm:"size:1024"`
-	LogoURLDark        string `gorm:"size:1024"`
-	EmailDomain        string `gorm:"size:255"`
-	AuditRetentionDays int
-	SubBaseURL         string `gorm:"size:512"`
-	Timezone           string `gorm:"size:64"`
-	// Runtime tuning (restart required to take effect).
-	CronTrafficPullMinutes     int
-	CronReconcileMinutes       int
-	MaxPanelConcurrency        int
-	JWTAccessTTLMinutes        int
-	JWTRefreshTTLMinutes       int
-	JWTIssuer                  string `gorm:"size:128"`
-	SubPerIPPerMin             int
-	LoginPerIPPerMin           int
-	SyncTaskRetentionDays      int
-	DisallowUserLocalLogin     bool
-	DisallowUserPasswordChange bool
-	AllowUserPersonalRules     bool
-	EmergencyAccessEnabled     bool
-	EmergencyAccessHours       int
-	EmergencyAccessMaxCount    int
-	EmergencyAccessQuotaGB     int
-	// Subscription settings
-	SubPath                  string                 `gorm:"size:128;default:'sub'"`
-	SubClientRules           jsonSubRules           `gorm:"type:json"`
-	SubImportClients         jsonSubImportClients   `gorm:"type:json"`
-	SubImportTutorialURL     string                 `gorm:"size:512"`
-	SubLogRetentionDays      int                    `gorm:"default:7"`
-	SubBlockAutoDisable      bool                   `gorm:"default:false"`
-	SubBlockAutoDisableCount int                    `gorm:"default:3"`
-	SubUpdateIntervalHours   int                    `gorm:"default:24"`
-	SubRegionFlagPrefix      bool                   `gorm:"default:false"`
-	QuickLinks               jsonQuickLinks         `gorm:"type:json"`
-	GlobalAnnouncement       jsonGlobalAnnouncement `gorm:"type:json"`
-	FooterText               string                 `gorm:"size:255"`
-	ThemeColor               string                 `gorm:"size:16"`
-	UpdatedAt                time.Time
-}
-
-// jsonSubRules is a JSON wrapper for []ports.SubClientRule.
-type jsonSubRules []ports.SubClientRule
-
-func (j jsonSubRules) toDomain() []ports.SubClientRule {
-	if j == nil {
-		return nil
-	}
-	out := make([]ports.SubClientRule, len(j))
-	copy(out, j)
-	return out
-}
-
-func jsonSubRulesFromDomain(rules []ports.SubClientRule) jsonSubRules {
-	if rules == nil {
-		return nil
-	}
-	out := make(jsonSubRules, len(rules))
-	copy(out, rules)
-	return out
-}
-
-func (j jsonSubRules) Value() (driver.Value, error) {
-	if j == nil {
-		return "[]", nil
-	}
-	b, err := json.Marshal(j)
-	return string(b), err
-}
-
-func (j *jsonSubRules) Scan(value any) error {
-	if value == nil {
-		*j = nil
-		return nil
-	}
-	var b []byte
-	switch v := value.(type) {
-	case []byte:
-		b = v
-	case string:
-		b = []byte(v)
-	default:
-		return fmt.Errorf("unsupported scan type for jsonSubRules: %T", value)
-	}
-	if len(b) == 0 {
-		*j = nil
-		return nil
-	}
-	return json.Unmarshal(b, j)
-}
-
-// jsonSubImportClients is a JSON wrapper for []ports.SubImportClient.
-type jsonSubImportClients []ports.SubImportClient
-
-func (j jsonSubImportClients) toDomain() []ports.SubImportClient {
-	if j == nil {
-		return nil
-	}
-	out := make([]ports.SubImportClient, len(j))
-	copy(out, j)
-	return out
-}
-
-func jsonSubImportClientsFromDomain(clients []ports.SubImportClient) jsonSubImportClients {
-	if clients == nil {
-		return nil
-	}
-	out := make(jsonSubImportClients, len(clients))
-	copy(out, clients)
-	return out
-}
-
-func (j jsonSubImportClients) Value() (driver.Value, error) {
-	if j == nil {
-		return "[]", nil
-	}
-	b, err := json.Marshal(j)
-	return string(b), err
-}
-
-func (j *jsonSubImportClients) Scan(value any) error {
-	if value == nil {
-		*j = nil
-		return nil
-	}
-	var b []byte
-	switch v := value.(type) {
-	case []byte:
-		b = v
-	case string:
-		b = []byte(v)
-	default:
-		return fmt.Errorf("unsupported scan type for jsonSubImportClients: %T", value)
-	}
-	if len(b) == 0 {
-		*j = nil
-		return nil
-	}
-	return json.Unmarshal(b, j)
-}
-
-// jsonQuickLinks is a JSON wrapper for []ports.QuickLink.
-type jsonQuickLinks []ports.QuickLink
-
-func (j jsonQuickLinks) toDomain() []ports.QuickLink {
-	if j == nil {
-		return nil
-	}
-	out := make([]ports.QuickLink, len(j))
-	copy(out, j)
-	return out
-}
-
-func jsonQuickLinksFromDomain(links []ports.QuickLink) jsonQuickLinks {
-	if links == nil {
-		return nil
-	}
-	out := make(jsonQuickLinks, len(links))
-	copy(out, links)
-	return out
-}
-
-func (j jsonQuickLinks) Value() (driver.Value, error) {
-	if j == nil {
-		return "[]", nil
-	}
-	b, err := json.Marshal(j)
-	return string(b), err
-}
-
-func (j *jsonQuickLinks) Scan(value any) error {
-	if value == nil {
-		*j = nil
-		return nil
-	}
-	var b []byte
-	switch v := value.(type) {
-	case []byte:
-		b = v
-	case string:
-		b = []byte(v)
-	default:
-		return fmt.Errorf("unsupported scan type for jsonQuickLinks: %T", value)
-	}
-	if len(b) == 0 {
-		*j = nil
-		return nil
-	}
-	return json.Unmarshal(b, j)
-}
-
-// jsonGlobalAnnouncement is a JSON wrapper for ports.GlobalAnnouncement.
-type jsonGlobalAnnouncement ports.GlobalAnnouncement
-
-func (j jsonGlobalAnnouncement) toDomain() ports.GlobalAnnouncement {
-	return ports.GlobalAnnouncement(j)
-}
-
-func jsonGlobalAnnouncementFromDomain(a ports.GlobalAnnouncement) jsonGlobalAnnouncement {
-	return jsonGlobalAnnouncement(a)
-}
-
-func (j jsonGlobalAnnouncement) Value() (driver.Value, error) {
-	b, err := json.Marshal(ports.GlobalAnnouncement(j))
-	return string(b), err
-}
-
-func (j *jsonGlobalAnnouncement) Scan(value any) error {
-	if value == nil {
-		*j = jsonGlobalAnnouncement{}
-		return nil
-	}
-	var b []byte
-	switch v := value.(type) {
-	case []byte:
-		b = v
-	case string:
-		b = []byte(v)
-	default:
-		return fmt.Errorf("unsupported scan type for jsonGlobalAnnouncement: %T", value)
-	}
-	if len(b) == 0 {
-		*j = jsonGlobalAnnouncement{}
-		return nil
-	}
-	return json.Unmarshal(b, j)
-}
-
-func (uiSettingsRow) TableName() string { return "ui_settings" }
-
-type ruleSetRow struct {
-	ID        int64  `gorm:"primaryKey;autoIncrement"`
-	Slug      string `gorm:"size:128;uniqueIndex;not null"`
-	Name      string `gorm:"size:255"`
-	Sort      int
-	Enabled   bool   `gorm:"default:true"`
-	Content   string `gorm:"type:text"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-func (ruleSetRow) TableName() string { return "rule_sets" }
 
 type mailSettingsRow struct {
-	ID                   int64 `gorm:"primaryKey"`
-	Enabled              bool
-	SMTPHost             string `gorm:"size:255"`
-	SMTPPort             int
-	SMTPUsername         string `gorm:"size:255"`
-	SMTPPassword         string `gorm:"type:text"`
-	FromEmail            string `gorm:"size:255"`
-	FromName             string `gorm:"size:128"`
-	Encryption           string `gorm:"size:16"`
-	ExpireBeforeDays     int
-	TrafficRemainPercent int
-	UpdatedAt            time.Time
+	ID           int64 `gorm:"primaryKey"`
+	Enabled      bool
+	SMTPHost     string `gorm:"size:255"`
+	SMTPPort     int
+	SMTPUsername string `gorm:"size:255"`
+	SMTPPassword string `gorm:"type:text"`
+	FromEmail    string `gorm:"size:255"`
+	FromName     string `gorm:"size:128"`
+	Encryption   string `gorm:"size:16"`
+	UpdatedAt    time.Time
 }
 
 func (mailSettingsRow) TableName() string { return "mail_settings" }
@@ -749,16 +542,14 @@ func (r *mailSettingsRow) toDomain() (domain.MailSettings, error) {
 		return domain.MailSettings{}, err
 	}
 	return domain.MailSettings{
-		Enabled:              r.Enabled,
-		SMTPHost:             r.SMTPHost,
-		SMTPPort:             r.SMTPPort,
-		SMTPUsername:         r.SMTPUsername,
-		SMTPPassword:         password,
-		FromEmail:            r.FromEmail,
-		FromName:             r.FromName,
-		Encryption:           r.Encryption,
-		ExpireBeforeDays:     r.ExpireBeforeDays,
-		TrafficRemainPercent: r.TrafficRemainPercent,
+		Enabled:      r.Enabled,
+		SMTPHost:     r.SMTPHost,
+		SMTPPort:     r.SMTPPort,
+		SMTPUsername: r.SMTPUsername,
+		SMTPPassword: password,
+		FromEmail:    r.FromEmail,
+		FromName:     r.FromName,
+		Encryption:   r.Encryption,
 	}, nil
 }
 
@@ -768,17 +559,15 @@ func mailSettingsFromDomain(s domain.MailSettings) (*mailSettingsRow, error) {
 		return nil, err
 	}
 	return &mailSettingsRow{
-		ID:                   1,
-		Enabled:              s.Enabled,
-		SMTPHost:             s.SMTPHost,
-		SMTPPort:             s.SMTPPort,
-		SMTPUsername:         s.SMTPUsername,
-		SMTPPassword:         password,
-		FromEmail:            s.FromEmail,
-		FromName:             s.FromName,
-		Encryption:           s.Encryption,
-		ExpireBeforeDays:     s.ExpireBeforeDays,
-		TrafficRemainPercent: s.TrafficRemainPercent,
+		ID:           1,
+		Enabled:      s.Enabled,
+		SMTPHost:     s.SMTPHost,
+		SMTPPort:     s.SMTPPort,
+		SMTPUsername: s.SMTPUsername,
+		SMTPPassword: password,
+		FromEmail:    s.FromEmail,
+		FromName:     s.FromName,
+		Encryption:   s.Encryption,
 	}, nil
 }
 
@@ -911,7 +700,7 @@ func (j *jsonStrings) Scan(value any) error {
 }
 
 // jsonRoleRules persists []config.SSORoleRule as a JSON blob in the
-// saml_config / oidc_config table. Same shape as jsonStrings — Value()
+// saml_settings / oidc_settings table. Same shape as jsonStrings — Value()
 // returns "[]" for nil so the DB column stays NOT NULL.
 type jsonRoleRules []config.SSORoleRule
 
@@ -1008,8 +797,7 @@ func EnsureSchema(db *gorm.DB) error {
 		&subLogRow{},
 		&syncTaskRow{},
 		&xuiPanelRow{},
-		&uiSettingsRow{},
-		&ruleSetRow{},
+		&settingRow{},
 		&mailSettingsRow{},
 		&mailTemplateRow{},
 		&mailSentRow{},

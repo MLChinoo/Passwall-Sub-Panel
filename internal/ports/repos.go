@@ -83,7 +83,6 @@ type GroupRepo interface {
 type NodeRepo interface {
 	Create(ctx context.Context, n *domain.Node) error
 	Update(ctx context.Context, n *domain.Node) error
-	UpdatePanelName(ctx context.Context, panelID int64, panelName string) error
 	// BatchUpdateSortOrder rewrites Node.SortOrder for every (id, sort_order)
 	// pair in a single transaction. Driven by the drag-to-reorder UI in the
 	// admin node list — a one-shot N-row update is cheaper than N round-trips
@@ -115,7 +114,11 @@ type OwnershipRepo interface {
 	// (panel_id, inbound, email) triple. Used by the UUID-rotation flow so the
 	// ownership table tracks the same uuid that's now in 3X-UI.
 	UpdateUUID(ctx context.Context, panelID int64, inboundID int, email, newUUID string) error
-	UpdatePanelName(ctx context.Context, panelID int64, panelName string) error
+	// UpdateCounters persists the LifetimeXxx + LastRawXxx fields for one
+	// ownership row. Called by the traffic poll once per cycle per client so
+	// the next cycle's monotonicDelta has a fresh baseline. Updates only the
+	// counter columns to keep the write narrow.
+	UpdateCounters(ctx context.Context, e *domain.XUIClientEntry) error
 }
 
 type TrafficRepo interface {
@@ -124,13 +127,17 @@ type TrafficRepo interface {
 	LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error)
 	ListByUser(ctx context.Context, userID int64, since, until time.Time) ([]*domain.TrafficSnapshot, error)
 	InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error
-	LatestForClient(ctx context.Context, userID int64, panelID int64, inboundID int, email string) (*domain.ClientTrafficSnapshot, error)
 	// InsertBatch / InsertClientBatch consolidate per-poll snapshot writes
 	// into a single SQL roundtrip (GORM CreateInBatches). Used by
 	// PollOnce's end-of-cycle flush; per-event callers stay on the
 	// single-row Insert/InsertClient methods.
 	InsertBatch(ctx context.Context, snaps []*domain.TrafficSnapshot) error
 	InsertClientBatch(ctx context.Context, snaps []*domain.ClientTrafficSnapshot) error
+	// PruneBefore deletes rows from both traffic_snapshots and
+	// client_traffic_snapshots older than cutoff. Mirrors the AuditRepo /
+	// SubLogRepo retention pattern. Returns deleted row count summed across
+	// both tables.
+	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type NodeTrafficRepo interface {
@@ -141,6 +148,8 @@ type NodeTrafficRepo interface {
 	// InsertBatch consolidates per-poll node snapshot writes; mirrors the
 	// TrafficRepo equivalent.
 	InsertBatch(ctx context.Context, snaps []*domain.NodeTrafficSnapshot) error
+	// PruneBefore deletes node_traffic_snapshots rows older than cutoff.
+	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type AuditRepo interface {
@@ -276,6 +285,13 @@ type UISettings struct {
 	// (worth keeping for diagnosis). 0 disables auto-cleanup.
 	SyncTaskRetentionDays int `json:"sync_task_retention_days"`
 
+	// TrafficSnapshotRetentionDays controls automatic cleanup of traffic /
+	// client_traffic / node_traffic snapshot tables. 0 disables auto-prune.
+	// At default cron cadence (5 min) these tables grow at thousands of
+	// rows/user/year, so unbounded retention is the largest DB-growth
+	// liability — added in the v3 schema cleanup as the P0 fix.
+	TrafficSnapshotRetentionDays int `json:"traffic_snapshot_retention_days"`
+
 	// Hard policies that apply REGARDLESS of LoginMode. These knobs let admins
 	// reject ordinary users' local-password login even when /login/local remains
 	// reachable as an admin break-glass path, and add an independent
@@ -340,6 +356,14 @@ type UISettings struct {
 	// frontend's compiled-in DEFAULT_PRESET_HEX. Individual users can still
 	// override via the appearance menu (stored in localStorage).
 	ThemeColor string `yaml:"theme_color" json:"theme_color"`
+
+	// ---- Mail notification thresholds (type=notify in the settings KV) ----
+	// Previously lived in domain.MailSettings (mail_settings table); moved
+	// here so they sit alongside other runtime tuning instead of mixed in
+	// with SMTP connection config. Drives the "remind me when X" mailer
+	// triggers; SMTP credentials stay in domain.MailSettings.
+	ExpireBeforeDays     int `yaml:"expire_before_days" json:"expire_before_days"`
+	TrafficRemainPercent int `yaml:"traffic_remain_percent" json:"traffic_remain_percent"`
 }
 
 // SubClientRule defines a subscription client detection rule.

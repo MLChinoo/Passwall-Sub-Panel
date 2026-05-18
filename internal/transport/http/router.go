@@ -210,7 +210,7 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.GET("/audit", auditH.List)
 		adminGroup.DELETE("/audit", auditH.Clear)
 
-		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Repos.Node, d.Traffic, d.Repos.Settings)
+		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Repos.Node, d.Repos.XUIPanel, d.Traffic, d.Repos.Settings)
 		staffGroup.GET("/traffic/top", trafficH.Top)
 		staffGroup.POST("/traffic/poll", trafficH.Poll)
 		staffGroup.GET("/traffic/history", trafficH.History)

@@ -86,9 +86,13 @@ func NewRepos(db *gorm.DB) ports.Repos {
 		Audit:      &auditRepo{db: db},
 		SubLog:     &subLogRepo{db: db},
 		SyncTask:   &syncTaskRepo{db: db},
-		RuleSet:    &ruleSetRepo{db: db},
+		// RuleSet is intentionally absent here: production wires the
+		// yamladapter.RuleSetRepo in app.go (rule sets live in
+		// config/rulesets/*.yaml, not the DB). A previous MySQL repo
+		// existed but was never actually injected, so it was dead code
+		// and got removed during the v3 schema cleanup.
 		XUIPanel:   &xuiPanelRepo{db: db},
-		Settings:   &settingsRepo{db: db},
+		Settings:   newKVSettingsRepo(db),
 		Mail:       &mailRepo{db: db},
 		SAMLConfig: &samlConfigRepo{db: db},
 		OIDCConfig: &oidcConfigRepo{db: db},

@@ -32,12 +32,6 @@ func (r *mailRepo) LoadSettings(ctx context.Context, defaults domain.MailSetting
 	if out.Encryption == "" {
 		out.Encryption = defaults.Encryption
 	}
-	if out.ExpireBeforeDays <= 0 {
-		out.ExpireBeforeDays = defaults.ExpireBeforeDays
-	}
-	if out.TrafficRemainPercent <= 0 {
-		out.TrafficRemainPercent = defaults.TrafficRemainPercent
-	}
 	return out, nil
 }
 

@@ -46,7 +46,7 @@ type samlConfigRow struct {
 	UpdatedAt time.Time
 }
 
-func (samlConfigRow) TableName() string { return "saml_config" }
+func (samlConfigRow) TableName() string { return "saml_settings" }
 
 func (r *samlConfigRow) toDomain() (*config.SAMLConfig, error) {
 	keyPEM, err := decryptSecret(r.SPKeyPEM)

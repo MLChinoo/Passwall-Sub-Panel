@@ -148,16 +148,10 @@ func (h *AdminServersHandler) Update(c *gin.Context) {
 		mapServerError(c, err)
 		return
 	}
-	if req.Name != nil {
-		if err := h.nodes.UpdatePanelName(c.Request.Context(), id, existing.Name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sync node server name: " + err.Error()})
-			return
-		}
-		if err := h.ownership.UpdatePanelName(c.Request.Context(), id, existing.Name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sync ownership server name: " + err.Error()})
-			return
-		}
-	}
+	// Panel rename no longer needs to cascade to nodes / user_xui_clients —
+	// the panel_name columns were dropped in v3. The pool refresh below
+	// makes every subsequent name lookup return the new value automatically.
+	//
 	// Re-register in the pool: remove old client, add fresh one with updated creds.
 	_ = h.pool.Remove(id)
 	if err := h.pool.Add(existing); err != nil {

@@ -42,7 +42,7 @@ type oidcConfigRow struct {
 	UpdatedAt time.Time
 }
 
-func (oidcConfigRow) TableName() string { return "oidc_config" }
+func (oidcConfigRow) TableName() string { return "oidc_settings" }
 
 func (r *oidcConfigRow) toDomain() (*config.OIDCConfig, error) {
 	secret, err := decryptSecret(r.ClientSecret)

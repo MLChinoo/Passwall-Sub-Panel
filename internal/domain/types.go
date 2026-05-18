@@ -69,6 +69,14 @@ type User struct {
 	LifetimeUpBytes    int64
 	LifetimeDownBytes  int64
 	LifetimeTotalBytes int64
+	// PeriodBaselineBytes is LifetimeTotalBytes at the moment TrafficPeriodStart
+	// last advanced. Subtracting it from current LifetimeTotalBytes gives the
+	// bytes used this period — O(1) memory math, no DB lookup. Pre-v3 this
+	// was computed via LastBefore(period_start) on traffic_snapshots on every
+	// query AND every poll cycle (one random-point read per user), and was
+	// duplicated in both traffic.Service and mailer.Service. Now lifetime
+	// counters + this baseline are the single source of truth.
+	PeriodBaselineBytes int64
 	// LifetimeBaselineAt marks when the poll worker last updated the lifetime
 	// counters. It's the cutoff the bootstrap-delta logic uses: ownerships
 	// created AFTER this point are genuinely new traffic (count their first
@@ -103,6 +111,24 @@ type User struct {
 }
 
 // IsExpired reports whether ExpireAt is non-nil and earlier than t.
+// PeriodUsed returns bytes consumed since the start of u's current traffic
+// period. Pure O(1) memory math — derived from the monotonic lifetime
+// counter and the baseline snapshotted at the last period rollover. Both
+// fields are maintained by the traffic poll, so anyone holding a fresh
+// User from the repo can call this without touching the DB. Pre-v3 this
+// was duplicated between traffic.Service and mailer.Service, each running
+// its own LastBefore(period_start) random-point query per user per call.
+func (u *User) PeriodUsed() int64 {
+	used := u.LifetimeTotalBytes - u.PeriodBaselineBytes
+	if used < 0 {
+		// Baseline > lifetime should be impossible in normal operation —
+		// guard anyway so a single bad row can't make the dashboard show a
+		// nonsense negative number.
+		return 0
+	}
+	return used
+}
+
 func (u *User) IsExpired(t time.Time) bool {
 	return u.ExpireAt != nil && t.After(*u.ExpireAt)
 }
@@ -254,7 +280,6 @@ func (u *User) PushExpireTime() int64 {
 type Node struct {
 	ID            int64
 	PanelID       int64
-	PanelName     string // display/cache only; PanelID is the stable reference
 	InboundID     int
 	DisplayName   string
 	ServerAddress string
@@ -337,11 +362,24 @@ type XUIClientEntry struct {
 	ID          int64
 	UserID      int64
 	PanelID     int64
-	PanelName   string // display/cache only; PanelID is the stable reference
 	InboundID   int
 	ClientEmail string
 	ClientUUID  string
 	CreatedAt   time.Time
+	// Lifetime counters accumulate per-cycle deltas across 3X-UI counter
+	// resets, mirroring the same fields on User / Node. Updated by the
+	// traffic poll. Makes "top clients by all-time usage" a direct SQL
+	// ORDER BY rather than a snapshot scan.
+	LifetimeUpBytes    int64
+	LifetimeDownBytes  int64
+	LifetimeTotalBytes int64
+	// LastRawXxx is the most recently observed raw 3X-UI cumulative counter,
+	// used as the baseline for the next poll's monotonicDelta computation.
+	// Zero on a fresh ownership row → the first poll treats the current
+	// cumulative as the initial delta.
+	LastRawUpBytes    int64
+	LastRawDownBytes  int64
+	LastRawTotalBytes int64
 }
 
 // TrafficSnapshot captures the monotonic lifetime traffic of a panel user at
@@ -459,16 +497,14 @@ const (
 )
 
 type MailSettings struct {
-	Enabled              bool
-	SMTPHost             string
-	SMTPPort             int
-	SMTPUsername         string
-	SMTPPassword         string
-	FromEmail            string
-	FromName             string
-	Encryption           string // none | starttls | tls
-	ExpireBeforeDays     int
-	TrafficRemainPercent int
+	Enabled      bool
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	FromEmail    string
+	FromName     string
+	Encryption   string // none | starttls | tls
 }
 
 type MailTemplate struct {

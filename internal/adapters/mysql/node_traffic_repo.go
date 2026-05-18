@@ -93,3 +93,13 @@ func (r *nodeTrafficRepo) ListByNode(ctx context.Context, nodeID int64, since, u
 	}
 	return out, nil
 }
+
+// PruneBefore deletes node_traffic_snapshots rows captured strictly before
+// cutoff. Idx_node_time supports the range delete. See trafficRepo.PruneBefore
+// for the retention rationale.
+func (r *nodeTrafficRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Where("captured_at < ?", cutoff).
+		Delete(&nodeTrafficRow{})
+	return res.RowsAffected, res.Error
+}

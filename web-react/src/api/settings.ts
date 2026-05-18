@@ -89,6 +89,13 @@ export interface UISettings {
   footer_text: string
   /** M3 source hex color used as the system-default theme. Empty falls back to the frontend default. */
   theme_color: string
+  /** Notify thresholds (moved out of mail_settings in v9; admin edits them
+   *  in the global settings page now, not the mail page). */
+  expire_before_days: number
+  traffic_remain_percent: number
+  /** v9 added: how many days of traffic snapshots to retain before the
+   *  hourly cleanup cron prunes them. 0 disables auto-prune. */
+  traffic_snapshot_retention_days: number
 }
 
 export async function getUISettings() {
@@ -114,8 +121,9 @@ export interface MailSettings {
   from_email: string
   from_name: string
   encryption: 'none' | 'starttls' | 'tls'
-  expire_before_days: number
-  traffic_remain_percent: number
+  // v9 note: expire_before_days / traffic_remain_percent moved into UISettings
+  // (settings KV type='notify'). Admin edits them through the global settings
+  // page now.
 }
 
 export interface MailTemplate {

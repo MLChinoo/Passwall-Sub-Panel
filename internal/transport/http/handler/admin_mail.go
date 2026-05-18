@@ -18,18 +18,20 @@ func NewAdminMailHandler(mailSvc *mailer.Service) *AdminMailHandler {
 	return &AdminMailHandler{mail: mailSvc}
 }
 
+// mailSettingsDTO mirrors domain.MailSettings (SMTP connection only).
+// Notify thresholds (expire_before_days / traffic_remain_percent) moved to
+// the unified settings KV (type='notify') in v3 — admins edit them through
+// the global settings page now, not the mail page.
 type mailSettingsDTO struct {
-	Enabled              bool   `json:"enabled"`
-	SMTPHost             string `json:"smtp_host"`
-	SMTPPort             int    `json:"smtp_port"`
-	SMTPUsername         string `json:"smtp_username"`
-	SMTPPassword         string `json:"smtp_password,omitempty"`
-	HasSMTPPassword      bool   `json:"has_smtp_password"`
-	FromEmail            string `json:"from_email"`
-	FromName             string `json:"from_name"`
-	Encryption           string `json:"encryption"`
-	ExpireBeforeDays     int    `json:"expire_before_days"`
-	TrafficRemainPercent int    `json:"traffic_remain_percent"`
+	Enabled         bool   `json:"enabled"`
+	SMTPHost        string `json:"smtp_host"`
+	SMTPPort        int    `json:"smtp_port"`
+	SMTPUsername    string `json:"smtp_username"`
+	SMTPPassword    string `json:"smtp_password,omitempty"`
+	HasSMTPPassword bool   `json:"has_smtp_password"`
+	FromEmail       string `json:"from_email"`
+	FromName        string `json:"from_name"`
+	Encryption      string `json:"encryption"`
 }
 
 type mailTemplateDTO struct {
@@ -81,16 +83,14 @@ func (h *AdminMailHandler) PutSettings(c *gin.Context) {
 		password = current.SMTPPassword
 	}
 	settings := domain.MailSettings{
-		Enabled:              req.Enabled,
-		SMTPHost:             req.SMTPHost,
-		SMTPPort:             req.SMTPPort,
-		SMTPUsername:         req.SMTPUsername,
-		SMTPPassword:         password,
-		FromEmail:            req.FromEmail,
-		FromName:             req.FromName,
-		Encryption:           req.Encryption,
-		ExpireBeforeDays:     req.ExpireBeforeDays,
-		TrafficRemainPercent: req.TrafficRemainPercent,
+		Enabled:      req.Enabled,
+		SMTPHost:     req.SMTPHost,
+		SMTPPort:     req.SMTPPort,
+		SMTPUsername: req.SMTPUsername,
+		SMTPPassword: password,
+		FromEmail:    req.FromEmail,
+		FromName:     req.FromName,
+		Encryption:   req.Encryption,
 	}
 	if err := h.mail.SaveSettings(c.Request.Context(), settings); err != nil {
 		if errors.Is(err, domain.ErrValidation) {
@@ -234,15 +234,13 @@ func (h *AdminMailHandler) Announcement(c *gin.Context) {
 
 func toMailSettingsDTO(s domain.MailSettings) mailSettingsDTO {
 	return mailSettingsDTO{
-		Enabled:              s.Enabled,
-		SMTPHost:             s.SMTPHost,
-		SMTPPort:             s.SMTPPort,
-		SMTPUsername:         s.SMTPUsername,
-		HasSMTPPassword:      s.SMTPPassword != "",
-		FromEmail:            s.FromEmail,
-		FromName:             s.FromName,
-		Encryption:           s.Encryption,
-		ExpireBeforeDays:     s.ExpireBeforeDays,
-		TrafficRemainPercent: s.TrafficRemainPercent,
+		Enabled:         s.Enabled,
+		SMTPHost:        s.SMTPHost,
+		SMTPPort:        s.SMTPPort,
+		SMTPUsername:    s.SMTPUsername,
+		HasSMTPPassword: s.SMTPPassword != "",
+		FromEmail:       s.FromEmail,
+		FromName:        s.FromName,
+		Encryption:      s.Encryption,
 	}
 }

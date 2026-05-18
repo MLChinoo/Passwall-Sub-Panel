@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
 
@@ -74,11 +75,29 @@ func (r *ownershipRepo) UpdateUUID(ctx context.Context, panelID int64, inboundID
 		Update("client_uuid", newUUID).Error
 }
 
-func (r *ownershipRepo) UpdatePanelName(ctx context.Context, panelID int64, panelName string) error {
+// UpdateCounters narrow-updates the lifetime + last-raw fields for one
+// ownership row. Driven by the traffic poll once per cycle per client; using
+// Updates(...) with an explicit column list keeps the write tight so the
+// poll loop's N client updates don't rewrite untouched columns.
+//
+// Refuses to run with a zero ID so a caller that forgot to load the row
+// from the repo first doesn't get a silent no-op (Where("id = 0") matches
+// nothing, returns no error, counters quietly evaporate).
+func (r *ownershipRepo) UpdateCounters(ctx context.Context, e *domain.XUIClientEntry) error {
+	if e == nil || e.ID == 0 {
+		return fmt.Errorf("ownership UpdateCounters requires a non-zero ID; got %+v", e)
+	}
 	return r.db.WithContext(ctx).
 		Model(&ownershipRow{}).
-		Where("panel_id = ?", panelID).
-		Update("panel_name", panelName).Error
+		Where("id = ?", e.ID).
+		Updates(map[string]any{
+			"lifetime_up_bytes":    e.LifetimeUpBytes,
+			"lifetime_down_bytes":  e.LifetimeDownBytes,
+			"lifetime_total_bytes": e.LifetimeTotalBytes,
+			"last_raw_up_bytes":    e.LastRawUpBytes,
+			"last_raw_down_bytes":  e.LastRawDownBytes,
+			"last_raw_total_bytes": e.LastRawTotalBytes,
+		}).Error
 }
 
 func (r *ownershipRepo) Exists(ctx context.Context, panelID int64, inboundID int, email string) (bool, error) {

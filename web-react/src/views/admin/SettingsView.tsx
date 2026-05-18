@@ -374,6 +374,26 @@ export default function SettingsView() {
               <NumField label={t('settings.general.sync_task_retention_days')} value={settings.sync_task_retention_days}
                 onChange={v => patch('sync_task_retention_days', v)} />
             </Pair>
+            <NumField label={t('settings.general.traffic_snapshot_retention_days', { defaultValue: '流量快照保留天数' })}
+              value={settings.traffic_snapshot_retention_days}
+              onChange={v => patch('traffic_snapshot_retention_days', v)}
+              helperText={t('settings.general.traffic_snapshot_retention_days_hint', {
+                defaultValue: '三张流量快照表（用户/客户端/节点）的自动清理阈值。0 = 永不清理（不推荐，client_traffic_snapshots 每年数百万行级增长）。默认 180。',
+              })} />
+            <Pair>
+              <NumField label={t('settings.general.expire_before_days', { defaultValue: '到期前 N 天提醒' })}
+                value={settings.expire_before_days}
+                onChange={v => patch('expire_before_days', v)}
+                helperText={t('settings.general.expire_before_days_hint', {
+                  defaultValue: '账号到期前多少天发送邮件提醒。',
+                })} />
+              <NumField label={t('settings.general.traffic_remain_percent', { defaultValue: '流量剩余 < N% 时提醒' })}
+                value={settings.traffic_remain_percent}
+                onChange={v => patch('traffic_remain_percent', v)}
+                helperText={t('settings.general.traffic_remain_percent_hint', {
+                  defaultValue: '剩余流量低于此百分比时发送邮件提醒。',
+                })} />
+            </Pair>
           </Section>
 
           <Section title={t('settings.general.emergency_section')} md={md}>
@@ -817,21 +837,11 @@ function MailTab() {
         </Box>
       </Card>
 
-      {/* Thresholds */}
-      <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
-        <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('settings.mail.section_thresholds')}</Typography>
-        <Divider sx={{ mb: 2 }} />
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          <TextField type="number" label={t('settings.mail.expire_before_days')}
-            value={mail.expire_before_days}
-            onChange={e => patchMail('expire_before_days', Number(e.target.value))}
-            sx={{ flex: '1 1 240px' }} />
-          <TextField type="number" label={t('settings.mail.traffic_remain_percent')}
-            value={mail.traffic_remain_percent}
-            onChange={e => patchMail('traffic_remain_percent', Number(e.target.value))}
-            sx={{ flex: '1 1 240px' }} />
-        </Box>
-      </Card>
+      {/* v9: notify thresholds moved out of mail_settings into the global
+          settings KV. Edit them on the General tab (look for
+          "settings.general.expire_before_days" / "traffic_remain_percent").
+          Removed the duplicate card here so admin doesn't think two pages
+          can edit the same value. */}
 
       {/* Test send */}
       <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>

@@ -85,6 +85,26 @@ type Issue struct {
 	Fixed       bool   `json:"fixed"`
 }
 
+// panelNameOf resolves a panel's display name from the in-memory pool. With
+// the v3 schema cleanup the panel_name column is gone from nodes /
+// user_xui_clients / client_traffic_snapshots — admin reports still want a
+// human-readable name, so we look it up at render time. The pool is kept in
+// sync by admin_servers handler on every panel CRUD so this is always fresh.
+//
+// Linear scan over pool.List() is fine: typical deployments hold 1-10
+// panels, the pool slice is purely in-memory, and reconcile is not on the
+// request hot path. A cached map would shave microseconds per cycle at the
+// cost of threading it through 14 Issue-construction call sites — not
+// worth the surface-area expansion.
+func (s *Service) panelNameOf(panelID int64) string {
+	for _, p := range s.pool.List() {
+		if p.ID == panelID {
+			return p.Name
+		}
+	}
+	return ""
+}
+
 // inboundCacheEntry holds the decoded inbound + its parsed clients[] so we
 // don't decode the settings JSON repeatedly for the same inbound during
 // one reconciliation pass.
@@ -162,7 +182,7 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 				ce, err := s.loadInbound(ctx, cache, e.PanelID, e.InboundID)
 				if err != nil {
 					report.Issues = append(report.Issues, Issue{
-						PanelID: e.PanelID, PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+						PanelID: e.PanelID, PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 						Code: "inbound_unreachable", Detail: err.Error(),
 					})
 					continue
@@ -262,7 +282,7 @@ func (s *Service) checkMissingOwnerships(ctx context.Context, u *domain.User, re
 		fixed := err == nil
 		report.Issues = append(report.Issues, Issue{
 			PanelID:     n.PanelID,
-			PanelName:   n.PanelName,
+			PanelName:   s.panelNameOf(n.PanelID),
 			InboundID:   n.InboundID,
 			ClientEmail: email,
 			Code:        "missing_ownership",
@@ -403,13 +423,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 			protocol, u.UUID, e.ClientEmail, desiredFlow, expireTime, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "missing_client_recover_failed", Detail: err.Error(),
 			}, false
 		}
 		return &Issue{
 			PanelID:   e.PanelID,
-			PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 			Code: "missing_client_recovered",
 		}, true
 	}
@@ -420,13 +440,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 			protocol, u.UUID, desiredFlow, u.Enabled, expireTime, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "enable_mismatch_fix_failed", Detail: err.Error(),
 			}, false
 		}
 		return &Issue{
 			PanelID:   e.PanelID,
-			PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 			Code: "enable_mismatch_fixed",
 		}, true
 	}
@@ -436,13 +456,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 			protocol, u.UUID, desiredFlow, u.Enabled, expireTime, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "flow_mismatch_fix_failed", Detail: err.Error(),
 			}, false
 		}
 		return &Issue{
 			PanelID:   e.PanelID,
-			PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 			Code: "flow_mismatch_fixed",
 		}, true
 	}
@@ -458,13 +478,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 			protocol, found.ID, u.UUID, desiredFlow, u.Enabled, expireTime, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "uuid_mismatch_fix_failed", Detail: err.Error(),
 			}, false
 		}
 		return &Issue{
 			PanelID:   e.PanelID,
-			PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 			Code: "uuid_mismatch_fixed",
 		}, true
 	}
@@ -477,13 +497,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 				protocol, u.UUID, desiredFlow, u.Enabled, expireTime, 0); err != nil {
 				return &Issue{
 					PanelID:   e.PanelID,
-					PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+					PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 					Code: "password_mismatch_fix_failed", Detail: err.Error(),
 				}, false
 			}
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "password_mismatch_fixed",
 			}, true
 		}
@@ -505,13 +525,13 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 			protocol, u.UUID, desiredFlow, u.Enabled, expireTime, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
-				PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 				Code: "expire_mismatch_fix_failed", Detail: err.Error(),
 			}, false
 		}
 		return &Issue{
 			PanelID:   e.PanelID,
-			PanelName: e.PanelName, InboundID: e.InboundID, ClientEmail: e.ClientEmail,
+			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
 			Code: "expire_mismatch_fixed",
 		}, true
 	}
@@ -550,7 +570,7 @@ func (s *Service) checkNodes(ctx context.Context, report *Report) {
 			if err := s.nodes.Update(ctx, n); err == nil {
 				report.Issues = append(report.Issues, Issue{
 					PanelID:   n.PanelID,
-					PanelName: n.PanelName, InboundID: n.InboundID,
+					PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
 					Code:   "inbound_missing_disabled_node",
 					Detail: fmt.Sprintf("node id=%d", n.ID),
 					Fixed:  true,

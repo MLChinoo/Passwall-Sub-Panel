@@ -80,6 +80,13 @@ type inboundKey struct {
 }
 
 type ownershipRef struct {
+	// entry is the full ownership row — needed so recordClientStats can read
+	// LastRawXxx (its monotonic-delta baseline) and write back the updated
+	// LifetimeXxx counters in a single repo call per cycle. Pre-v3 this held
+	// only (userID, email, createdAt) and snapshots stored the raw counter;
+	// now lifetime lives on the ownership row itself so admins can SELECT
+	// it directly without snapshot-table aggregation.
+	entry     *domain.XUIClientEntry
 	userID    int64
 	email     string
 	createdAt time.Time
@@ -153,7 +160,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}
 		for _, e := range entries {
 			key := inboundKey{panelID: e.PanelID, inboundID: e.InboundID}
-			byInbound[key] = append(byInbound[key], ownershipRef{userID: u.ID, email: e.ClientEmail, createdAt: e.CreatedAt})
+			byInbound[key] = append(byInbound[key], ownershipRef{entry: e, userID: u.ID, email: e.ClientEmail, createdAt: e.CreatedAt})
 		}
 	}
 
@@ -266,7 +273,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 				total.up += t.Up
 				total.down += t.Down
 				total.hits++
-				delta, derr := s.recordClientStats(ctx, ref.userID, panelID, inboundID, ref.email, t.Up, t.Down, sink)
+				delta, derr := s.recordClientStats(ctx, ref.entry, t.Up, t.Down, sink)
 				if derr != nil {
 					log.Warn("traffic poll client snapshot",
 						"user_id", ref.userID,
@@ -411,43 +418,88 @@ type pollSink struct {
 	nodeSnaps   []*domain.NodeTrafficSnapshot
 }
 
-func (s *Service) recordClientStats(ctx context.Context, userID int64, panelID int64, inboundID int, email string, up, down int64, sink *pollSink) (trafficDelta, error) {
+// recordClientStats reconciles one client's raw 3X-UI counter against the
+// last-observed baseline stored on its ownership row.
+//
+// In v3 the snapshot table semantics flipped: previously it stored raw
+// cumulative counters and the next poll diffed against the latest snapshot;
+// now lifetime accumulates on the ownership row (mirroring users / nodes)
+// and the snapshot stores lifetime, consistent across all three snapshot
+// tables. The baseline for the monotonicDelta computation moves from
+// "previous snapshot's TotalBytes" to "ownership.LastRawXxx" — narrower,
+// no extra SELECT, and the lifetime counter is directly queryable from SQL.
+//
+// Counter-reset handling is unchanged: a Xray restart sends current_raw
+// below LastRaw and monotonicDelta falls back to current as the delta.
+//
+// The bootstrap path (LastRawXxx all zero, no prior poll) treats the current
+// cumulative as the full delta — matches pre-v3 semantics for a newly
+// imported client.
+func (s *Service) recordClientStats(ctx context.Context, ownership *domain.XUIClientEntry, up, down int64, sink *pollSink) (trafficDelta, error) {
 	totalBytes := up + down
-	prev, err := s.traffic.LatestForClient(ctx, userID, panelID, inboundID, email)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return trafficDelta{}, fmt.Errorf("latest client snapshot: %w", err)
-	}
 
-	var delta trafficDelta
-	if prev == nil {
-		delta = trafficDelta{up: up, down: down, total: totalBytes}
+	hadPrev := ownership.LastRawUpBytes != 0 ||
+		ownership.LastRawDownBytes != 0 ||
+		ownership.LastRawTotalBytes != 0
+
+	var deltaUp, deltaDown, deltaTotal int64
+	if hadPrev {
+		deltaUp = monotonicDelta(up, ownership.LastRawUpBytes)
+		deltaDown = monotonicDelta(down, ownership.LastRawDownBytes)
+		deltaTotal = monotonicDelta(totalBytes, ownership.LastRawTotalBytes)
 	} else {
-		delta = trafficDelta{
-			up:      monotonicDelta(up, prev.UpBytes),
-			down:    monotonicDelta(down, prev.DownBytes),
-			total:   monotonicDelta(totalBytes, prev.TotalBytes),
-			hadPrev: true,
-		}
+		// First observation — current cumulative IS the delta.
+		deltaUp, deltaDown, deltaTotal = up, down, totalBytes
 	}
 
+	// Zero-delta short-circuit (P1-2): an offline / idle client returns the
+	// same raw counters every poll. Skip both the ownership write AND the
+	// snapshot write so those cycles are pure no-ops. At typical activity
+	// ratios (20-30% of users actually consuming traffic in any given
+	// 5-minute window) this drops `client_traffic_snapshots` write volume
+	// to roughly one third.
+	//
+	// The check intentionally covers BOTH branches (hadPrev / !hadPrev):
+	// a freshly-imported client that hasn't transmitted yet has raw
+	// counters of 0 and no prior LastRaw, so without this we'd write a
+	// zero-valued lifetime snapshot every cycle forever (LastRawXxx
+	// stays 0 → hadPrev never flips true → bootstrap path repeats). We
+	// preserve `hadPrev` in the returned delta verbatim so the caller's
+	// bootstrap-vs-steady-state classification at PollOnce stays correct.
+	if deltaUp == 0 && deltaDown == 0 && deltaTotal == 0 {
+		return trafficDelta{hadPrev: hadPrev}, nil
+	}
+
+	// Accumulate lifetime + advance the raw baseline. Both writes go in one
+	// repo call so a process crash between the two can't leak counter drift.
+	ownership.LifetimeUpBytes += deltaUp
+	ownership.LifetimeDownBytes += deltaDown
+	ownership.LifetimeTotalBytes += deltaTotal
+	ownership.LastRawUpBytes = up
+	ownership.LastRawDownBytes = down
+	ownership.LastRawTotalBytes = totalBytes
+	if err := s.ownership.UpdateCounters(ctx, ownership); err != nil {
+		return trafficDelta{}, fmt.Errorf("update ownership counters: %w", err)
+	}
+
+	// Snapshot stores lifetime (consistent with traffic_snapshots /
+	// node_traffic_snapshots).
 	snap := &domain.ClientTrafficSnapshot{
-		UserID:      userID,
-		PanelID:     panelID,
-		InboundID:   inboundID,
-		ClientEmail: email,
-		UpBytes:     up,
-		DownBytes:   down,
-		TotalBytes:  totalBytes,
+		UserID:      ownership.UserID,
+		PanelID:     ownership.PanelID,
+		InboundID:   ownership.InboundID,
+		ClientEmail: ownership.ClientEmail,
+		UpBytes:     ownership.LifetimeUpBytes,
+		DownBytes:   ownership.LifetimeDownBytes,
+		TotalBytes:  ownership.LifetimeTotalBytes,
 		CapturedAt:  time.Now(),
 	}
 	if sink != nil {
 		sink.clientSnaps = append(sink.clientSnaps, snap)
-		return delta, nil
-	}
-	if err := s.traffic.InsertClient(ctx, snap); err != nil {
+	} else if err := s.traffic.InsertClient(ctx, snap); err != nil {
 		return trafficDelta{}, fmt.Errorf("insert client snapshot: %w", err)
 	}
-	return delta, nil
+	return trafficDelta{up: deltaUp, down: deltaDown, total: deltaTotal, hadPrev: hadPrev}, nil
 }
 
 // recordAndEnforce is the back-compat entry preserved for tests and any
@@ -574,6 +626,17 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 	if u.TrafficPeriodStart != nil && shouldRollPeriod(now, *u.TrafficPeriodStart, u.TrafficResetPeriod) {
 		periodStart := currentPeriodStart(now, u.TrafficResetPeriod)
 		u.TrafficPeriodStart = &periodStart
+		// Baseline = lifetime BEFORE this poll's delta. This poll's traffic
+		// counts toward the NEW period (matching pre-v3 semantics where the
+		// first poll after rollover sees its newly-written snapshot land
+		// on/after period_start). Subtracting the just-added delta gives
+		// the lifetime as it stood at the moment period_start advanced.
+		// If the lifetime path was skipped this cycle (totals.hits == 0),
+		// totals.deltaTotal is 0 and the subtraction is a no-op.
+		u.PeriodBaselineBytes = u.LifetimeTotalBytes - totals.deltaTotal
+		if u.PeriodBaselineBytes < 0 {
+			u.PeriodBaselineBytes = 0
+		}
 		if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
 			u.EmergencyUntil = nil
 			u.EmergencyBaselineBytes = 0
@@ -851,28 +914,19 @@ func nodeSnapshotCounters(s *domain.NodeTrafficSnapshot) (up, down, total int64)
 }
 
 // periodUsage returns bytes used since the user's current period start.
-// Falls back to the latest snapshot's total when no earlier snapshot exists
-// (treats "no history" as "all usage is in this period"). Counter resets
-// (latest < base) collapse to "current value as bytes-since-reset".
+// O(1): lifetime - baseline, no DB read. PeriodBaselineBytes is updated on
+// period rollover (see recordAndEnforceWith) so subtracting it from the
+// monotonic lifetime gives this-period usage without any timeline scan.
 //
-// Genuine DB errors are propagated — treating them as "no baseline" would
-// silently report the full lifetime cumulative as period usage and could
-// trigger spurious auto-disable.
+// The `latest` and `ctx` arguments are preserved so signature compatibility
+// with old test callers is unchanged, but neither is consulted anymore.
 func (s *Service) periodUsage(ctx context.Context, u *domain.User, latest *domain.TrafficSnapshot) (int64, error) {
-	if u.TrafficPeriodStart == nil {
-		return latest.TotalBytes, nil
+	_ = ctx
+	_ = latest
+	if u == nil {
+		return 0, nil
 	}
-	baseSnap, err := s.traffic.LastBefore(ctx, u.ID, *u.TrafficPeriodStart)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			return latest.TotalBytes, nil
-		}
-		return 0, fmt.Errorf("period baseline lookup: %w", err)
-	}
-	if baseSnap == nil {
-		return latest.TotalBytes, nil
-	}
-	return monotonicDelta(latest.TotalBytes, baseSnap.TotalBytes), nil
+	return u.PeriodUsed(), nil
 }
 
 func shouldRollPeriod(now, periodStart time.Time, period domain.ResetPeriod) bool {
@@ -965,12 +1019,12 @@ func (s *Service) ReportFor(ctx context.Context, userID int64) (*UsageReport, er
 	}
 
 	if uerr == nil {
-		if u.TrafficPeriodStart != nil {
-			if base, err := s.traffic.LastBefore(ctx, userID, *u.TrafficPeriodStart); err == nil && base != nil {
-				report.PeriodUsedBytes = monotonicDelta(latest.TotalBytes, base.TotalBytes)
-			} else {
-				report.PeriodUsedBytes = latest.TotalBytes
-			}
+		// v3: PeriodUsed is O(1) lifetime - baseline. Fall through to the
+		// snapshot-based path only if PeriodBaselineBytes hasn't been seeded
+		// yet (legacy row from before the v3 backfill) — then latest acts as
+		// "everything is in this period" which matches pre-v3 fallback.
+		if u.TrafficPeriodStart != nil && u.PeriodBaselineBytes > 0 {
+			report.PeriodUsedBytes = u.PeriodUsed()
 		} else {
 			report.PeriodUsedBytes = latest.TotalBytes
 		}

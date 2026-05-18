@@ -45,10 +45,8 @@ func New(repo ports.MailRepo, users ports.UserRepo, traffic ports.TrafficRepo, s
 
 func DefaultSettings() domain.MailSettings {
 	return domain.MailSettings{
-		SMTPPort:             587,
-		Encryption:           "starttls",
-		ExpireBeforeDays:     3,
-		TrafficRemainPercent: 10,
+		SMTPPort:   587,
+		Encryption: "starttls",
 	}
 }
 
@@ -295,15 +293,9 @@ func (s *Service) SaveSettings(ctx context.Context, settings domain.MailSettings
 	if settings.SMTPPort <= 0 {
 		settings.SMTPPort = 587
 	}
-	if settings.ExpireBeforeDays <= 0 {
-		settings.ExpireBeforeDays = 3
-	}
-	if settings.TrafficRemainPercent <= 0 {
-		settings.TrafficRemainPercent = 10
-	}
-	if settings.TrafficRemainPercent > 100 {
-		return fmt.Errorf("%w: traffic remain percent must be <= 100", domain.ErrValidation)
-	}
+	// Notify thresholds (ExpireBeforeDays / TrafficRemainPercent) now live in
+	// the settings KV table under type='notify' — admins edit them via the
+	// global settings page and validation runs there.
 	return s.repo.SaveSettings(ctx, settings)
 }
 
@@ -461,7 +453,14 @@ func (s *Service) SendAccountDisabledNotification(ctx context.Context, u *domain
 	if to == "" {
 		return nil // No email address.
 	}
-	data := s.templateData(ctx, settings, u)
+	uiCfg, uiErr := s.settings.Load(ctx, ports.UISettings{})
+	if uiErr != nil {
+		// Log and proceed with zero-value uiCfg — templateData has
+		// fallback constants for app_title / notify thresholds, so the
+		// email still goes out, just without admin's branding overrides.
+		log.Warn("mailer settings.Load", "err", uiErr)
+	}
+	data := s.templateData(ctx, settings, uiCfg, u)
 	data["DisableReason"] = disableReason
 	data["DisableDetail"] = disableDetail
 	subject, err := renderTemplate("account_disabled_subject", tpl.Subject, data)
@@ -517,7 +516,14 @@ func (s *Service) SendAccountEnabledNotification(ctx context.Context, u *domain.
 	if to == "" {
 		return nil // No email address.
 	}
-	data := s.templateData(ctx, settings, u)
+	uiCfg, uiErr := s.settings.Load(ctx, ports.UISettings{})
+	if uiErr != nil {
+		// Log and proceed with zero-value uiCfg — templateData has
+		// fallback constants for app_title / notify thresholds, so the
+		// email still goes out, just without admin's branding overrides.
+		log.Warn("mailer settings.Load", "err", uiErr)
+	}
+	data := s.templateData(ctx, settings, uiCfg, u)
 	data["EnableReason"] = enableReason
 	data["EnableDetail"] = enableDetail
 	subject, err := renderTemplate("account_enabled_subject", tpl.Subject, data)
@@ -593,6 +599,17 @@ func (s *Service) SendAnnouncement(ctx context.Context, in AnnouncementInput) (*
 		return nil, fmt.Errorf("%w: announcement template is disabled", domain.ErrValidation)
 	}
 
+	// Hoist the UISettings load out of the per-user loop — broadcast can
+	// fan out to thousands of users and the settings KV is N row reads each
+	// time. One Load per broadcast, then templateData is pure CPU per user.
+	uiCfg, uiErr := s.settings.Load(ctx, ports.UISettings{})
+	if uiErr != nil {
+		// Log and proceed with zero-value uiCfg — templateData has
+		// fallback constants for app_title / notify thresholds, so the
+		// email still goes out, just without admin's branding overrides.
+		log.Warn("mailer settings.Load", "err", uiErr)
+	}
+
 	result := &AnnouncementResult{}
 	page := 1
 	const pageSize = 100
@@ -612,7 +629,7 @@ func (s *Service) SendAnnouncement(ctx context.Context, in AnnouncementInput) (*
 				result.Skipped++
 				continue
 			}
-			data := s.templateData(ctx, settings, u)
+			data := s.templateData(ctx, settings, uiCfg, u)
 			data["AnnouncementTitle"] = in.Subject
 			data["AnnouncementBody"] = in.Body
 			data["AnnouncementBodyHTML"] = announcementBodyHTML(in.Body)
@@ -667,6 +684,13 @@ func (s *Service) ProcessReminders(ctx context.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
+	// Notify thresholds live in the settings KV table (type='notify') since the
+	// v3 schema split — load them alongside SMTP settings so processUser has
+	// everything it needs without a second DB round-trip per user.
+	uiCfg, err := s.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		return err
+	}
 	templates, err := s.ListTemplates(ctx)
 	if err != nil {
 		return err
@@ -685,7 +709,7 @@ func (s *Service) ProcessReminders(ctx context.Context) error {
 			return err
 		}
 		for _, u := range users {
-			if err := s.processUser(ctx, settings, byKind, u, now); err != nil {
+			if err := s.processUser(ctx, settings, uiCfg, byKind, u, now); err != nil {
 				log.Warn("mail reminder user", "user_id", u.ID, "err", err)
 			}
 		}
@@ -697,32 +721,32 @@ func (s *Service) ProcessReminders(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) processUser(ctx context.Context, settings domain.MailSettings, templates map[domain.MailReminderKind]*domain.MailTemplate, u *domain.User, now time.Time) error {
+func (s *Service) processUser(ctx context.Context, settings domain.MailSettings, uiCfg ports.UISettings, templates map[domain.MailReminderKind]*domain.MailTemplate, u *domain.User, now time.Time) error {
 	to := reminderAddress(u)
 	if to == "" {
 		return nil
 	}
-	data := s.templateData(ctx, settings, u)
+	data := s.templateData(ctx, settings, uiCfg, u)
 	if u.ExpireAt != nil {
 		window := strconv.FormatInt(u.ExpireAt.Unix(), 10)
 		if !u.ExpireAt.After(now) {
 			if err := s.maybeSend(ctx, settings, templates[domain.MailReminderExpired], u, to, domain.MailReminderExpired, window, data); err != nil {
 				return err
 			}
-		} else if u.ExpireAt.Sub(now) <= time.Duration(settings.ExpireBeforeDays)*24*time.Hour {
+		} else if u.ExpireAt.Sub(now) <= time.Duration(uiCfg.ExpireBeforeDays)*24*time.Hour {
 			if err := s.maybeSend(ctx, settings, templates[domain.MailReminderExpireBefore], u, to, domain.MailReminderExpireBefore, window, data); err != nil {
 				return err
 			}
 		}
 	}
-	if u.TrafficLimitBytes > 0 && settings.TrafficRemainPercent > 0 {
+	if u.TrafficLimitBytes > 0 && uiCfg.TrafficRemainPercent > 0 {
 		used, err := s.periodUsage(ctx, u)
 		if err == nil {
 			remain := u.TrafficLimitBytes - used
 			if remain < 0 {
 				remain = 0
 			}
-			if remain*100 <= int64(settings.TrafficRemainPercent)*u.TrafficLimitBytes {
+			if remain*100 <= int64(uiCfg.TrafficRemainPercent)*u.TrafficLimitBytes {
 				data["PeriodUsedGB"] = gb(used)
 				data["TrafficLimitGB"] = gb(u.TrafficLimitBytes)
 				data["TrafficRemainGB"] = gb(remain)
@@ -762,7 +786,12 @@ func (s *Service) maybeSend(ctx context.Context, settings domain.MailSettings, t
 	return s.repo.RecordSent(ctx, u.ID, kind, windowKey, to)
 }
 
-func (s *Service) templateData(ctx context.Context, settings domain.MailSettings, u *domain.User) map[string]any {
+// templateData builds the merge variables for one user's reminder mail. The
+// caller MUST pass the UISettings it already has in scope so we don't run a
+// per-user settings.Load — the broadcast and reminder paths both call this
+// inside a user loop, and each settings.Load fans out to ~40 row reads in
+// the KV settings table.
+func (s *Service) templateData(ctx context.Context, settings domain.MailSettings, uiCfg ports.UISettings, u *domain.User) map[string]any {
 	name := u.DisplayName
 	if name == "" {
 		name = u.UPN
@@ -788,27 +817,21 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 			trafficRemainGB = gb(remain)
 		}
 	}
-	var configuredLogo, configuredLogoDark, base string
-	panelURL := "" // Panel URL for email button
-	appTitle := "Passwall"
-	if s.settings != nil {
-		st, err := s.settings.Load(ctx, ports.UISettings{
-			SiteTitle: "Passwall",
-			AppTitle:  "Passwall",
-		})
-		if err == nil {
-			if st.AppTitle != "" {
-				appTitle = st.AppTitle
-			}
-			base = strings.TrimRight(st.SubBaseURL, "/")
-			if base != "" {
-				panelURL = base
-			}
-			configuredLogo = st.LogoURL
-			configuredLogoDark = st.LogoURLDark
-		}
+	appTitle := uiCfg.AppTitle
+	if appTitle == "" {
+		appTitle = "Passwall"
 	}
-	logoURL := resolveLogoURL(base, configuredLogo, configuredLogoDark)
+	base := strings.TrimRight(uiCfg.SubBaseURL, "/")
+	panelURL := base
+	expireBeforeDays := uiCfg.ExpireBeforeDays
+	if expireBeforeDays <= 0 {
+		expireBeforeDays = 3
+	}
+	trafficRemainPercent := uiCfg.TrafficRemainPercent
+	if trafficRemainPercent <= 0 {
+		trafficRemainPercent = 10
+	}
+	logoURL := resolveLogoURL(base, uiCfg.LogoURL, uiCfg.LogoURLDark)
 	return map[string]any{
 		"UserID":               u.ID,
 		"UPN":                  u.UPN,
@@ -819,8 +842,8 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 		"PanelURL":             panelURL,
 		"GeneratedAt":          time.Now().Format("2006-01-02 15:04"),
 		"ExpireAt":             expireAt,
-		"ExpireBeforeDays":     settings.ExpireBeforeDays,
-		"TrafficRemainPercent": settings.TrafficRemainPercent,
+		"ExpireBeforeDays":     expireBeforeDays,
+		"TrafficRemainPercent": trafficRemainPercent,
 		"PeriodUsedGB":         periodUsedGB,
 		"TrafficLimitGB":       trafficLimitGB,
 		"TrafficRemainGB":      trafficRemainGB,
@@ -829,11 +852,26 @@ func (s *Service) templateData(ctx context.Context, settings domain.MailSettings
 
 func (s *Service) previewTemplateData(ctx context.Context, settings domain.MailSettings, kind domain.MailReminderKind) map[string]any {
 	now := time.Now()
+	// Notify thresholds (ExpireBeforeDays / TrafficRemainPercent) moved out of
+	// mail_settings into the settings KV table in v3 — load them once here so
+	// the preview reflects what real reminders would use.
+	expireBeforeDays := 3
+	trafficRemainPercent := 10
+	if s.settings != nil {
+		if st, err := s.settings.Load(ctx, ports.UISettings{}); err == nil {
+			if st.ExpireBeforeDays > 0 {
+				expireBeforeDays = st.ExpireBeforeDays
+			}
+			if st.TrafficRemainPercent > 0 {
+				trafficRemainPercent = st.TrafficRemainPercent
+			}
+		}
+	}
 	// Pick template-kind-specific sample values so the preview reflects what a
 	// real recipient would actually see. The base map below holds the common
 	// defaults; the switch below tweaks any field whose realistic value depends
 	// on which template is being previewed.
-	expireAt := now.AddDate(0, 0, settings.ExpireBeforeDays).Format("2006-01-02 15:04")
+	expireAt := now.AddDate(0, 0, expireBeforeDays).Format("2006-01-02 15:04")
 	periodUsed := "80.00"
 	trafficLimit := "100.00"
 	trafficRemain := "20.00"
@@ -846,7 +884,7 @@ func (s *Service) previewTemplateData(ctx context.Context, settings domain.MailS
 	switch kind {
 	case domain.MailReminderExpireBefore:
 		// Future date, X days out matches the "{{.ExpireBeforeDays}} 天内到期" subject.
-		expireAt = now.AddDate(0, 0, settings.ExpireBeforeDays).Format("2006-01-02 15:04")
+		expireAt = now.AddDate(0, 0, expireBeforeDays).Format("2006-01-02 15:04")
 	case domain.MailReminderExpired:
 		// Past date — show "expired yesterday" so the template's "已在 X 到期" reads right.
 		expireAt = now.AddDate(0, 0, -1).Format("2006-01-02 15:04")
@@ -881,8 +919,8 @@ func (s *Service) previewTemplateData(ctx context.Context, settings domain.MailS
 		"PanelURL":             "https://panel.example.com",
 		"GeneratedAt":          now.Format("2006-01-02 15:04"),
 		"ExpireAt":             expireAt,
-		"ExpireBeforeDays":     settings.ExpireBeforeDays,
-		"TrafficRemainPercent": settings.TrafficRemainPercent,
+		"ExpireBeforeDays":     expireBeforeDays,
+		"TrafficRemainPercent": trafficRemainPercent,
 		"PeriodUsedGB":         periodUsed,
 		"TrafficLimitGB":       trafficLimit,
 		"TrafficRemainGB":      trafficRemain,
@@ -974,23 +1012,16 @@ func resolveLogoURL(base, lightConfigured, darkConfigured string) string {
 	return defaultLogoDataURL()
 }
 
+// periodUsage now defers to domain.User.PeriodUsed — the per-cycle lifetime
+// counter + PeriodBaselineBytes make this O(1) memory math. Pre-v3 mailer
+// kept a near-duplicate of traffic.Service's implementation; both went
+// through this helper so a single source of truth removes the drift risk.
 func (s *Service) periodUsage(ctx context.Context, u *domain.User) (int64, error) {
-	latest, err := s.traffic.LatestForUser(ctx, u.ID)
-	if err != nil || latest == nil {
-		return 0, err
+	_ = ctx
+	if u == nil {
+		return 0, nil
 	}
-	if u.TrafficPeriodStart == nil {
-		return latest.TotalBytes, nil
-	}
-	base, err := s.traffic.LastBefore(ctx, u.ID, *u.TrafficPeriodStart)
-	if err != nil || base == nil {
-		return latest.TotalBytes, nil
-	}
-	used := latest.TotalBytes - base.TotalBytes
-	if used < 0 {
-		return latest.TotalBytes, nil
-	}
-	return used, nil
+	return u.PeriodUsed(), nil
 }
 
 func reminderAddress(u *domain.User) string {

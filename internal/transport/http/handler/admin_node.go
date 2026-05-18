@@ -546,10 +546,11 @@ func (h *AdminNodeHandler) loadPanelNames(ctx context.Context) map[int64]string 
 }
 
 func (h *AdminNodeHandler) toNodeDTO(n *domain.Node, panelNames map[int64]string) nodeDTO {
-	panelName := n.PanelName
-	if name, ok := panelNames[n.PanelID]; ok {
-		panelName = name
-	}
+	// Panel name is resolved from the in-memory pool snapshot (panelNames map)
+	// rather than from the DB row — the v3 schema dropped the redundant
+	// panel_name column on nodes since renaming a panel would otherwise leave
+	// every historical row stale.
+	panelName := panelNames[n.PanelID]
 	return nodeDTO{
 		ID:              n.ID,
 		PanelID:         n.PanelID,

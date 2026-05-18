@@ -45,6 +45,7 @@ type settingsDTO struct {
 	SubPerIPPerMin             int                      `json:"sub_per_ip_per_min"`
 	LoginPerIPPerMin           int                      `json:"login_per_ip_per_min"`
 	SyncTaskRetentionDays      int                      `json:"sync_task_retention_days"`
+	TrafficSnapshotRetentionDays int                    `json:"traffic_snapshot_retention_days"`
 	DisallowUserLocalLogin     bool                     `json:"disallow_user_local_login"`
 	DisallowUserPasswordChange bool                     `json:"disallow_user_password_change"`
 	AllowUserPersonalRules     bool                     `json:"allow_user_personal_rules"`
@@ -65,6 +66,9 @@ type settingsDTO struct {
 	GlobalAnnouncement         ports.GlobalAnnouncement `json:"global_announcement"`
 	FooterText                 string                   `json:"footer_text"`
 	ThemeColor                 string                   `json:"theme_color"`
+	// Notify thresholds (moved from mail_settings to settings KV type='notify').
+	ExpireBeforeDays     int `json:"expire_before_days"`
+	TrafficRemainPercent int `json:"traffic_remain_percent"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -106,7 +110,8 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		JWTIssuer:                  s.JWTIssuer,
 		SubPerIPPerMin:             s.SubPerIPPerMin,
 		LoginPerIPPerMin:           s.LoginPerIPPerMin,
-		SyncTaskRetentionDays:      s.SyncTaskRetentionDays,
+		SyncTaskRetentionDays:        s.SyncTaskRetentionDays,
+		TrafficSnapshotRetentionDays: s.TrafficSnapshotRetentionDays,
 		DisallowUserLocalLogin:     s.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: s.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     s.AllowUserPersonalRules,
@@ -127,6 +132,8 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,
 		ThemeColor:                 s.ThemeColor,
+		ExpireBeforeDays:           s.ExpireBeforeDays,
+		TrafficRemainPercent:       s.TrafficRemainPercent,
 	})
 }
 
@@ -169,7 +176,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		JWTIssuer:                  strings.TrimSpace(req.JWTIssuer),
 		SubPerIPPerMin:             req.SubPerIPPerMin,
 		LoginPerIPPerMin:           req.LoginPerIPPerMin,
-		SyncTaskRetentionDays:      req.SyncTaskRetentionDays,
+		SyncTaskRetentionDays:        req.SyncTaskRetentionDays,
+		TrafficSnapshotRetentionDays: req.TrafficSnapshotRetentionDays,
 		DisallowUserLocalLogin:     req.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: req.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     req.AllowUserPersonalRules,
@@ -190,6 +198,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		GlobalAnnouncement:         normalizeGlobalAnnouncement(req.GlobalAnnouncement, prev.GlobalAnnouncement),
 		FooterText:                 strings.TrimSpace(req.FooterText),
 		ThemeColor:                 strings.TrimSpace(req.ThemeColor),
+		ExpireBeforeDays:           req.ExpireBeforeDays,
+		TrafficRemainPercent:       req.TrafficRemainPercent,
 	}
 	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Retention days must be >= 0"})
@@ -259,7 +269,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		JWTIssuer:                  s.JWTIssuer,
 		SubPerIPPerMin:             s.SubPerIPPerMin,
 		LoginPerIPPerMin:           s.LoginPerIPPerMin,
-		SyncTaskRetentionDays:      s.SyncTaskRetentionDays,
+		SyncTaskRetentionDays:        s.SyncTaskRetentionDays,
+		TrafficSnapshotRetentionDays: s.TrafficSnapshotRetentionDays,
 		DisallowUserLocalLogin:     s.DisallowUserLocalLogin,
 		DisallowUserPasswordChange: s.DisallowUserPasswordChange,
 		AllowUserPersonalRules:     s.AllowUserPersonalRules,
@@ -280,6 +291,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		GlobalAnnouncement:         s.GlobalAnnouncement,
 		FooterText:                 s.FooterText,
 		ThemeColor:                 s.ThemeColor,
+		ExpireBeforeDays:           s.ExpireBeforeDays,
+		TrafficRemainPercent:       s.TrafficRemainPercent,
 	})
 }
 
