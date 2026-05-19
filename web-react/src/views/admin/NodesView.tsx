@@ -2200,7 +2200,7 @@ export default function NodesView() {
                 {filteredManaged.map((n, idx) => {
                   const isSep = n.kind === 'separator'
                   return (
-                  <TableRow key={n.id} hover
+                  <TableRow key={isSep ? `sep-${n.id}` : `node-${n.id}`} hover
                     draggable={!reorderBusy && !managedFilterActive}
                     onDragStart={e => {
                       setDragIndex(idx)
