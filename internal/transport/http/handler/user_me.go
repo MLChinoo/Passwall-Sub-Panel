@@ -12,6 +12,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/middleware"
@@ -64,6 +65,13 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		"display_name":            u.DisplayName,
 		"upn":                     u.UPN,
 		"sub_url":                 h.subURL(c.Request, u.SubToken),
+		// profile_name is the server-resolved SubProfileNameTemplate.
+		// Exposing it pre-rendered means the frontend's buildImportURL
+		// can drop {{ profile_name_encoded }} into deep links exactly
+		// matching the Content-Disposition / Profile-Title strings the
+		// subscription response itself carries — no client-side template
+		// engine, no risk of the two surfaces drifting.
+		"profile_name":              render.RenderProfileName(settings, u),
 		// sub_update_interval_hours surfaces the admin-configured value so
 		// import-URL templates can embed it (CMfA reads `update-interval`
 		// from the intent URI in minutes; the frontend converts on render).

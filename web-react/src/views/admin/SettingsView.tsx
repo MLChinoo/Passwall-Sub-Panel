@@ -516,6 +516,12 @@ export default function SettingsView() {
                 value={settings.sub_update_interval_hours}
                 onChange={v => patch('sub_update_interval_hours', v)} />
             </Pair>
+            <TextField fullWidth
+              label={t('settings.subscription.sub_profile_name_template')}
+              placeholder="{{ site_title }} - {{ user }}"
+              value={settings.sub_profile_name_template}
+              onChange={e => patch('sub_profile_name_template', e.target.value)}
+              helperText={t('settings.subscription.sub_profile_name_template_hint')} />
             <FormControlLabel
               label={t('settings.subscription.sub_region_flag_prefix')}
               control={<Switch checked={settings.sub_region_flag_prefix}

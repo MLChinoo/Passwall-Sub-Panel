@@ -38,6 +38,11 @@ export interface MeProfile {
   upn: string
   email?: string
   sub_url: string
+  /** Resolved subscription profile name per the admin-configured
+   *  SubProfileNameTemplate. Backend renders the placeholders server-side
+   *  so the deep-link &name= and the response Profile-Title header always
+   *  agree. Frontend should treat this as the canonical profile name. */
+  profile_name?: string
   /** Admin-configured subscription auto-update interval in hours (default 24).
    *  Frontend converts to minutes for CMfA-style `update-interval=` URI params. */
   sub_update_interval_hours?: number

@@ -413,28 +413,76 @@ func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template) 
 	return result, proxyGroupOrder, nil
 }
 
-// buildProfileName generates the subscription profile name used in
-// Content-Disposition header. Format: "SiteTitle - DisplayName"
-func (s *Service) buildProfileName(ctx context.Context, u *domain.User) string {
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{SiteTitle: "Kazuha Hub Passwall"})
-	siteTitle := st.SiteTitle
+// DefaultSubProfileNameTemplate is the compiled-in fallback for
+// UISettings.SubProfileNameTemplate. Mirrored by the frontend's
+// MeView so the deep-link &name= and the response Profile-Title /
+// Content-Disposition headers stay in sync.
+const DefaultSubProfileNameTemplate = "{{ site_title }} - {{ user }}"
+
+// RenderProfileName resolves the admin-configured profile-name template
+// against a user. Pure (no DB / network), so both the render layer and
+// the /api/user/me handler call it directly to avoid drift between the
+// Content-Disposition / Profile-Title strings on the subscription
+// response and the &name= value baked into one-click-import deep links.
+//
+// Supported placeholders:
+//
+//	{{ site_title }}   — admin's panel SiteTitle (falls back to a hard
+//	                     default if both settings and arg are empty)
+//	{{ app_title }}    — short brand name
+//	{{ display_name }} — user's display name (may be empty)
+//	{{ upn }}          — user's UPN
+//	{{ user }}         — display_name with UPN fallback (the most
+//	                     useful placeholder — covers the 99% case)
+//
+// Result is post-processed to strip characters that would break
+// filename safety (forward slash, quote, etc.) and to collapse runs
+// of whitespace introduced by an empty placeholder.
+func RenderProfileName(settings ports.UISettings, u *domain.User) string {
+	siteTitle := settings.SiteTitle
 	if siteTitle == "" {
 		siteTitle = "Kazuha Hub Passwall"
 	}
-	displayName := u.DisplayName
-	if displayName == "" {
-		displayName = u.UPN
+	appTitle := settings.AppTitle
+	if appTitle == "" {
+		appTitle = "Passwall"
 	}
-	// Format: SiteTitle - DisplayName
-	name := fmt.Sprintf("%s - %s", siteTitle, displayName)
-	// Clean the name for use in filename
+	displayName := u.DisplayName
+	user := displayName
+	if user == "" {
+		user = u.UPN
+	}
+	tpl := strings.TrimSpace(settings.SubProfileNameTemplate)
+	if tpl == "" {
+		tpl = DefaultSubProfileNameTemplate
+	}
+	name := tpl
+	for from, to := range map[string]string{
+		"{{ site_title }}":   siteTitle,
+		"{{ app_title }}":    appTitle,
+		"{{ display_name }}": displayName,
+		"{{ upn }}":          u.UPN,
+		"{{ user }}":         user,
+	} {
+		name = strings.ReplaceAll(name, from, to)
+	}
+	// Filename safety — only stripped, not URL-escaped. Callers wrap
+	// with url.PathEscape before emitting via Content-Disposition.
 	name = strings.ReplaceAll(name, "/", "-")
 	name = strings.ReplaceAll(name, `\`, "-")
 	name = strings.ReplaceAll(name, `"`, "")
 	name = strings.ReplaceAll(name, "?", "")
 	name = strings.ReplaceAll(name, "*", "")
 	name = strings.ReplaceAll(name, ":", " -")
+	name = strings.Join(strings.Fields(name), " ")
 	return name
+}
+
+// buildProfileName is the render-layer convenience wrapper that loads
+// settings via the repo before delegating to RenderProfileName.
+func (s *Service) buildProfileName(ctx context.Context, u *domain.User) string {
+	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{SiteTitle: "Kazuha Hub Passwall"})
+	return RenderProfileName(st, u)
 }
 
 // buildSubInfo produces the Subscription-Userinfo header value. Bytes are

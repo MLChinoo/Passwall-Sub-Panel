@@ -381,6 +381,17 @@ type UISettings struct {
 	// SubUpdateIntervalHours is the subscription auto-update interval in hours.
 	// Controls the Profile-Update-Interval header. Default 24.
 	SubUpdateIntervalHours int `yaml:"sub_update_interval_hours" json:"sub_update_interval_hours"`
+	// SubProfileNameTemplate is the template used to construct the profile
+	// name surfaced in the subscription's Content-Disposition / Profile-Title
+	// headers AND in one-click-import deep links (the &name= query param).
+	// Supported placeholders (rendered server-side, identical on both surfaces):
+	//   {{ site_title }}   — admin's panel SiteTitle
+	//   {{ app_title }}    — short brand name
+	//   {{ display_name }} — user's display name (may be empty)
+	//   {{ upn }}          — user's UPN (always set for active users)
+	//   {{ user }}         — display_name with UPN fallback (the most useful one)
+	// Empty value falls back to the compiled default "{{ site_title }} - {{ user }}".
+	SubProfileNameTemplate string `yaml:"sub_profile_name_template" json:"sub_profile_name_template"`
 	// SubRegionFlagPrefix, when true, prepends the Unicode flag for a node's
 	// Region (ISO 3166-1 alpha-2 code) to the rendered node name. Off by
 	// default to avoid double-flagging existing display names that already

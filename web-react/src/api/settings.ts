@@ -81,6 +81,13 @@ export interface UISettings {
   sub_block_auto_disable: boolean
   sub_block_auto_disable_count: number
   sub_update_interval_hours: number
+  /** Template applied server-side to produce the profile name baked into
+   *  Content-Disposition / Profile-Title response headers and the
+   *  &name= query param of one-click import deep links. Supports
+   *  {{ site_title }}, {{ app_title }}, {{ display_name }}, {{ upn }},
+   *  and the composite {{ user }} (display_name with UPN fallback).
+   *  Empty falls back to "{{ site_title }} - {{ user }}". */
+  sub_profile_name_template: string
   /** When true, prepend the Unicode flag of the node's Region (ISO 3166-1
    *  alpha-2) to the rendered node name in subscriptions. Off by default. */
   sub_region_flag_prefix: boolean
