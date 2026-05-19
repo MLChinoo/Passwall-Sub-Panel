@@ -1162,6 +1162,11 @@ const CLIENT_RULE_PRESETS: SubClientRule[] = [
   { name: 'Shadowrocket', keywords: ['shadowrocket'], render_format: 'uri-list', enabled: true },
   { name: 'Loon', keywords: ['loon'], render_format: 'uri-list', enabled: true },
   { name: 'Quantumult X', keywords: ['quantumult x', 'quantumultx'], render_format: 'mihomo', enabled: true },
+  // V2rayNG MUST sit before V2RayN so its more specific keyword
+  // wins substring matching — otherwise V2RayN's "v2rayn" would
+  // claim V2rayNG UAs too and the two apps couldn't be toggled
+  // independently.
+  { name: 'V2rayNG', keywords: ['v2rayng'], render_format: 'uri-list', enabled: true },
   { name: 'V2RayN', keywords: ['v2rayn', 'v2ray'], render_format: 'uri-list', enabled: true },
   { name: 'Passwall (OpenWrt)', keywords: ['passwall'], render_format: 'uri-list', enabled: true },
   { name: 'Stash', keywords: ['stash'], render_format: 'mihomo', enabled: true },
@@ -1335,7 +1340,10 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     name: 'V2rayN',
     platforms: ['windows'],
     render_format: 'uri-list',
-    import_url_template: '{{ sub_url }}',
+    // V2rayN has no URL scheme — UI copies this to clipboard.
+    // AddSubItem reads ?remarks= as the Remarks field; fragment
+    // / JSON / pipe-syntax are all ignored.
+    import_url_template: '{{ sub_url }}?remarks={{ profile_name_encoded }}',
     install_url: 'https://github.com/2dust/v2rayN/releases',
     recommended_for: [],
   },

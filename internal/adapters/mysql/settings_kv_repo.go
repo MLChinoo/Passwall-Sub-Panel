@@ -371,10 +371,13 @@ func defaultSubClientRules() []ports.SubClientRule {
 		// so mihomo is acceptable here — rules/policies are dropped
 		// but nodes import cleanly.
 		{Name: "Quantumult X", Keywords: []string{"quantumult x", "quantumultx"}, RenderFormat: "mihomo", Enabled: true},
-		// V2rayN consumes the base64 URI list as its native subscription format
-		// (it parses each vless://, vmess://, trojan://, ss:// line). Earlier
-		// defaults wrongly pointed it at the mihomo (Clash YAML) renderer
-		// which V2rayN can't read.
+		// V2rayNG (Android) — UA "v2rayNG/<ver>". Placed BEFORE V2RayN so
+		// the more specific "v2rayng" keyword wins substring matching;
+		// otherwise V2rayN's "v2rayn" keyword would eat V2rayNG too and
+		// the two apps couldn't be enabled/disabled independently.
+		{Name: "V2rayNG", Keywords: []string{"v2rayng"}, RenderFormat: "uri-list", Enabled: true},
+		// V2rayN (Windows desktop) — UA "v2rayN/<ver>". Both consume the
+		// base64 URI list (vless:// / vmess:// / trojan:// / ss:// lines).
 		{Name: "V2RayN", Keywords: []string{"v2rayn", "v2ray"}, RenderFormat: "uri-list", Enabled: true},
 		// OpenWrt Passwall plugin subscriber. Same base64 URI list format —
 		// Passwall's UA contains "Passwall" verbatim.
@@ -455,14 +458,18 @@ func defaultSubImportClients() []ports.SubImportClient {
 			Sort:              40,
 		},
 		{
-			// V2rayN (Windows) has no native deep link — users right-click the
-			// tray → "Subscription" → paste URL. We still expose it as an entry
-			// so the user portal can show the install link + a "copy URL"
-			// affordance instead of a launchable button.
+			// V2rayN (Windows) has no URL scheme — the panel UI copies
+			// the template to clipboard and the user pastes into the
+			// "Add subscription from clipboard" dialog. AddSubItem
+			// (ConfigHandler.cs:1920) reads `?remarks=` from the URL's
+			// query string and uses it as the subscription Remarks;
+			// fragment / JSON / `name|url` forms are all ignored. Sub
+			// URLs don't carry other query params, so a bare
+			// `?remarks=` is safe — no `&` ambiguity.
 			Name:              "V2rayN",
 			Platforms:         []string{"windows"},
 			RenderFormat:      "uri-list",
-			ImportURLTemplate: "{{ sub_url }}",
+			ImportURLTemplate: "{{ sub_url }}?remarks={{ profile_name_encoded }}",
 			InstallURL:        "https://github.com/2dust/v2rayN/releases",
 			Enabled:           true,
 			Sort:              50,
