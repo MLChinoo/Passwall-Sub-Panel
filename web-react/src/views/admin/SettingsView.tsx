@@ -1222,7 +1222,9 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     name: 'Clash Verge Rev',
     platforms: ['windows', 'macos', 'linux'],
     render_format: 'mihomo',
-    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}',
+    // scheme.rs reads &name= first, then falls back to Content-Disposition.
+    // Setting both means the name is known before the response fetch lands.
+    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}',
     install_url: 'https://github.com/clash-verge-rev/clash-verge-rev/releases',
     recommended_for: ['windows', 'macos', 'linux'],
   },
@@ -1232,7 +1234,9 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     render_format: 'mihomo',
     // update-interval is in MINUTES per CMfA PR #732 (deliberate units
     // mismatch with the Profile-Update-Interval HTTP header which is hours).
-    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}&update-interval={{ sub_update_interval_minutes }}',
+    // &name= is the only lever for the imported remark — CMfA never reads
+    // Profile-Title or Content-Disposition.
+    import_url_template: 'clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}&update-interval={{ sub_update_interval_minutes }}',
     install_url: 'https://github.com/MetaCubeX/ClashMetaForAndroid/releases',
     recommended_for: ['android'],
   },
@@ -1290,7 +1294,10 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     name: 'Shadowrocket',
     platforms: ['ios'],
     render_format: 'uri-list',
-    import_url_template: 'sub://{{ sub_url_b64 }}',
+    // shadowrocket://add/sub/<b64-url>?remark=<name> is the documented
+    // form (per 3x-ui / Marzban panels) that carries the profile name.
+    // The bare sub://<b64> still works but can't communicate a name.
+    import_url_template: 'shadowrocket://add/sub/{{ sub_url_b64 }}?remark={{ profile_name_encoded }}',
     install_url: 'https://apps.apple.com/app/shadowrocket/id932747118',
     recommended_for: [],
   },

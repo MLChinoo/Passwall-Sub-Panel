@@ -373,10 +373,14 @@ func defaultSubClientRules() []ports.SubClientRule {
 func defaultSubImportClients() []ports.SubImportClient {
 	return []ports.SubImportClient{
 		{
-			Name:              "Clash Verge Rev",
-			Platforms:         []string{"windows", "macos", "linux"},
-			RenderFormat:      "mihomo",
-			ImportURLTemplate: "clash://install-config?url={{ sub_url_encoded }}",
+			Name:         "Clash Verge Rev",
+			Platforms:    []string{"windows", "macos", "linux"},
+			RenderFormat: "mihomo",
+			// scheme.rs reads `name=` first, then falls back to
+			// Content-Disposition.filename* (which we already send).
+			// Setting both means the name is known before the response
+			// is fetched and there's no round-trip dependency.
+			ImportURLTemplate: "clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}",
 			InstallURL:        "https://github.com/clash-verge-rev/clash-verge-rev/releases",
 			Enabled:           true,
 			Sort:              10,
@@ -388,8 +392,11 @@ func defaultSubImportClients() []ports.SubImportClient {
 			RenderFormat: "mihomo",
 			// update-interval (MINUTES) comes from CMfA PR #732, distinct from
 			// the Profile-Update-Interval HTTP header (HOURS). Both units are
-			// correct per CMfA's source.
-			ImportURLTemplate: "clash://install-config?url={{ sub_url_encoded }}&update-interval={{ sub_update_interval_minutes }}",
+			// correct per CMfA's source. &name= is read by ExternalControlActivity
+			// and used as the profile remark — CMfA doesn't parse Profile-Title
+			// or Content-Disposition, so this is the ONLY way the panel can
+			// influence the imported name.
+			ImportURLTemplate: "clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}&update-interval={{ sub_update_interval_minutes }}",
 			InstallURL:        "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
 			Enabled:           true,
 			Sort:              20,
@@ -459,12 +466,17 @@ func defaultSubImportClients() []ports.SubImportClient {
 			Sort:              55,
 		},
 		{
-			// Shadowrocket (iOS) takes the sub URL base64-encoded under the
-			// sub:// scheme, which it auto-imports as a subscription.
+			// Shadowrocket (iOS). The dedicated shadowrocket://add/sub/
+			// scheme takes a base64-encoded URL in the path and accepts
+			// a `remark=` query param that lands as the profile name —
+			// documented via 3x-ui, Marzban, and other major panels.
+			// The bare sub:// scheme also works on Shadowrocket but
+			// can't carry a name, so prefer the explicit variant for
+			// our one-click import.
 			Name:              "Shadowrocket",
 			Platforms:         []string{"ios"},
 			RenderFormat:      "uri-list",
-			ImportURLTemplate: "sub://{{ sub_url_b64 }}",
+			ImportURLTemplate: "shadowrocket://add/sub/{{ sub_url_b64 }}?remark={{ profile_name_encoded }}",
 			InstallURL:        "https://apps.apple.com/app/shadowrocket/id932747118",
 			Enabled:           true,
 			Sort:              60,
