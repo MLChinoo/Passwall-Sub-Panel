@@ -1236,8 +1236,11 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     render_format: 'mihomo',
     // ClashMi registers clashmi://, clash://, clashmeta:// and flclash://.
     // Using `clashmi://` keeps iOS from offering Stash (which only owns
-    // clash://) when both apps are installed.
-    import_url_template: 'clashmi://install-config?url={{ sub_url_encoded }}',
+    // clash://) when both apps are installed. &name=... is read by
+    // SchemeHandler.handle and becomes the profile remark; without it
+    // ClashMi falls back to scraping the panel root <title> for every
+    // user.
+    import_url_template: 'clashmi://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}',
     install_url: 'https://github.com/KaringX/clashmi/releases',
     recommended_for: ['ios'],
   },

@@ -401,7 +401,13 @@ func defaultSubImportClients() []ports.SubImportClient {
 			// clashmi:// — ClashMi's iOS Info.plist registers `clash`, `clashmi`,
 			// `clashmeta` and `flclash`. Using `clashmi://` keeps iOS from
 			// offering Stash (which owns clash://) when both apps are installed.
-			ImportURLTemplate: "clashmi://install-config?url={{ sub_url_encoded }}",
+			//
+			// &name=... is read by SchemeHandler in lib/screens/scheme_handler.dart
+			// and passed as the `remark` into ProfileManager.addRemote — without
+			// it ClashMi falls back to scraping the panel root's HTML <title>,
+			// which is the same string for every user and visually collides with
+			// the URL-hashCode-based on-disk filename ClashMi shows below it.
+			ImportURLTemplate: "clashmi://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}",
 			InstallURL:        "https://github.com/KaringX/clashmi/releases",
 			Enabled:           true,
 			Sort:              25,
