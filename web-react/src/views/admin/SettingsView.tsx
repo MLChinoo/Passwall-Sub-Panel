@@ -1343,11 +1343,14 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     name: 'V2rayNG',
     platforms: ['android'],
     render_format: 'uri-list',
-    // V2rayNG's install-sub intent expects the `url` query param to be
-    // URL-encoded, NOT base64. Previous preset wrapped in base64 which
-    // V2rayNG would reject silently. Fragment is the subscription name.
-    // See 2dust/v2rayNG#4141.
-    import_url_template: 'v2rayng://install-sub?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}',
+    // V2rayNG's install-sub intent expects `url=` URL-encoded (NOT
+    // base64). The profile remark comes from the OUTER URL's
+    // #fragment — UrlSchemeActivity reads uri.fragment, never a
+    // `name=` query param. Production panels (EZ_THEME, MiSub,
+    // ppanel-web) all converged on the fragment form; panels still
+    // shipping `&name=...` have been silently dropping remarks for
+    // years.
+    import_url_template: 'v2rayng://install-sub?url={{ sub_url_encoded }}#{{ profile_name_encoded }}',
     install_url: 'https://github.com/2dust/v2rayNG/releases',
     recommended_for: [],
   },
@@ -1355,12 +1358,12 @@ const IMPORT_CLIENT_PRESETS: Array<Omit<SubImportClient, 'sort' | 'enabled'>> = 
     name: 'Shadowrocket',
     platforms: ['ios'],
     render_format: 'uri-list',
-    // shadowrocket://add/sub/<b64-url>?remark=<name> is the documented
-    // form (per 3x-ui / Marzban panels) that carries the profile name.
-    // The bare sub://<b64> still works but can't communicate a name.
-    // sub_url_b64_url_encoded percent-encodes the base64 so '/' (which
-    // would otherwise break path parsing) stays inside the segment.
-    import_url_template: 'shadowrocket://add/sub/{{ sub_url_b64_url_encoded }}?remark={{ profile_name_encoded }}',
+    // shadowrocket://add/sub://<b64>?remark=<name> — the dominant
+    // form in Xboard/v2board themes, EZ_THEME, MiSub, etc. Inner
+    // `sub://` is a nested URI scheme, not a path. b64 is URL-safe
+    // with padding stripped. 3x-ui's bare `add/sub/<b64>` (without
+    // the nested ://) silently no-ops on real Shadowrocket builds.
+    import_url_template: 'shadowrocket://add/sub://{{ sub_url_b64_url_safe }}?remark={{ profile_name_encoded }}',
     install_url: 'https://apps.apple.com/app/shadowrocket/id932747118',
     recommended_for: [],
   },

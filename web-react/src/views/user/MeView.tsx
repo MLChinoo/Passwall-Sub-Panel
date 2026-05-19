@@ -343,6 +343,12 @@ export default function MeView() {
     // expect the URL itself to be base64-wrapped in the query.
     let subUrlB64 = ''
     try { subUrlB64 = btoa(unescape(encodeURIComponent(subUrl))) } catch { /* ignore */ }
+    // URL-safe base64 with padding stripped — the form most production
+    // panels (Xboard / v2board themes / 3x-ui frontend) use for the
+    // Shadowrocket deep link `shadowrocket://add/sub://<b64>?remark=...`.
+    // Standard `+/=` characters parse unreliably inside Shadowrocket's
+    // URI consumer; replacing them keeps the body in [A-Za-z0-9_-].
+    const subUrlB64UrlSafe = subUrlB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
     // CMfA reads `update-interval` from the intent URI in MINUTES (its
     // Profile-Update-Interval HTTP header is in hours; the URI param is
     // a separate format chosen by the CMfA author). Default 24h when the
@@ -353,19 +359,35 @@ export default function MeView() {
     const intervalMinutes = intervalHours * 60
     return c.import_url_template
       .replaceAll('{{ sub_url_encoded }}', encodeURIComponent(subUrl))
-      // sub_url_b64 is raw base64 — fine for opaque schemes like sub://<b64>
-      // where the whole rest of the URL is the payload. sub_url_b64_url_encoded
-      // wraps it with encodeURIComponent so it can safely live inside a URL
-      // path segment (e.g. shadowrocket://add/sub/<b64>?remark=...): standard
-      // base64 contains '/' and '+', which would otherwise split the path
-      // or be misread as a literal space.
-      .replaceAll('{{ sub_url_b64_url_encoded }}', encodeURIComponent(subUrlB64))
+      // sub_url_b64 — raw standard base64, fits opaque schemes like
+      // sub://<b64> where the whole tail is one payload.
+      // sub_url_b64_url_safe — URL-safe variant (+ -> -, / -> _, no
+      // padding). The form Xboard / v2board themes / 3x-ui use inside
+      // shadowrocket://add/sub://<b64>?remark=... so the body stays
+      // inside [A-Za-z0-9_-] and survives Shadowrocket's URI parser.
+      .replaceAll('{{ sub_url_b64_url_safe }}', subUrlB64UrlSafe)
       .replaceAll('{{ sub_url_b64 }}', subUrlB64)
       .replaceAll('{{ sub_url }}', subUrl)
       .replaceAll('{{ profile_name_encoded }}', encodeURIComponent(profileName))
       .replaceAll('{{ profile_name }}', profileName)
       .replaceAll('{{ sub_update_interval_minutes }}', String(intervalMinutes))
       .replaceAll('{{ sub_update_interval_hours }}', String(intervalHours))
+  }
+
+  // triggerImport dispatches between two import flows:
+  //   - Custom URI scheme (e.g. clashmi://, v2rayng://): navigate to
+  //     the URL so the OS hands off to the client app.
+  //   - Plain https:// URL (V2rayN, Surge, anything without a
+  //     registered scheme): copy to clipboard with a toast, since the
+  //     desktop client requires the user to paste into a Subscription
+  //     dialog and "navigating" to an https URL would just open it in
+  //     the browser and dump raw YAML/uri-list as text.
+  async function triggerImport(url: string) {
+    if (/^https?:\/\//i.test(url)) {
+      await copyToClipboard(url)
+      return
+    }
+    window.location.href = url
   }
 
   function emergencyStatusText(): string {
@@ -489,7 +511,7 @@ export default function MeView() {
             }}>
               <Button size={isMobile ? 'medium' : 'large'} variant="contained"
                 startIcon={<LaunchIcon />}
-                onClick={() => { window.location.href = buildImportURL(hero) }}
+                onClick={() => { void triggerImport(buildImportURL(hero)) }}
                 sx={{ bgcolor: md.primary, color: md.onPrimary, '&:hover': { bgcolor: md.primary } }}>
                 {t('import.import')}
               </Button>
@@ -750,7 +772,7 @@ export default function MeView() {
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 1 }}>
                       <Button size="small" variant="contained"
-                        onClick={() => { window.location.href = buildImportURL(c) }}>
+                        onClick={() => { void triggerImport(buildImportURL(c)) }}>
                         {t('import.import')}
                       </Button>
                       <Button size="small" variant="outlined"

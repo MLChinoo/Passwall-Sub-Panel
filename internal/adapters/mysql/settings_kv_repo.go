@@ -469,33 +469,34 @@ func defaultSubImportClients() []ports.SubImportClient {
 		},
 		{
 			// V2rayNG (Android) install-sub intent: `url` param is URL-encoded
-			// (NOT base64 — earlier preset wrapped in base64 which V2rayNG
-			// rejects silently). `name` populates the subscription label. See
-			// 2dust/v2rayNG#4141.
+			// (NOT base64 — base64 forms are silently rejected). The remark
+			// comes from the OUTER URL's #fragment, not a `name=` query param
+			// — UrlSchemeActivity.kt reads uri.fragment, not
+			// getQueryParameter("name"). Setting `&name=` is a no-op (every
+			// pre-2026 panel that ships that form has silently been losing
+			// the remark for years). See 2dust/v2rayNG@master and
+			// EZ_THEME/MiSub/ppanel-web for the convergent fragment form.
 			Name:              "V2rayNG",
 			Platforms:         []string{"android"},
 			RenderFormat:      "uri-list",
-			ImportURLTemplate: "v2rayng://install-sub?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}",
+			ImportURLTemplate: "v2rayng://install-sub?url={{ sub_url_encoded }}#{{ profile_name_encoded }}",
 			InstallURL:        "https://github.com/2dust/v2rayNG/releases",
 			Enabled:           true,
 			Sort:              55,
 		},
 		{
-			// Shadowrocket (iOS). The dedicated shadowrocket://add/sub/
-			// scheme takes a base64-encoded URL in the path and accepts
-			// a `remark=` query param that lands as the profile name —
-			// documented via 3x-ui, Marzban, and other major panels.
-			// The bare sub:// scheme also works on Shadowrocket but
-			// can't carry a name, so prefer the explicit variant for
-			// our one-click import. sub_url_b64_url_encoded (not raw
-			// sub_url_b64) is required because standard base64 may
-			// contain '/', which the URL parser would interpret as a
-			// path separator — Shadowrocket then receives a truncated
-			// b64 payload and silently fails the import.
+			// Shadowrocket (iOS). The dominant production form (Xboard /
+			// v2board themes / EZ_THEME / MiSub) is
+			//   shadowrocket://add/sub://<b64>?remark=<name>
+			// where the inner sub:// is a NESTED URI scheme, not a path
+			// segment, and <b64> is URL-safe base64 with padding
+			// stripped. Path-form `add/sub/<b64>` (rare; 3x-ui-only)
+			// silently no-ops on real Shadowrocket builds — confirmed
+			// by user testing.
 			Name:              "Shadowrocket",
 			Platforms:         []string{"ios"},
 			RenderFormat:      "uri-list",
-			ImportURLTemplate: "shadowrocket://add/sub/{{ sub_url_b64_url_encoded }}?remark={{ profile_name_encoded }}",
+			ImportURLTemplate: "shadowrocket://add/sub://{{ sub_url_b64_url_safe }}?remark={{ profile_name_encoded }}",
 			InstallURL:        "https://apps.apple.com/app/shadowrocket/id932747118",
 			Enabled:           true,
 			Sort:              60,
