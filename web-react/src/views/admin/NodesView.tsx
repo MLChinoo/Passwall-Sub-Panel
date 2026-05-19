@@ -1231,11 +1231,9 @@ function reorderRows<T>(rows: readonly T[], fromIdx: number, toIdx: number): T[]
   return next
 }
 
-// renumberSortOrder assigns sort_order in 10-step increments starting at 10.
-// Gaps leave room to insert single rows later without a full re-number.
-function renumberSortOrder<T extends { id: number }>(rows: readonly T[]): { id: number; sort_order: number }[] {
-  return rows.map((r, i) => ({ id: r.id, sort_order: (i + 1) * 10 }))
-}
+// commitReorder inlines the (i + 1) * 10 sort_order assignment now that
+// it has to split the result into node / separator payloads anyway —
+// no shared helper left to extract.
 
 export default function NodesView() {
   const theme = useTheme()
@@ -1700,17 +1698,35 @@ export default function NodesView() {
     const previousSeparators = separators
     const combined = managedCombined
     const next = reorderRows(combined, fromIdx, toIdx)
-    const reordered = renumberSortOrder(next)
-    const byID = new Map(reordered.map(r => [r.id, r.sort_order]))
 
-    // Optimistic local state — derive new sort_order for both lists
-    // from the shared map, preserving the rest of each row.
-    setManaged(previousManaged.map(n => ({ ...n, sort_order: byID.get(n.id) ?? n.sort_order })))
-    setSeparators(previousSeparators.map(s => ({ ...s, sort_order: byID.get(s.id) ?? s.sort_order })))
+    // Walk the reordered combined list ONCE, splitting node vs separator
+    // by row.kind (NOT by ID set). node IDs and separator IDs come from
+    // independent autoincrement sequences so they can collide
+    // (sep id=1 and node id=1 both exist) — using an ID set would
+    // mis-classify every collided row and either drop one PUT entirely
+    // or send duplicate IDs to the separator endpoint, which then
+    // 400's on its duplicate-id validator. Sort_order is assigned from
+    // the combined position so admins can interleave separators and
+    // nodes freely.
+    const nodePayload: { id: number; sort_order: number }[] = []
+    const sepPayload: { id: number; sort_order: number }[] = []
+    const newNodeOrder = new Map<number, number>()
+    const newSepOrder = new Map<number, number>()
+    next.forEach((row, i) => {
+      const sortOrder = (i + 1) * 10
+      if ((row as Node).kind === 'separator') {
+        sepPayload.push({ id: row.id, sort_order: sortOrder })
+        newSepOrder.set(row.id, sortOrder)
+      } else {
+        nodePayload.push({ id: row.id, sort_order: sortOrder })
+        newNodeOrder.set(row.id, sortOrder)
+      }
+    })
 
-    const sepIDs = new Set(previousSeparators.map(s => s.id))
-    const nodePayload = reordered.filter(r => !sepIDs.has(r.id))
-    const sepPayload = reordered.filter(r => sepIDs.has(r.id))
+    // Optimistic local state — separate maps keep node/separator updates
+    // isolated even when IDs collide.
+    setManaged(previousManaged.map(n => ({ ...n, sort_order: newNodeOrder.get(n.id) ?? n.sort_order })))
+    setSeparators(previousSeparators.map(s => ({ ...s, sort_order: newSepOrder.get(s.id) ?? s.sort_order })))
 
     setReorderBusy(true)
     try {
