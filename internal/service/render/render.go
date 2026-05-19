@@ -72,9 +72,15 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 
 	// Separators are loaded fresh per-render; the table is small (single-
 	// digit rows in practice) so we don't memoize, and a stale list would
-	// make a freshly-added separator invisible until restart. Filtered by
-	// VisibleInGroup so only the ones bound to this group survive.
-	separators, err := s.resolveSeparators(ctx, g.ID)
+	// make a freshly-added separator invisible until restart. Visibility
+	// is decided by SeparatorEntry.VisibleForNodes — global separators
+	// always pass; node-bound ones pass when this group's node set
+	// intersects their NodeIDs.
+	groupNodeIDs := make([]int64, len(nodes))
+	for i, n := range nodes {
+		groupNodeIDs[i] = n.ID
+	}
+	separators, err := s.resolveSeparators(ctx, groupNodeIDs)
 	if err != nil {
 		return nil, fmt.Errorf("resolve separators: %w", err)
 	}
@@ -150,15 +156,16 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	}, nil
 }
 
-// resolveSeparators returns the separators that should appear in group
-// groupID's subscription. Backed by the SeparatorRepo.ListEnabled hot
-// path (returns enabled rows in sort_order); we then filter to those
-// the admin actually wired to this group via SeparatorEntry.VisibleInGroup
-// (handles the "Show in all groups" toggle + the explicit group_ids list).
+// resolveSeparators returns the separators that should appear when the
+// group being rendered contains the supplied node IDs. Backed by the
+// SeparatorRepo.ListEnabled hot path (returns enabled rows in sort_order);
+// we then filter via SeparatorEntry.VisibleForNodes:
+//   - global separators always pass
+//   - node-bound separators pass when groupNodeIDs intersects their NodeIDs
 //
 // Returns nil (not an error) when the repo isn't wired — tests that
 // construct Service without a SeparatorRepo still work.
-func (s *Service) resolveSeparators(ctx context.Context, groupID int64) ([]*domain.SeparatorEntry, error) {
+func (s *Service) resolveSeparators(ctx context.Context, groupNodeIDs []int64) ([]*domain.SeparatorEntry, error) {
 	if s.repos.Separator == nil {
 		return nil, nil
 	}
@@ -168,7 +175,7 @@ func (s *Service) resolveSeparators(ctx context.Context, groupID int64) ([]*doma
 	}
 	out := make([]*domain.SeparatorEntry, 0, len(all))
 	for _, e := range all {
-		if e.VisibleInGroup(groupID) {
+		if e.VisibleForNodes(groupNodeIDs) {
 			out = append(out, e)
 		}
 	}

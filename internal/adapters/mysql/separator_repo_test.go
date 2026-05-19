@@ -27,26 +27,27 @@ func TestSeparatorRepoCreate_RepeatsForReportedBug(t *testing.T) {
 	repo := &separatorRepo{db: db}
 	ctx := context.Background()
 
-	// Mirror the JSON the React form sends:
-	//   { display_name, show_in_all_groups: false, group_ids: [..], enabled: true }
+	// Mirror the four shapes the React form can produce under the
+	// rc.4 (mode + node_ids) schema.
 	cases := []struct {
 		name string
 		e    *domain.SeparatorEntry
 	}{
-		{"all-groups true / no ids", &domain.SeparatorEntry{
-			DisplayName: "----- TW -----", Enabled: true, ShowInAllGroups: true, SortOrder: 10,
+		{"global / no node ids", &domain.SeparatorEntry{
+			DisplayName: "----- TW -----", Enabled: true,
+			Mode: domain.SeparatorModeGlobal, SortOrder: 10,
 		}},
-		{"all-groups false / two ids", &domain.SeparatorEntry{
-			DisplayName: "----- Taiwan -----", Enabled: true, ShowInAllGroups: false,
-			GroupIDs: []int64{1, 2}, SortOrder: 20,
+		{"node_bound / two ids", &domain.SeparatorEntry{
+			DisplayName: "----- Taiwan -----", Enabled: true,
+			Mode: domain.SeparatorModeNodeBound, NodeIDs: []int64{1, 2}, SortOrder: 20,
 		}},
-		{"empty ids slice", &domain.SeparatorEntry{
-			DisplayName: "----- empty -----", Enabled: true, ShowInAllGroups: false,
-			GroupIDs: []int64{}, SortOrder: 30,
+		{"node_bound / empty ids slice", &domain.SeparatorEntry{
+			DisplayName: "----- empty -----", Enabled: true,
+			Mode: domain.SeparatorModeNodeBound, NodeIDs: []int64{}, SortOrder: 30,
 		}},
-		{"nil ids slice", &domain.SeparatorEntry{
-			DisplayName: "----- nil -----", Enabled: true, ShowInAllGroups: false,
-			GroupIDs: nil, SortOrder: 40,
+		{"node_bound / nil ids slice", &domain.SeparatorEntry{
+			DisplayName: "----- nil -----", Enabled: true,
+			Mode: domain.SeparatorModeNodeBound, NodeIDs: nil, SortOrder: 40,
 		}},
 	}
 	for _, tc := range cases {

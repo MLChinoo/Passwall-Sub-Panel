@@ -141,16 +141,19 @@ func (r *captureSeparatorRepo) List(context.Context) ([]*domain.SeparatorEntry, 
 func (r *captureSeparatorRepo) ListEnabled(context.Context) ([]*domain.SeparatorEntry, error) {
 	return nil, nil
 }
+func (r *captureSeparatorRepo) BatchUpdateSortOrder(context.Context, []ports.SeparatorSortUpdate) error {
+	return nil
+}
 
 func TestCreateSeparator_StoresEntry(t *testing.T) {
 	repo := &captureSeparatorRepo{}
 	svc := &Service{separators: repo}
 	e := &domain.SeparatorEntry{
-		DisplayName:     "  ---- Taiwan HiNet ----  ",
-		SortOrder:       50,
-		Enabled:         true,
-		ShowInAllGroups: false,
-		GroupIDs:        []int64{1, 3},
+		DisplayName: "  ---- Taiwan HiNet ----  ",
+		SortOrder:   50,
+		Enabled:     true,
+		Mode:        domain.SeparatorModeNodeBound,
+		NodeIDs:     []int64{1, 3},
 	}
 	if err := svc.CreateSeparator(context.Background(), e); err != nil {
 		t.Fatalf("CreateSeparator = %v", err)
@@ -165,11 +168,11 @@ func TestCreateSeparator_StoresEntry(t *testing.T) {
 	if got.SortOrder != 50 {
 		t.Errorf("SortOrder = %d, want 50", got.SortOrder)
 	}
-	if got.ShowInAllGroups {
-		t.Errorf("ShowInAllGroups should round-trip false")
+	if got.Mode != domain.SeparatorModeNodeBound {
+		t.Errorf("Mode = %q, want node_bound", got.Mode)
 	}
-	if len(got.GroupIDs) != 2 || got.GroupIDs[0] != 1 || got.GroupIDs[1] != 3 {
-		t.Errorf("GroupIDs = %v, want [1 3]", got.GroupIDs)
+	if len(got.NodeIDs) != 2 || got.NodeIDs[0] != 1 || got.NodeIDs[1] != 3 {
+		t.Errorf("NodeIDs = %v, want [1 3]", got.NodeIDs)
 	}
 }
 

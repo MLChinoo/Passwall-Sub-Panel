@@ -315,6 +315,20 @@ type Node struct {
 	HealthDetail string
 }
 
+// SeparatorMode controls how a SeparatorEntry decides whether to appear
+// in a given group's subscription. Two values:
+//
+//   - SeparatorModeGlobal:    visible in every group, position by SortOrder.
+//   - SeparatorModeNodeBound: visible only when the group includes at least
+//     one node from NodeIDs. Position is still SortOrder — NodeIDs only
+//     gates visibility, not where it lands in the list.
+type SeparatorMode string
+
+const (
+	SeparatorModeGlobal    SeparatorMode = "global"
+	SeparatorModeNodeBound SeparatorMode = "node_bound"
+)
+
 // SeparatorEntry is a decoration row rendered as a DIRECT proxy in
 // subscription documents, used to visually group nodes (e.g. an entry
 // titled "----- Taiwan -----"). Lives in its own table (nodes_separator)
@@ -324,35 +338,47 @@ type Node struct {
 // separator was a row in `nodes` with kind='separator' and a synthetic
 // negative inbound_id.
 //
-// Group binding semantics:
-//   - ShowInAllGroups=true  -> appears in every group's subscription
-//   - ShowInAllGroups=false -> appears only in groups whose ID is in GroupIDs
+// Visibility / position model (v3.0.0-rc.4):
+//   - Mode=global:     always visible; position by SortOrder.
+//   - Mode=node_bound: visible only when the rendered group's node list
+//     contains at least one ID in NodeIDs. Position is still SortOrder.
+//     NodeIDs only gates visibility, not placement.
 //
-// The pattern mirrors Group.TagFilter.All vs explicit Tags. SortOrder
-// uses the same global integer space as Node.SortOrder so admins can
-// drag a separator to sit between two real nodes in the list.
+// SortOrder shares the same integer scale as Node.SortOrder so admins can
+// drag a separator into place between two real nodes in NodesView.
 type SeparatorEntry struct {
-	ID              int64
-	DisplayName     string
-	SortOrder       int
-	Enabled         bool
-	ShowInAllGroups bool
-	GroupIDs        []int64
-	CreatedAt       time.Time
+	ID          int64
+	DisplayName string
+	SortOrder   int
+	Enabled     bool
+	Mode        SeparatorMode
+	// NodeIDs is the relevant set of node IDs when Mode=node_bound. Empty
+	// (with Mode=node_bound) means "never visible" — the explicit
+	// hidden state, parallel to a node that's disabled.
+	NodeIDs   []int64
+	CreatedAt time.Time
 }
 
-// VisibleInGroup reports whether the separator should appear when
-// rendering the given group. Encapsulates the ShowInAllGroups /
-// GroupIDs precedence so callers don't reimplement it.
-func (s *SeparatorEntry) VisibleInGroup(groupID int64) bool {
+// VisibleForNodes reports whether the separator should appear when the
+// group being rendered contains the supplied node IDs. Encapsulates the
+// global / node_bound precedence so callers don't reimplement it.
+func (s *SeparatorEntry) VisibleForNodes(groupNodeIDs []int64) bool {
 	if s == nil || !s.Enabled {
 		return false
 	}
-	if s.ShowInAllGroups {
+	if s.Mode == SeparatorModeGlobal {
 		return true
 	}
-	for _, id := range s.GroupIDs {
-		if id == groupID {
+	// node_bound: any intersection between NodeIDs and groupNodeIDs.
+	if len(s.NodeIDs) == 0 || len(groupNodeIDs) == 0 {
+		return false
+	}
+	wanted := make(map[int64]struct{}, len(s.NodeIDs))
+	for _, id := range s.NodeIDs {
+		wanted[id] = struct{}{}
+	}
+	for _, id := range groupNodeIDs {
+		if _, ok := wanted[id]; ok {
 			return true
 		}
 	}

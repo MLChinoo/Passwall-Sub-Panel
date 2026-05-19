@@ -52,3 +52,35 @@ func TestUserPeriodUsedNilSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestSeparatorVisibleForNodes locks in the rc.4 separator visibility
+// rules:
+//   - global mode is unconditionally visible
+//   - node_bound mode demands a non-empty intersection between NodeIDs
+//     and the group's node set
+//   - disabled rows never show regardless of mode
+//   - the helper is nil-tolerant
+func TestSeparatorVisibleForNodes(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry *SeparatorEntry
+		group []int64
+		want  bool
+	}{
+		{"nil entry", nil, []int64{1, 2}, false},
+		{"disabled global", &SeparatorEntry{Enabled: false, Mode: SeparatorModeGlobal}, []int64{1}, false},
+		{"global enabled / any group", &SeparatorEntry{Enabled: true, Mode: SeparatorModeGlobal}, []int64{}, true},
+		{"global enabled / empty group", &SeparatorEntry{Enabled: true, Mode: SeparatorModeGlobal}, nil, true},
+		{"node_bound / intersects", &SeparatorEntry{Enabled: true, Mode: SeparatorModeNodeBound, NodeIDs: []int64{5, 6, 7}}, []int64{2, 5}, true},
+		{"node_bound / no intersect", &SeparatorEntry{Enabled: true, Mode: SeparatorModeNodeBound, NodeIDs: []int64{5, 6, 7}}, []int64{2, 3}, false},
+		{"node_bound / empty node_ids hides", &SeparatorEntry{Enabled: true, Mode: SeparatorModeNodeBound, NodeIDs: nil}, []int64{1}, false},
+		{"node_bound / empty group hides", &SeparatorEntry{Enabled: true, Mode: SeparatorModeNodeBound, NodeIDs: []int64{1}}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.entry.VisibleForNodes(tc.group); got != tc.want {
+				t.Errorf("VisibleForNodes(%v) = %v, want %v", tc.group, got, tc.want)
+			}
+		})
+	}
+}

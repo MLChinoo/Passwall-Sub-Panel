@@ -206,6 +206,31 @@ func (s *Service) DeleteSeparator(ctx context.Context, id int64) error {
 	return s.separators.Delete(ctx, id)
 }
 
+// ReorderSeparators rewrites sort_order for every listed separator in
+// one transaction. Sibling of Reorder() for the nodes table — the
+// frontend issues two PUTs (one per kind) when the admin drags rows
+// in the mixed table. Validation parallels Reorder: non-empty +
+// duplicate IDs rejected + positive IDs only.
+func (s *Service) ReorderSeparators(ctx context.Context, updates []ports.SeparatorSortUpdate) error {
+	if s.separators == nil {
+		return fmt.Errorf("separator repo not configured")
+	}
+	if len(updates) == 0 {
+		return fmt.Errorf("%w: no updates", domain.ErrValidation)
+	}
+	seen := make(map[int64]struct{}, len(updates))
+	for _, u := range updates {
+		if u.SeparatorID <= 0 {
+			return fmt.Errorf("%w: separator_id must be positive", domain.ErrValidation)
+		}
+		if _, dup := seen[u.SeparatorID]; dup {
+			return fmt.Errorf("%w: duplicate separator_id %d", domain.ErrValidation, u.SeparatorID)
+		}
+		seen[u.SeparatorID] = struct{}{}
+	}
+	return s.separators.BatchUpdateSortOrder(ctx, updates)
+}
+
 // ImportExisting registers an inbound that already lives in 3X-UI under
 // panel management. No 3X-UI inbound-level write happens; only metadata is
 // persisted, and clients are synced for any matching groups so newly

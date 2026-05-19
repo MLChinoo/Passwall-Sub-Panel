@@ -205,6 +205,7 @@ func NewRouter(d Deps) *gin.Engine {
 		// router doesn't need to learn a new top-level prefix.
 		staffGroup.GET("/nodes/separator", nodes.ListSeparators)
 		adminGroup.POST("/nodes/separator", nodes.CreateSeparator)
+		adminGroup.PUT("/nodes/separator/reorder", nodes.ReorderSeparators)
 		adminGroup.PUT("/nodes/separator/:id", nodes.UpdateSeparator)
 		adminGroup.DELETE("/nodes/separator/:id", nodes.DeleteSeparator)
 		adminGroup.POST("/nodes", nodes.CreateInbound)

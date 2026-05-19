@@ -48,18 +48,19 @@ import {
   listSeparators,
   listUnmanagedInbounds,
   reorderNodes,
+  reorderSeparators,
   setNodeEnabled,
   type Separator,
+  type SeparatorMode,
   updateInboundConfig,
   updateNodeMetadata,
   updateSeparator,
 } from '@/api/nodes'
-import { listGroups } from '@/api/groups'
 import { listUsers } from '@/api/users'
 import { listServers, type Server } from '@/api/servers'
 import { MenuItem, Select, FormControlLabel } from '@mui/material'
 import KeyIcon from '@mui/icons-material/VpnKey'
-import type { Group, Node, UnmanagedInbound, User } from '@/api/types'
+import type { Node, UnmanagedInbound, User } from '@/api/types'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import { useTabParam } from '@/hooks/useTabParam'
@@ -1250,10 +1251,10 @@ export default function NodesView() {
   // generated config.
   const [separators, setSeparators] = useState<Separator[]>([])
   // Groups feed the multi-select inside the separator dialog when an
-  // admin opts a separator out of "show in all groups". Loaded once on
-  // mount; refreshed whenever the dialog opens to pick up newly-created
-  // groups without a full page reload.
-  const [groups, setGroups] = useState<Group[]>([])
+  // Groups list was previously loaded for the separator dialog's
+  // "show in groups" picker. rc.4 switched separator visibility from
+  // group_ids to node_ids, so the dialog picks from `managed` instead
+  // and the groups state itself is no longer read.
   const [unmanaged, setUnmanaged] = useState<UnmanagedInbound[]>([])
   // Free-text filter on the unmanaged-inbound tab. Matches against panel
   // name, protocol, remark, port and inbound ID so the operator can find a
@@ -1400,25 +1401,21 @@ export default function NodesView() {
   const [importErr, setImportErr] = useState<FieldErrors<MetaField>>({})
 
   // Separator dialog: layout-only rows persisted in the nodes_separator
-  // table (since v3.0.0-beta.7). Two modes:
+  // table. Two modes:
   //   null  → POST   /admin/nodes/separator
   //   > 0   → PUT    /admin/nodes/separator/:id
-  // Group binding is explicit via show_in_all_groups + group_ids — the
-  // old "region/tags + tag_filter" matching pathway is gone (admins
-  // hated guessing which groups it would land in).
-  // sort_order is intentionally NOT in the form. Create-time the backend
-  // tails it onto max(sort_order)+10; edit-time the backend preserves the
-  // existing value. Admins place separators via drag-to-reorder, same as
-  // real nodes.
+  // Visibility model (rc.4): mode is either 'global' (always visible)
+  // or 'node_bound' (visible only when the group includes at least one
+  // node from node_ids). Position is always SortOrder (drag-to-reorder).
   type SeparatorForm = {
     display_name: string
     enabled: boolean
-    show_in_all_groups: boolean
-    group_ids: number[]
+    mode: SeparatorMode
+    node_ids: number[]
   }
   const EMPTY_SEPARATOR_FORM: SeparatorForm = {
     display_name: '', enabled: true,
-    show_in_all_groups: true, group_ids: [],
+    mode: 'global', node_ids: [],
   }
   const [separatorOpen, setSeparatorOpen] = useState(false)
   const [separatorBusy, setSeparatorBusy] = useState(false)
@@ -1437,8 +1434,8 @@ export default function NodesView() {
     setSeparatorForm({
       display_name: sep.display_name,
       enabled: sep.enabled,
-      show_in_all_groups: sep.show_in_all_groups,
-      group_ids: [...sep.group_ids],
+      mode: sep.mode,
+      node_ids: [...sep.node_ids],
     })
     setSeparatorOpen(true)
   }
@@ -1452,8 +1449,10 @@ export default function NodesView() {
       const payload = {
         display_name: separatorForm.display_name.trim(),
         enabled: separatorForm.enabled,
-        show_in_all_groups: separatorForm.show_in_all_groups,
-        group_ids: separatorForm.show_in_all_groups ? [] : separatorForm.group_ids,
+        mode: separatorForm.mode,
+        // node_ids is only meaningful under node_bound; sending [] in
+        // global mode keeps the backend payload clean.
+        node_ids: separatorForm.mode === 'node_bound' ? separatorForm.node_ids : [],
       }
       if (separatorEditingId !== null) {
         await updateSeparator(separatorEditingId, payload)
@@ -1523,14 +1522,12 @@ export default function NodesView() {
         // them but they live on independent endpoints. Group list is
         // also refreshed so the separator dialog's "Show in groups"
         // picker reflects whatever the admin just added in Groups view.
-        const [n, s, g] = await Promise.all([
+        const [n, s] = await Promise.all([
           listNodes(),
           listSeparators().catch(() => [] as Separator[]),
-          listGroups().then(r => r.items).catch(() => [] as Group[]),
         ])
         setManaged(n)
         setSeparators(s)
-        setGroups(g)
         setSelected(new Set())
       } else {
         const res = await listUnmanagedInbounds()
@@ -1691,18 +1688,46 @@ export default function NodesView() {
   // inserts without a global shuffle.
   async function commitReorder(fromIdx: number, toIdx: number) {
     if (fromIdx === toIdx) return
-    const previous = managed
-    const next = reorderRows(previous, fromIdx, toIdx)
-    setManaged(next.map((n, i) => ({ ...n, sort_order: (i + 1) * 10 })))
+    // The drag operates on the COMBINED list (managed + separatorRows
+    // sorted by sort_order). Reorder it as one homogeneous sequence,
+    // re-assign sort_order in 10-step increments, then SPLIT the
+    // outcome into node / separator items and hit the two backend
+    // endpoints. Splitting on the client side keeps each PUT
+    // homogeneous so the server doesn't have to guess which table an
+    // ID belongs to (node IDs and separator IDs come from independent
+    // autoincrement sequences and can collide).
+    const previousManaged = managed
+    const previousSeparators = separators
+    const combined = managedCombined
+    const next = reorderRows(combined, fromIdx, toIdx)
+    const reordered = renumberSortOrder(next)
+    const byID = new Map(reordered.map(r => [r.id, r.sort_order]))
+
+    // Optimistic local state — derive new sort_order for both lists
+    // from the shared map, preserving the rest of each row.
+    setManaged(previousManaged.map(n => ({ ...n, sort_order: byID.get(n.id) ?? n.sort_order })))
+    setSeparators(previousSeparators.map(s => ({ ...s, sort_order: byID.get(s.id) ?? s.sort_order })))
+
+    const sepIDs = new Set(previousSeparators.map(s => s.id))
+    const nodePayload = reordered.filter(r => !sepIDs.has(r.id))
+    const sepPayload = reordered.filter(r => sepIDs.has(r.id))
+
     setReorderBusy(true)
     try {
-      await reorderNodes(renumberSortOrder(next))
+      // Run the two PUTs in parallel — independent tables, no ordering
+      // constraint. Promise.all means a failure on either one rejects
+      // and we roll the whole optimistic update back together.
+      await Promise.all([
+        nodePayload.length > 0 ? reorderNodes(nodePayload) : Promise.resolve(),
+        sepPayload.length > 0 ? reorderSeparators(sepPayload) : Promise.resolve(),
+      ])
       pushSnack(t('admin:nodes.toast.reordered'), 'success')
     } catch (err) {
-      setManaged(previous)
+      setManaged(previousManaged)
+      setSeparators(previousSeparators)
       pushSnack(t('admin:nodes.toast.reorder_failed'), 'error')
       // eslint-disable-next-line no-console
-      console.error('reorderNodes failed', err)
+      console.error('reorder failed', err)
     } finally {
       setReorderBusy(false)
     }
@@ -2567,40 +2592,42 @@ export default function NodesView() {
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
             <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
               {t('admin:nodes.create_separator_dialog.hint', {
-                defaultValue: '分隔标题以 DIRECT 形式出现在客户端的节点列表中，仅用于视觉分组。在哪些分组里显示由下面"显示在所有分组"开关 + 分组选择决定，跟节点的 tag_filter 无关。',
+                defaultValue: '分隔标题以 DIRECT 形式出现在客户端的节点列表中，仅用于视觉分组。「全局」=所有分组都显示；「按节点关联」=只有该分组包含至少一个关联节点时才显示。位置由拖拽排序决定。',
               })}
             </Typography>
             <TextField required fullWidth label={t('admin:nodes.field.display_name')}
               value={separatorForm.display_name}
               onChange={e => setSeparatorForm({ ...separatorForm, display_name: e.target.value })}
               placeholder="---- Taiwan HiNet ----" />
-            <FormControlLabel
-              label={t('admin:nodes.field.separator_show_in_all', { defaultValue: '显示在所有分组' })}
-              control={
-                <Switch checked={separatorForm.show_in_all_groups}
-                  onChange={(_, c) => setSeparatorForm({ ...separatorForm, show_in_all_groups: c })} />
-              }
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
-            />
-            {!separatorForm.show_in_all_groups && (
+            <TextField select fullWidth label={t('admin:nodes.field.separator_mode', { defaultValue: '可见模式' })}
+              value={separatorForm.mode}
+              onChange={e => setSeparatorForm({ ...separatorForm, mode: e.target.value as SeparatorMode })}
+              helperText={separatorForm.mode === 'global'
+                ? t('admin:nodes.field.separator_mode_hint_global', { defaultValue: '所有分组都显示此分隔符。' })
+                : t('admin:nodes.field.separator_mode_hint_node_bound', { defaultValue: '仅当该分组包含下方关联的任意节点时才显示。位置仍由拖拽排序决定。' })
+              }>
+              <MenuItem value="global">{t('admin:nodes.field.separator_mode_global', { defaultValue: '全局（所有分组显示）' })}</MenuItem>
+              <MenuItem value="node_bound">{t('admin:nodes.field.separator_mode_node_bound', { defaultValue: '按节点关联（节点出现时显示）' })}</MenuItem>
+            </TextField>
+            {separatorForm.mode === 'node_bound' && (
               <Autocomplete
                 multiple
                 disableCloseOnSelect
-                options={groups}
-                getOptionLabel={(g) => g.name}
+                options={managed}
+                getOptionLabel={(n) => n.display_name}
                 isOptionEqualToValue={(a, b) => a.id === b.id}
-                value={groups.filter(g => separatorForm.group_ids.includes(g.id))}
-                onChange={(_, v) => setSeparatorForm({ ...separatorForm, group_ids: (v as Group[]).map(g => g.id) })}
+                value={managed.filter(n => separatorForm.node_ids.includes(n.id))}
+                onChange={(_, v) => setSeparatorForm({ ...separatorForm, node_ids: (v as Node[]).map(n => n.id) })}
                 renderTags={(value, getTagProps) =>
                   value.map((option, index) => {
                     const tagProps = getTagProps({ index })
-                    return <Chip {...tagProps} key={option.id} label={option.name} size="small" />
+                    return <Chip {...tagProps} key={option.id} label={option.display_name} size="small" />
                   })
                 }
                 renderInput={(params) => (
                   <TextField {...params}
-                    label={t('admin:nodes.field.separator_groups', { defaultValue: '出现在这些分组' })}
-                    helperText={t('admin:nodes.field.separator_groups_hint', { defaultValue: '勾上下面"显示在所有分组"则忽略此项；空着等于不出现在任何分组。' })} />
+                    label={t('admin:nodes.field.separator_node_ids', { defaultValue: '关联节点' })}
+                    helperText={t('admin:nodes.field.separator_node_ids_hint', { defaultValue: '订阅渲染时，凡是用户能看到这里任一节点的分组都会显示此分隔符；不填则永远不出现。' })} />
                 )}
               />
             )}

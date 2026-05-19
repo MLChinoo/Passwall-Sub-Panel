@@ -87,16 +87,21 @@ export async function importNode(req: ImportNodeRequest) {
 }
 
 /** Separator: a layout-only divider rendered as a DIRECT proxy in the
- *  subscription. Lives in the dedicated nodes_separator table since
- *  v3.0.0-beta.7 — group binding is explicit (show_in_all_groups +
- *  group_ids), not via tag_filter. */
+ *  subscription. Lives in the dedicated nodes_separator table.
+ *  Visibility model (rc.4):
+ *   - mode='global'     : visible in every group
+ *   - mode='node_bound' : visible only when the group contains at least
+ *                         one node from node_ids
+ *  Position is always SortOrder (admin drags in NodesView). */
+export type SeparatorMode = 'global' | 'node_bound'
+
 export interface Separator {
   id: number
   display_name: string
   sort_order: number
   enabled: boolean
-  show_in_all_groups: boolean
-  group_ids: number[]
+  mode: SeparatorMode
+  node_ids: number[]
   created_at?: string
 }
 
@@ -104,8 +109,8 @@ export interface SeparatorRequest {
   display_name: string
   sort_order?: number
   enabled?: boolean
-  show_in_all_groups?: boolean
-  group_ids?: number[]
+  mode?: SeparatorMode
+  node_ids?: number[]
 }
 
 export async function listSeparators() {
@@ -125,6 +130,15 @@ export async function updateSeparator(id: number, req: SeparatorRequest) {
 
 export async function deleteSeparator(id: number) {
   await client.delete(`/admin/nodes/separator/${id}`)
+}
+
+export interface SeparatorReorderItem {
+  id: number
+  sort_order: number
+}
+
+export async function reorderSeparators(items: SeparatorReorderItem[]) {
+  await client.put('/admin/nodes/separator/reorder', { items })
 }
 
 export async function createInbound(req: CreateInboundRequest) {

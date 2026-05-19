@@ -214,36 +214,40 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 // node.Service's separator methods.
 
 type separatorRequest struct {
-	DisplayName     string  `json:"display_name" binding:"required"`
-	SortOrder       int     `json:"sort_order"`
-	Enabled         *bool   `json:"enabled"`            // nil → true (create default)
-	ShowInAllGroups *bool   `json:"show_in_all_groups"` // nil → true (create default)
-	GroupIDs        []int64 `json:"group_ids"`
+	DisplayName string  `json:"display_name" binding:"required"`
+	SortOrder   int     `json:"sort_order"`
+	Enabled     *bool   `json:"enabled"` // nil → true (create default)
+	// Mode is the visibility model: "global" (default) makes the row
+	// visible in every group; "node_bound" gates it on NodeIDs ∩
+	// (group's node set). Anything else falls back to "global" at
+	// repo translation time.
+	Mode    string  `json:"mode"`
+	NodeIDs []int64 `json:"node_ids"`
 }
 
 type separatorDTO struct {
-	ID              int64   `json:"id"`
-	DisplayName     string  `json:"display_name"`
-	SortOrder       int     `json:"sort_order"`
-	Enabled         bool    `json:"enabled"`
-	ShowInAllGroups bool    `json:"show_in_all_groups"`
-	GroupIDs        []int64 `json:"group_ids"`
-	CreatedAt       string  `json:"created_at,omitempty"`
+	ID          int64   `json:"id"`
+	DisplayName string  `json:"display_name"`
+	SortOrder   int     `json:"sort_order"`
+	Enabled     bool    `json:"enabled"`
+	Mode        string  `json:"mode"`
+	NodeIDs     []int64 `json:"node_ids"`
+	CreatedAt   string  `json:"created_at,omitempty"`
 }
 
 func toSeparatorDTO(e *domain.SeparatorEntry) separatorDTO {
-	ids := e.GroupIDs
+	ids := e.NodeIDs
 	if ids == nil {
 		ids = []int64{}
 	}
 	return separatorDTO{
-		ID:              e.ID,
-		DisplayName:     e.DisplayName,
-		SortOrder:       e.SortOrder,
-		Enabled:         e.Enabled,
-		ShowInAllGroups: e.ShowInAllGroups,
-		GroupIDs:        ids,
-		CreatedAt:       e.CreatedAt.Format(time.RFC3339),
+		ID:          e.ID,
+		DisplayName: e.DisplayName,
+		SortOrder:   e.SortOrder,
+		Enabled:     e.Enabled,
+		Mode:        string(e.Mode),
+		NodeIDs:     ids,
+		CreatedAt:   e.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -252,21 +256,55 @@ func separatorFromRequest(req *separatorRequest) *domain.SeparatorEntry {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	showAll := true
-	if req.ShowInAllGroups != nil {
-		showAll = *req.ShowInAllGroups
+	// Default mode is "global" — same intent the old
+	// ShowInAllGroups=true had. Anything other than the two valid
+	// values is coerced to global by the domain/repo layer.
+	mode := domain.SeparatorMode(req.Mode)
+	if mode != domain.SeparatorModeGlobal && mode != domain.SeparatorModeNodeBound {
+		mode = domain.SeparatorModeGlobal
 	}
-	ids := req.GroupIDs
+	ids := req.NodeIDs
 	if ids == nil {
 		ids = []int64{}
 	}
 	return &domain.SeparatorEntry{
-		DisplayName:     req.DisplayName,
-		SortOrder:       req.SortOrder,
-		Enabled:         enabled,
-		ShowInAllGroups: showAll,
-		GroupIDs:        ids,
+		DisplayName: req.DisplayName,
+		SortOrder:   req.SortOrder,
+		Enabled:     enabled,
+		Mode:        mode,
+		NodeIDs:     ids,
 	}
+}
+
+type separatorReorderItem struct {
+	ID        int64 `json:"id" binding:"required"`
+	SortOrder int   `json:"sort_order"`
+}
+
+type separatorReorderRequest struct {
+	Items []separatorReorderItem `json:"items" binding:"required"`
+}
+
+// ReorderSeparators bulk-rewrites sort_order on the separator table.
+// Paired with the existing Reorder(): the admin's drag-to-reorder UI
+// splits the mixed (node + separator) list and issues one PUT per
+// kind so each backend handler operates on a homogeneous payload —
+// avoids "is this ID a node or a separator?" guesswork.
+func (h *AdminNodeHandler) ReorderSeparators(c *gin.Context) {
+	var req separatorReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	updates := make([]ports.SeparatorSortUpdate, len(req.Items))
+	for i, it := range req.Items {
+		updates[i] = ports.SeparatorSortUpdate{SeparatorID: it.ID, SortOrder: it.SortOrder}
+	}
+	if err := h.node.ReorderSeparators(c.Request.Context(), updates); err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *AdminNodeHandler) ListSeparators(c *gin.Context) {

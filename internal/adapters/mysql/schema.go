@@ -729,42 +729,54 @@ func (r *subLogRow) toDomain() *domain.SubLog {
 // of mixing separators into `nodes` with a `kind` column + a synthetic
 // negative inbound_id; legacy rows are cleaned up by cleanupLegacyState.
 type separatorRow struct {
-	ID              int64       `gorm:"primaryKey;autoIncrement"`
-	DisplayName     string      `gorm:"size:255;not null"`
-	SortOrder       int         `gorm:"default:0"`
-	Enabled         bool        `gorm:"default:true"`
-	ShowInAllGroups bool        `gorm:"default:true"`
-	// GroupIDs picks which groups render this separator when
-	// ShowInAllGroups=false. Empty list under that mode means "no group
-	// renders it" (explicit hidden state, parallel to a node disabled
-	// with no enabled flag).
-	GroupIDs  jsonInt64s
+	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	DisplayName string `gorm:"size:255;not null"`
+	SortOrder   int    `gorm:"default:0"`
+	Enabled     bool   `gorm:"default:true"`
+	// Mode replaces the legacy show_in_all_groups bool. "global" =
+	// visible everywhere; "node_bound" = visible only when the group
+	// being rendered contains at least one node listed in NodeIDs.
+	Mode string `gorm:"size:32;not null;default:global"`
+	// NodeIDs is the gate set when Mode='node_bound'. Empty under that
+	// mode means "never visible" (explicit hidden state).
+	NodeIDs   jsonInt64s
 	CreatedAt time.Time
 }
 
 func (separatorRow) TableName() string { return "nodes_separator" }
 
 func (r *separatorRow) toDomain() *domain.SeparatorEntry {
+	mode := domain.SeparatorMode(r.Mode)
+	// Coerce stray / empty values to the safe default. AutoMigrate sets
+	// the column default to "global", but rows mid-upgrade or hand-edited
+	// by an admin could carry anything.
+	if mode != domain.SeparatorModeGlobal && mode != domain.SeparatorModeNodeBound {
+		mode = domain.SeparatorModeGlobal
+	}
 	return &domain.SeparatorEntry{
-		ID:              r.ID,
-		DisplayName:     r.DisplayName,
-		SortOrder:       r.SortOrder,
-		Enabled:         r.Enabled,
-		ShowInAllGroups: r.ShowInAllGroups,
-		GroupIDs:        []int64(r.GroupIDs),
-		CreatedAt:       r.CreatedAt,
+		ID:          r.ID,
+		DisplayName: r.DisplayName,
+		SortOrder:   r.SortOrder,
+		Enabled:     r.Enabled,
+		Mode:        mode,
+		NodeIDs:     []int64(r.NodeIDs),
+		CreatedAt:   r.CreatedAt,
 	}
 }
 
 func separatorFromDomain(s *domain.SeparatorEntry) *separatorRow {
+	mode := s.Mode
+	if mode != domain.SeparatorModeGlobal && mode != domain.SeparatorModeNodeBound {
+		mode = domain.SeparatorModeGlobal
+	}
 	return &separatorRow{
-		ID:              s.ID,
-		DisplayName:     s.DisplayName,
-		SortOrder:       s.SortOrder,
-		Enabled:         s.Enabled,
-		ShowInAllGroups: s.ShowInAllGroups,
-		GroupIDs:        jsonInt64s(s.GroupIDs),
-		CreatedAt:       s.CreatedAt,
+		ID:          s.ID,
+		DisplayName: s.DisplayName,
+		SortOrder:   s.SortOrder,
+		Enabled:     s.Enabled,
+		Mode:        string(mode),
+		NodeIDs:     jsonInt64s(s.NodeIDs),
+		CreatedAt:   s.CreatedAt,
 	}
 }
 
@@ -982,6 +994,29 @@ func cleanupLegacyState(db *gorm.DB) error {
 			return fmt.Errorf("cleanup legacy separators: %w", err)
 		}
 		fmt.Printf("[cleanupLegacyState] dropped %d legacy kind='separator' rows from `nodes`; recreate under the new `nodes_separator` table\n", legacySeparators)
+	}
+
+	// v3.0.0-rc.4: separator visibility model reshaped.
+	//   show_in_all_groups (bool) → mode (string: "global" / "node_bound")
+	//   group_ids (jsonInt64s)     → node_ids (jsonInt64s)
+	// AutoMigrate adds the new columns (with default mode="global") above;
+	// here we drop the now-unused legacy columns so prod libs don't carry
+	// orphan storage indefinitely. Existing rows surface as Mode=global —
+	// the prior "show_in_all_groups=false + group_ids=[...]" semantic
+	// translates to the safest default ("show everywhere") and the admin
+	// re-picks node_ids in the UI if they want node-bound visibility.
+	// Idempotent: each DropColumn guarded by HasColumn.
+	if db.Migrator().HasColumn(&separatorRow{}, "show_in_all_groups") {
+		fmt.Println("[cleanupLegacyState] dropping legacy column nodes_separator.show_in_all_groups (replaced by `mode`)")
+		if err := db.Migrator().DropColumn(&separatorRow{}, "show_in_all_groups"); err != nil {
+			return fmt.Errorf("drop legacy show_in_all_groups: %w", err)
+		}
+	}
+	if db.Migrator().HasColumn(&separatorRow{}, "group_ids") {
+		fmt.Println("[cleanupLegacyState] dropping legacy column nodes_separator.group_ids (replaced by `node_ids`)")
+		if err := db.Migrator().DropColumn(&separatorRow{}, "group_ids"); err != nil {
+			return fmt.Errorf("drop legacy group_ids: %w", err)
+		}
 	}
 
 	return nil

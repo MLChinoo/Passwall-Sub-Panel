@@ -759,9 +759,13 @@
       "region": "Region",
       "tags": "Tags",
       "enabled": "启用",
-      "separator_show_in_all": "在所有分组中显示",
-      "separator_groups": "仅在这些分组中显示",
-      "separator_groups_hint": "「在所有分组中显示」开启时此项被忽略。两项都不填会让分隔标题不出现在任何分组中。"
+      "separator_mode": "可见模式",
+      "separator_mode_global": "全局（所有分组显示）",
+      "separator_mode_node_bound": "按节点关联（节点出现时显示）",
+      "separator_mode_hint_global": "所有分组都显示此分隔符。",
+      "separator_mode_hint_node_bound": "仅当该分组包含下方关联的任意节点时才显示。位置仍由拖拽排序决定。",
+      "separator_node_ids": "关联节点",
+      "separator_node_ids_hint": "订阅渲染时，凡是用户能看到这里任一节点的分组都会显示此分隔符；不填则永远不出现。"
     },
     "action": {
       "edit": "编辑",

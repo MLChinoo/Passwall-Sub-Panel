@@ -759,9 +759,13 @@
       "region": "Region",
       "tags": "Tags",
       "enabled": "Enabled",
-      "separator_show_in_all": "Show in all groups",
-      "separator_groups": "Show in these groups",
-      "separator_groups_hint": "Ignored when \"Show in all groups\" is on. Leaving this empty (with the toggle off) hides the separator from every group."
+      "separator_mode": "Visibility mode",
+      "separator_mode_global": "Global (show in every group)",
+      "separator_mode_node_bound": "Bound to nodes (show when any linked node appears)",
+      "separator_mode_hint_global": "Visible in every group.",
+      "separator_mode_hint_node_bound": "Only visible when the rendered group contains at least one of the linked nodes. Position is still set by drag-to-reorder.",
+      "separator_node_ids": "Linked nodes",
+      "separator_node_ids_hint": "On subscription render, any group whose user can see at least one of these nodes shows the separator. Leave empty to hide it everywhere."
     },
     "action": {
       "edit": "Edit",

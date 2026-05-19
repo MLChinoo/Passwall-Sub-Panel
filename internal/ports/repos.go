@@ -115,8 +115,19 @@ type SeparatorRepo interface {
 	List(ctx context.Context) ([]*domain.SeparatorEntry, error)
 	// ListEnabled is the render-time hot path: returns rows with
 	// enabled=true sorted by sort_order ascending. The render layer
-	// filters per-group on top via SeparatorEntry.VisibleInGroup.
+	// filters per-group on top via SeparatorEntry.VisibleForNodes.
 	ListEnabled(ctx context.Context) ([]*domain.SeparatorEntry, error)
+	// BatchUpdateSortOrder rewrites sort_order for every listed
+	// separator in one transaction. Powers the drag-to-reorder bar
+	// (separator-only — node reorder is on NodeRepo).
+	BatchUpdateSortOrder(ctx context.Context, updates []SeparatorSortUpdate) error
+}
+
+// SeparatorSortUpdate mirrors NodeSortUpdate for the separator side of
+// the reorder API split.
+type SeparatorSortUpdate struct {
+	SeparatorID int64
+	SortOrder   int
 }
 
 type OwnershipRepo interface {

@@ -17,7 +17,7 @@ func TestApplyLayout_SeparatorMergedBySortOrder(t *testing.T) {
 		{ID: 3, DisplayName: "TW Dynamic", SortOrder: 20, Region: "TW"},
 	}
 	seps := []*domain.SeparatorEntry{
-		{ID: 2, DisplayName: "---- Taiwan HiNet ----", SortOrder: 5, Enabled: true, ShowInAllGroups: true},
+		{ID: 2, DisplayName: "---- Taiwan HiNet ----", SortOrder: 5, Enabled: true, Mode: domain.SeparatorModeGlobal},
 	}
 
 	items := applyLayout(nodes, seps, domain.Layout{})
@@ -66,7 +66,7 @@ func TestApplyLayout_SeparatorTieAboveNode(t *testing.T) {
 		{ID: 1, DisplayName: "n1", SortOrder: 10},
 	}
 	seps := []*domain.SeparatorEntry{
-		{ID: 2, DisplayName: "----", SortOrder: 10, Enabled: true, ShowInAllGroups: true},
+		{ID: 2, DisplayName: "----", SortOrder: 10, Enabled: true, Mode: domain.SeparatorModeGlobal},
 	}
 	items := applyLayout(nodes, seps, domain.Layout{})
 	if len(items) != 2 {

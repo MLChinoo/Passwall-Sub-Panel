@@ -59,6 +59,26 @@ func (r *separatorRepo) List(ctx context.Context) ([]*domain.SeparatorEntry, err
 	return out, nil
 }
 
+// BatchUpdateSortOrder rewrites sort_order for every listed separator
+// in one transaction. Mirrors nodeRepo.BatchUpdateSortOrder so the
+// admin drag-to-reorder bar can update both tables atomically (the
+// frontend issues two PUTs, one per kind).
+func (r *separatorRepo) BatchUpdateSortOrder(ctx context.Context, updates []ports.SeparatorSortUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, u := range updates {
+			if err := tx.Model(&separatorRow{}).
+				Where("id = ?", u.SeparatorID).
+				Update("sort_order", u.SortOrder).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (r *separatorRepo) ListEnabled(ctx context.Context) ([]*domain.SeparatorEntry, error) {
 	var rows []separatorRow
 	if err := r.db.WithContext(ctx).
