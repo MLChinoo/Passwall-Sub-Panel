@@ -111,7 +111,7 @@ func (h *AdminRuleSetsHandler) Delete(c *gin.Context) {
 // slug has no embedded counterpart.
 func (h *AdminRuleSetsHandler) Reset(c *gin.Context) {
 	slug := c.Param("slug")
-	if err := seed.Restore(h.configDir, "rulesets/"+slug+".yaml"); err != nil {
+	if err := seed.RestoreBySlug(h.configDir, "rulesets", slug); err != nil {
 		if errors.Is(err, seed.ErrSeedNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No embedded default for this slug"})
 			return

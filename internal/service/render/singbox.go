@@ -387,10 +387,17 @@ func singBoxRouteRule(kind, value string) map[string]any {
 		return map[string]any{"ip_cidr": []string{value}}
 	case "SRC-IP-CIDR", "SOURCE-IP-CIDR":
 		return map[string]any{"source_ip_cidr": []string{value}}
-	case "GEOIP":
-		return map[string]any{"geoip": []string{strings.ToLower(value)}}
-	case "GEOSITE":
-		return map[string]any{"geosite": []string{value}}
+	case "GEOIP", "GEOSITE":
+		// Deprecated in sing-box 1.8.0, REMOVED in 1.12.0. The migration
+		// path is the rule_set block at the top level of route, which
+		// requires the template to also carry the corresponding
+		// rule_set definitions (urls, download_detour, formats…) —
+		// that's a bigger refactor. For now: silently drop GEOIP /
+		// GEOSITE entries so configs at least parse on 1.12+. Users
+		// who want IP-based CN routing back can replace
+		// `GEOIP,CN,...` with concrete IP-CIDR rules in their ruleset
+		// until rule_set support lands.
+		return nil
 	case "PROCESS-NAME":
 		return map[string]any{"process_name": []string{value}}
 	case "DST-PORT":

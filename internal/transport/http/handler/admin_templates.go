@@ -123,7 +123,7 @@ func (h *AdminTemplatesHandler) Delete(c *gin.Context) {
 // nothing to restore.
 func (h *AdminTemplatesHandler) Reset(c *gin.Context) {
 	slug := c.Param("slug")
-	if err := seed.Restore(h.configDir, "templates/"+slug+".yaml"); err != nil {
+	if err := seed.RestoreBySlug(h.configDir, "templates", slug); err != nil {
 		if errors.Is(err, seed.ErrSeedNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No embedded default for this slug"})
 			return

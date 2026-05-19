@@ -15,6 +15,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The "all:" prefix includes dotfiles, so hidden default fragments (if any
@@ -23,45 +25,64 @@ import (
 //go:embed all:files
 var defaultsFS embed.FS
 
-// Restore force-writes one specific embedded default into configDir,
-// overwriting whatever's currently on disk. Used by the admin "reset
-// to default" affordance for templates and rulesets — the operator
-// edited something into a broken state and wants the panel's seed
-// version back without bouncing the binary.
+// RestoreBySlug walks the embedded files under files/<subdir>/, finds
+// the YAML whose `slug:` field matches the requested slug, and writes
+// its contents back to <configDir>/<subdir>/<embed-basename>. The
+// embed basename is used (not "<slug>.yaml") because seed file names
+// and slug fields don't have to match — default-rules.yaml carries
+// slug: default_rules — and we want to overwrite the same file the
+// yaml repo's pathForSlug already discovers.
 //
-// relPath is the slash-separated path under files/ (e.g.
-// "templates/default-sing-box.yaml" or "rulesets/default-rules.yaml").
-// Returns ErrSeedNotFound when relPath has no embedded counterpart so
-// callers can map it to a 404 rather than a 500.
-func Restore(configDir, relPath string) error {
-	relPath = filepath.ToSlash(relPath)
-	embedPath := "files/" + relPath
-	body, err := defaultsFS.ReadFile(embedPath)
+// Used by the admin "reset to default" affordance for templates and
+// rulesets. Returns ErrSeedNotFound when no embedded YAML in that
+// subdir carries the requested slug so callers can map it to a 404.
+func RestoreBySlug(configDir, subdir, slug string) error {
+	body, basename, err := findEmbedBySlug(subdir, slug)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return ErrSeedNotFound
-		}
-		return fmt.Errorf("read embed %s: %w", embedPath, err)
+		return err
 	}
-	target := filepath.Join(configDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
+	targetDir := filepath.Join(configDir, subdir)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", targetDir, err)
 	}
+	target := filepath.Join(targetDir, basename)
 	if err := os.WriteFile(target, body, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}
 	return nil
 }
 
-// HasSeedDefault reports whether the binary carries an embedded default
-// for the given relPath (slash-separated, relative to files/). The
-// admin UI uses it to suppress "reset to default" buttons for slugs
-// that admins created themselves and have no canonical fallback.
-func HasSeedDefault(relPath string) bool {
-	relPath = filepath.ToSlash(relPath)
-	embedPath := "files/" + relPath
-	_, err := defaultsFS.ReadFile(embedPath)
-	return err == nil
+// findEmbedBySlug returns (file body, file basename) for the entry in
+// files/<subdir>/ whose YAML `slug:` matches. ErrSeedNotFound when no
+// match is found.
+func findEmbedBySlug(subdir, slug string) ([]byte, string, error) {
+	entries, err := defaultsFS.ReadDir("files/" + subdir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, "", ErrSeedNotFound
+		}
+		return nil, "", fmt.Errorf("read embed dir files/%s: %w", subdir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+			continue
+		}
+		embedPath := "files/" + subdir + "/" + e.Name()
+		body, err := defaultsFS.ReadFile(embedPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("read embed %s: %w", embedPath, err)
+		}
+		var head struct {
+			Slug string `yaml:"slug"`
+		}
+		if err := yaml.Unmarshal(body, &head); err != nil {
+			continue
+		}
+		if head.Slug == slug {
+			return body, e.Name(), nil
+		}
+	}
+	return nil, "", ErrSeedNotFound
 }
 
 // ErrSeedNotFound is returned by Restore when relPath isn't carried in

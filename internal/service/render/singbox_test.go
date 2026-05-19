@@ -67,9 +67,11 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 		t.Fatalf("final = %q, want 漏网之鱼", final)
 	}
 	// rules[0] is the sniff action prepended for the sing-box >= 1.11
-	// inbound-field migration; the 4 parsed entries follow it.
-	if len(rules) != 5 {
-		t.Fatalf("rules len = %d, want 5 (sniff + 4): %#v", len(rules), rules)
+	// inbound-field migration. After that: the 3 parsed entries — GEOIP
+	// is intentionally dropped because sing-box 1.12+ removed the
+	// `geoip` rule key in favor of rule_set references.
+	if len(rules) != 4 {
+		t.Fatalf("rules len = %d, want 4 (sniff + 3, GEOIP dropped): %#v", len(rules), rules)
 	}
 	if got := rules[0]["action"]; got != "sniff" {
 		t.Fatalf("rules[0] action = %q, want sniff", got)
@@ -83,8 +85,10 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 	if _, ok := rules[3]["ip_cidr"]; !ok {
 		t.Fatalf("ip-cidr rule missing ip_cidr: %#v", rules[3])
 	}
-	if got := rules[4]["geoip"].([]string)[0]; got != "cn" {
-		t.Fatalf("geoip = %q, want cn", got)
+	for _, r := range rules {
+		if _, has := r["geoip"]; has {
+			t.Fatalf("geoip rule should be dropped for sing-box 1.12+: %#v", r)
+		}
 	}
 }
 
