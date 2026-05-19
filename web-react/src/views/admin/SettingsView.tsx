@@ -1182,6 +1182,17 @@ function ClientRulesEditor({ rules, onChange, md }: { rules: SubClientRule[]; on
     onChange([...rules, { ...p, keywords: [...p.keywords] }])
     setPresetAnchor(null)
   }
+  async function resetToPresets() {
+    if (!(await confirm({
+      title: t('settings.subscription.reset_rules_confirm_title'),
+      message: t('settings.subscription.reset_rules_confirm_body'),
+      confirmText: t('settings.subscription.reset_rules_confirm_ok'),
+      destructive: true,
+    }))) return
+    // Deep-copy keywords so future mutations on one row don't bleed
+    // into the others via the shared PRESETS reference.
+    onChange(CLIENT_RULE_PRESETS.map(p => ({ ...p, keywords: [...p.keywords] })))
+  }
   return (
     <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
       <Typography sx={{ fontWeight: 500, mb: 1.5, color: md.onSurface }}>{t('settings.subscription.section_clients')}</Typography>
@@ -1226,12 +1237,15 @@ function ClientRulesEditor({ rules, onChange, md }: { rules: SubClientRule[]; on
           ))}
         </Box>
       )}
-      <Box sx={{ mt: 2, display: 'flex', gap: 1.25 }}>
+      <Box sx={{ mt: 2, display: 'flex', gap: 1.25, flexWrap: 'wrap' }}>
         <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={add}>
           {t('settings.subscription.add_rule')}
         </Button>
         <Button variant="text" size="small" onClick={e => setPresetAnchor(e.currentTarget)}>
           {t('settings.subscription.add_preset')}
+        </Button>
+        <Button variant="text" size="small" color="warning" onClick={resetToPresets}>
+          {t('settings.subscription.reset_to_presets')}
         </Button>
         <Menu anchorEl={presetAnchor} open={!!presetAnchor} onClose={() => setPresetAnchor(null)}
           PaperProps={{ sx: { maxHeight: 360 } }}>
@@ -1383,6 +1397,25 @@ function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClie
     ])
     setPresetAnchor(null)
   }
+  async function resetToPresets() {
+    if (!(await confirm({
+      title: t('settings.subscription.reset_clients_confirm_title'),
+      message: t('settings.subscription.reset_clients_confirm_body'),
+      confirmText: t('settings.subscription.reset_clients_confirm_ok'),
+      destructive: true,
+    }))) return
+    // Stamp sort in 10-step increments by preset order so the rail
+    // lays them out the same as a fresh install. Spread platform /
+    // recommended_for arrays so future per-row edits don't leak
+    // through the shared PRESETS reference.
+    onChange(IMPORT_CLIENT_PRESETS.map((p, i) => ({
+      ...p,
+      platforms: [...p.platforms],
+      recommended_for: [...(p.recommended_for ?? [])],
+      enabled: true,
+      sort: (i + 1) * 10,
+    })))
+  }
   const PLATFORM_OPTIONS: Array<SubImportClient['platforms'][number]> = ['windows', 'macos', 'linux', 'android', 'ios', 'other']
   return (
     <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
@@ -1494,12 +1527,15 @@ function ImportClientsEditor({ clients, onChange, md }: { clients: SubImportClie
           ))}
         </Box>
       )}
-      <Box sx={{ mt: 2, display: 'flex', gap: 1.25 }}>
+      <Box sx={{ mt: 2, display: 'flex', gap: 1.25, flexWrap: 'wrap' }}>
         <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={add}>
           {t('settings.subscription.add_client')}
         </Button>
         <Button variant="text" size="small" onClick={e => setPresetAnchor(e.currentTarget)}>
-          {t('settings.subscription.add_preset', { defaultValue: '从预设添加…' })}
+          {t('settings.subscription.add_preset')}
+        </Button>
+        <Button variant="text" size="small" color="warning" onClick={resetToPresets}>
+          {t('settings.subscription.reset_to_presets')}
         </Button>
         <Menu anchorEl={presetAnchor} open={!!presetAnchor} onClose={() => setPresetAnchor(null)}
           PaperProps={{ sx: { maxHeight: 360 } }}>
