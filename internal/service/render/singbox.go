@@ -304,7 +304,14 @@ func singBoxSelectorChoices(raw []string, nodeTags []string) []string {
 }
 
 func buildSingBoxRouteRules(ruleParts ...string) ([]map[string]any, string) {
-	rules := []map[string]any{}
+	// Legacy inbound `sniff: true` was deprecated in sing-box 1.11.0
+	// and removed in 1.13.0; the migration is a global sniff action
+	// at the head of route.rules — match-all, runs before subsequent
+	// route rules. See
+	// https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions
+	rules := []map[string]any{
+		{"action": "sniff"},
+	}
 	finalOutbound := "direct"
 	for _, part := range ruleParts {
 		for _, rawLine := range strings.Split(part, "\n") {

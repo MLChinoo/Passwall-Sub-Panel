@@ -66,19 +66,24 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 	if final != "🐟 漏网之鱼" {
 		t.Fatalf("final = %q, want 漏网之鱼", final)
 	}
-	if len(rules) != 4 {
-		t.Fatalf("rules len = %d, want 4: %#v", len(rules), rules)
+	// rules[0] is the sniff action prepended for the sing-box >= 1.11
+	// inbound-field migration; the 4 parsed entries follow it.
+	if len(rules) != 5 {
+		t.Fatalf("rules len = %d, want 5 (sniff + 4): %#v", len(rules), rules)
 	}
-	if got := rules[0]["outbound"]; got != "🚀 节点选择" {
+	if got := rules[0]["action"]; got != "sniff" {
+		t.Fatalf("rules[0] action = %q, want sniff", got)
+	}
+	if got := rules[1]["outbound"]; got != "🚀 节点选择" {
 		t.Fatalf("domain suffix outbound = %q", got)
 	}
-	if got := rules[1]["outbound"]; got != "block" {
+	if got := rules[2]["outbound"]; got != "block" {
 		t.Fatalf("reject outbound = %q", got)
 	}
-	if _, ok := rules[2]["ip_cidr"]; !ok {
-		t.Fatalf("ip-cidr rule missing ip_cidr: %#v", rules[2])
+	if _, ok := rules[3]["ip_cidr"]; !ok {
+		t.Fatalf("ip-cidr rule missing ip_cidr: %#v", rules[3])
 	}
-	if got := rules[3]["geoip"].([]string)[0]; got != "cn" {
+	if got := rules[4]["geoip"].([]string)[0]; got != "cn" {
 		t.Fatalf("geoip = %q, want cn", got)
 	}
 }
@@ -96,10 +101,16 @@ func TestBuildSingBoxRouteRulesPersonalRulesFirst(t *testing.T) {
 	if final != "🎯 全球直连" {
 		t.Fatalf("final = %q, want personal MATCH target", final)
 	}
-	if len(rules) != 1 {
-		t.Fatalf("rules len = %d, want only personal rule before MATCH: %#v", len(rules), rules)
+	// rules[0] is the sniff action prepended for the sing-box >= 1.11
+	// inbound-field migration; the personal rule follows it before
+	// MATCH terminates the loop.
+	if len(rules) != 2 {
+		t.Fatalf("rules len = %d, want 2 (sniff + personal): %#v", len(rules), rules)
 	}
-	if got := rules[0]["outbound"]; got != "💬 Ai平台" {
+	if got := rules[0]["action"]; got != "sniff" {
+		t.Fatalf("rules[0] action = %q, want sniff", got)
+	}
+	if got := rules[1]["outbound"]; got != "💬 Ai平台" {
 		t.Fatalf("personal rule outbound = %q", got)
 	}
 }

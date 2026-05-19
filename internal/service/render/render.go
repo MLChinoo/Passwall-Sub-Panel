@@ -57,10 +57,6 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if ct == "" {
 		ct = domain.ClientMihomo
 	}
-	tpl, err := s.repos.Template.GetDefault(ctx, ct)
-	if err != nil {
-		return nil, fmt.Errorf("load template: %w", err)
-	}
 	g, err := s.repos.Group.GetByID(ctx, u.GroupID)
 	if err != nil {
 		return nil, fmt.Errorf("load group: %w", err)
@@ -92,6 +88,21 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if st, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil && st.SubRegionFlagPrefix {
 		applyRegionFlagPrefix(items)
 	}
+
+	// URI list path is template-free — V2rayN / Passwall / Shadowrocket
+	// only consume nodes and do their own local routing. Short-circuit
+	// BEFORE Template.GetDefault so a missing uri-list template (which
+	// is the seeded default — only mihomo + sing-box templates ship)
+	// doesn't propagate ErrNotFound up to the sub handler and produce
+	// a misleading 404 to UAs that match a uri-list rule.
+	if ct == domain.ClientURIList {
+		return s.renderURIList(ctx, u, items)
+	}
+
+	tpl, err := s.repos.Template.GetDefault(ctx, ct)
+	if err != nil {
+		return nil, fmt.Errorf("load template: %w", err)
+	}
 	proxies := s.buildProxies(ctx, u, items)
 
 	proxiesYAML, err := yaml.Marshal(proxies)
@@ -108,12 +119,6 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	}
 	if ct == domain.ClientSingBox {
 		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder)
-	}
-	if ct == domain.ClientURIList {
-		// V2rayN / Passwall / Shadowrocket-style base64 URI list. Template
-		// and rules don't apply — these clients only consume nodes and do
-		// their own local routing.
-		return s.renderURIList(ctx, u, items)
 	}
 	proxyGroupsYAML, err := buildProxyGroupsYAML(strings.Join([]string{u.PersonalRules, rulesCommon}, "\n"), proxyGroupOrder)
 	if err != nil {
