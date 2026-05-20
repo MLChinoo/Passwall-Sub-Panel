@@ -149,6 +149,9 @@ interface ImportForm extends MetaForm {
   panel_id: number
   panel_name: string
   inbound_id: number
+  // Source inbound protocol (lowercased, e.g. "vless"/"shadowsocks").
+  // Drives whether the Flow picker is shown — flow is a VLESS-only knob.
+  protocol: string
 }
 
 interface InboundFormState {
@@ -287,7 +290,7 @@ const EMPTY_META: MetaForm = {
 }
 
 const EMPTY_IMPORT: ImportForm = {
-  ...EMPTY_META, panel_id: 0, panel_name: '', inbound_id: 0,
+  ...EMPTY_META, panel_id: 0, panel_name: '', inbound_id: 0, protocol: '',
 }
 
 const EMPTY_INBOUND: InboundFormState = {
@@ -2424,6 +2427,7 @@ export default function NodesView() {
       panel_id: u.PanelID,
       panel_name: u.PanelName,
       inbound_id: u.InboundID,
+      protocol: (u.Protocol || '').toLowerCase(),
       display_name: u.Remark || `${u.Protocol}:${u.Port}`,
     })
     setImportErr({})
@@ -2443,7 +2447,8 @@ export default function NodesView() {
         inbound_id: importForm.inbound_id,
         display_name: importForm.display_name,
         server_address: importForm.server_address,
-        flow: importForm.flow || undefined,
+        // Flow only applies to VLESS; never persist it for other protocols.
+        flow: importForm.protocol === 'vless' ? (importForm.flow || undefined) : undefined,
         region: importForm.region,
         tags: importForm.tags_text
           ? importForm.tags_text.split(',').map(s => s.trim()).filter(Boolean)
@@ -2893,15 +2898,20 @@ export default function NodesView() {
               onChange={e => setImportForm({ ...importForm, server_address: e.target.value })}
               error={!!importErr.server_address}
               helperText={importErr.server_address ? t(`admin:${importErr.server_address}`) : ''} />
-            <Box>
-              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.25 }}>
-                {t('admin:nodes.import_dialog.flow')}
-              </Typography>
-              <Select size="small" fullWidth value={importForm.flow} displayEmpty
-                onChange={e => setImportForm({ ...importForm, flow: e.target.value })}>
-                {VLESS_FLOWS.map(f => <MenuItem key={f} value={f}>{f || '—'}</MenuItem>)}
-              </Select>
-            </Box>
+            {/* Flow is a VLESS-only knob (xtls-rprx-vision et al.); hide it for
+                SS / VMess / Trojan / Hysteria2 inbounds so it can't be set on a
+                protocol that ignores it. */}
+            {importForm.protocol === 'vless' && (
+              <Box>
+                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.25 }}>
+                  {t('admin:nodes.import_dialog.flow')}
+                </Typography>
+                <Select size="small" fullWidth value={importForm.flow} displayEmpty
+                  onChange={e => setImportForm({ ...importForm, flow: e.target.value })}>
+                  {VLESS_FLOWS.map(f => <MenuItem key={f} value={f}>{f || '—'}</MenuItem>)}
+                </Select>
+              </Box>
+            )}
             <TextField required fullWidth label={t('admin:nodes.import_dialog.region')}
               value={importForm.region}
               onChange={e => setImportForm({ ...importForm, region: e.target.value })}

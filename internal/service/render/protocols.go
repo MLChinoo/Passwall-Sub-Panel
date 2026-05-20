@@ -82,11 +82,18 @@ func emitVLESS(base map[string]any, uuid string, stream xuiStreamSettings, flow 
 	base["type"] = "vless"
 	base["uuid"] = uuid
 	base["network"] = defaultStr(stream.Network, "tcp")
+	// Honor the node's stored flow verbatim — it mirrors what 3X-UI configured
+	// for this client. Empty means "no flow"; never substitute a default
+	// (xtls-rprx-vision only works over raw TCP and must match the server, so
+	// guessing it breaks ws/grpc or pure-reality inbounds). sing-box and the
+	// URI builder follow the same rule.
+	if flow != "" {
+		base["flow"] = flow
+	}
 
 	switch stream.Security {
 	case "reality":
 		base["tls"] = true
-		base["flow"] = defaultStr(flow, "xtls-rprx-vision")
 		if stream.RealitySettings != nil {
 			base["client-fingerprint"] = defaultStr(stream.RealitySettings.Settings.Fingerprint, "chrome")
 			base["servername"] = first(stream.RealitySettings.ServerNames)

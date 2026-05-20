@@ -4,6 +4,24 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.1.1-rc.1 — 2026-05-19
+
+### Fixed
+- 订阅 URI 列表里 SS-2022（`2022-blake3-*`）的 `ss://` 链接拼接修正为
+  SIP022 形式 `ss://method:serverPSK:userPSK@host:port`，PSK 内的 base64
+  特殊字符（`+ / =`）走 percent-encoding；不再把整段 userinfo 用标准
+  base64 包装。旧拼法会让 sing-box / shadowsocks-rust / Shadowrocket 无法
+  解析 2022 节点。普通 SS 仍保持 SIP002 的 base64url userinfo。
+- 统一 VLESS `flow` 的渲染：Clash / URI / sing-box 三种订阅一律按节点存储的
+  flow 原样输出，空就留空。此前 Clash / URI 在 REALITY 且 flow 为空时会擅自
+  补 `xtls-rprx-vision`，与显式选"无"、ws/grpc 传输或纯 reality 服务端冲突，
+  且和 sing-box（一直按原值）行为不一致。
+
+### Changed
+- 导入 inbound 弹窗：`Flow` 选择器仅在源 inbound 为 VLESS 时显示，
+  SS / VMess / Trojan / Hysteria2 不再出现该字段，提交时也不会为非 VLESS
+  协议写入 flow。
+
 ## v3.0.0 — 2026-05-18
 
 正式版。基于一系列 V3 发布前的代码审查（后端 / 安全 / 前端 / DB / 构建 /

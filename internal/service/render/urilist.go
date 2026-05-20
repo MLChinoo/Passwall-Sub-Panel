@@ -139,11 +139,15 @@ func buildVLESSURI(name, host string, port int, uuid string, stream xuiStreamSet
 	q := url.Values{}
 	q.Set("type", defaultStr(stream.Network, "tcp"))
 	q.Set("encryption", "none")
+	// Honor the stored flow verbatim (same rule as the Clash + sing-box
+	// renderers): empty = no flow, never default to xtls-rprx-vision.
+	if flow != "" {
+		q.Set("flow", flow)
+	}
 
 	switch stream.Security {
 	case "reality":
 		q.Set("security", "reality")
-		q.Set("flow", defaultStr(flow, "xtls-rprx-vision"))
 		if stream.RealitySettings != nil {
 			pub := stream.RealitySettings.Settings.PublicKey
 			if pub == "" && stream.RealitySettings.PrivateKey != "" {
@@ -176,9 +180,6 @@ func buildVLESSURI(name, host string, port int, uuid string, stream xuiStreamSet
 			if len(stream.TLSSettings.ALPN) > 0 {
 				q.Set("alpn", strings.Join(stream.TLSSettings.ALPN, ","))
 			}
-		}
-		if flow != "" {
-			q.Set("flow", flow)
 		}
 	}
 	applyTransportQuery(q, stream)
@@ -331,15 +332,18 @@ func buildHysteria2URI(name, host string, port int, password string, opts hyster
 		"/?" + q.Encode() + "#" + url.PathEscape(name)
 }
 
-// buildSS2022URI uses the EIH form `ss://method:base64(server-psk):base64(user-psk)@host:port#name`
-// which is what 2022-blake3-* ciphers expect. Server PSK is the inbound's
-// `password` field; user PSK is derived from the panel-side UUID.
+// buildSS2022URI emits the EIH form `ss://method:serverPSK:userPSK@host:port#name`
+// per SIP022 (https://shadowsocks.org/doc/sip022.html). Unlike SIP002, the
+// 2022-blake3-* userinfo MUST NOT be base64url-wrapped — it is the literal
+// "method:password" with method and password percent-encoded. The multi-user
+// (EIH) password is the colon-joined PSK chain "serverPSK:userPSK"; both PSKs
+// are already base64 in 3X-UI's storage, so we keep them verbatim and only
+// percent-encode the base64 specials (+ / =) that are unsafe in URI userinfo.
+// Wrapping the whole thing in base64 (the old SIP002 trick) makes sing-box,
+// shadowsocks-rust and Shadowrocket fail to parse 2022 nodes.
 func buildSS2022URI(name, host string, port int, method, serverPSK, userPSK string) string {
-	// Both PSKs are already base64-encoded in 3X-UI's storage for SS-2022,
-	// so use them verbatim. The "method:psk1:psk2" group is itself base64-
-	// encoded with the colons preserved by base64-encoding the whole string.
-	creds := base64.StdEncoding.EncodeToString([]byte(method + ":" + serverPSK + ":" + userPSK))
-	return "ss://" + creds + "@" + joinHostPort(host, port) + "#" + url.PathEscape(name)
+	userinfo := method + ":" + url.QueryEscape(serverPSK) + ":" + url.QueryEscape(userPSK)
+	return "ss://" + userinfo + "@" + joinHostPort(host, port) + "#" + url.PathEscape(name)
 }
 
 func applyTransportQuery(q url.Values, stream xuiStreamSettings) {

@@ -62,6 +62,35 @@ func TestEmitHysteria2_NoObfs_Insecure(t *testing.T) {
 	}
 }
 
+// TestEmitVLESS_FlowVerbatim pins the unified flow contract: the renderer
+// emits exactly the node's stored flow and never substitutes a default.
+// A REALITY inbound with an empty flow must NOT gain xtls-rprx-vision —
+// vision only works over raw TCP and must match the server, so guessing it
+// would break ws/grpc or pure-reality clients. (Clash, sing-box and the URI
+// builder all follow this rule.)
+func TestEmitVLESS_FlowVerbatim(t *testing.T) {
+	reality := xuiStreamSettings{Network: "tcp", Security: "reality", RealitySettings: &xuiRealitySettings{}}
+
+	// Empty flow on a REALITY inbound → no "flow" key at all.
+	got := emitVLESS(map[string]any{"name": "n"}, "uuid-1", reality, "")
+	if v, ok := got["flow"]; ok {
+		t.Fatalf("empty flow must not be defaulted, got flow=%v", v)
+	}
+
+	// Explicit flow → emitted verbatim.
+	got = emitVLESS(map[string]any{"name": "n"}, "uuid-1", reality, "xtls-rprx-vision")
+	if got["flow"] != "xtls-rprx-vision" {
+		t.Fatalf("flow = %v, want xtls-rprx-vision", got["flow"])
+	}
+
+	// Flow is honored regardless of security (e.g. vision over plain TLS).
+	tls := xuiStreamSettings{Network: "tcp", Security: "tls", TLSSettings: &xuiTLSSettings{ServerName: "x"}}
+	got = emitVLESS(map[string]any{"name": "n"}, "uuid-1", tls, "xtls-rprx-vision-udp443")
+	if got["flow"] != "xtls-rprx-vision-udp443" {
+		t.Fatalf("flow = %v, want xtls-rprx-vision-udp443", got["flow"])
+	}
+}
+
 // TestParseHysteria2Opts maps 3X-UI's actual inbound JSON onto the
 // shared hysteria2Opts struct. As documented in
 // frontend/src/models/inbound.js, 3X-UI stores salamander obfs under

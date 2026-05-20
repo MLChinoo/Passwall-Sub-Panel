@@ -52,6 +52,50 @@ func TestBuildHysteria2URI_NoObfs_Insecure(t *testing.T) {
 	}
 }
 
+// TestBuildSS2022URI pins the SIP022 share-link shape: the 2022-blake3-*
+// userinfo is the literal "method:serverPSK:userPSK" with the PSK base64
+// specials (+ / =) percent-encoded — NOT the whole userinfo base64-wrapped
+// (the SIP002 trick, which sing-box / shadowsocks-rust reject for 2022).
+func TestBuildSS2022URI(t *testing.T) {
+	got := buildSS2022URI("HK-1", "node.example.com", 8388,
+		"2022-blake3-aes-256-gcm", "ab+cd/ef=", "12/34+56=")
+
+	want := "ss://2022-blake3-aes-256-gcm:ab%2Bcd%2Fef%3D:12%2F34%2B56%3D@node.example.com:8388#HK-1"
+	if got != want {
+		t.Fatalf("ss2022 uri mismatch:\n got  %s\n want %s", got, want)
+	}
+	// Method must be visible in cleartext (i.e. the userinfo is not
+	// base64-wrapped). A wrapped form would hide the method string.
+	if !strings.Contains(got, "2022-blake3-aes-256-gcm:") {
+		t.Fatalf("method should appear in cleartext, userinfo looks base64-wrapped: %s", got)
+	}
+}
+
+// TestBuildSSURI keeps the legacy (non-2022) SIP002 contract intact: the
+// userinfo IS base64url-encoded (no padding) as base64(method:password).
+func TestBuildSSURI(t *testing.T) {
+	got := buildSSURI("JP-1", "1.2.3.4", 8388, "aes-256-gcm", "p@ss")
+	// base64url(no pad) of "aes-256-gcm:p@ss"
+	want := "ss://YWVzLTI1Ni1nY206cEBzcw@1.2.3.4:8388#JP-1"
+	if got != want {
+		t.Fatalf("ss uri mismatch:\n got  %s\n want %s", got, want)
+	}
+}
+
+// TestBuildVLESSURI_FlowVerbatim mirrors TestEmitVLESS_FlowVerbatim for the
+// URI output: empty flow → no flow query param; explicit flow → emitted.
+func TestBuildVLESSURI_FlowVerbatim(t *testing.T) {
+	reality := xuiStreamSettings{Network: "tcp", Security: "reality", RealitySettings: &xuiRealitySettings{}}
+
+	got := buildVLESSURI("n", "1.2.3.4", 443, "uuid-1", reality, "")
+	if strings.Contains(got, "flow=") {
+		t.Fatalf("empty flow must not be defaulted: %s", got)
+	}
+
+	got = buildVLESSURI("n", "1.2.3.4", 443, "uuid-1", reality, "xtls-rprx-vision")
+	mustContain(t, got, "flow=xtls-rprx-vision")
+}
+
 func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
 	if !strings.Contains(s, sub) {
