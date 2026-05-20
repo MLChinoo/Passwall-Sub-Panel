@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
@@ -89,6 +91,11 @@ type userDTO struct {
 	UUID               string                    `json:"uuid"`
 	SubURL             string                    `json:"sub_url"`
 	ExpireAt           *time.Time                `json:"expire_at,omitempty"`
+	// ExpireDate is ExpireAt rendered as the YYYY-MM-DD calendar day it
+	// falls on in the *panel* timezone. The UI uses this for the date
+	// picker and table so the displayed day matches what was set, free of
+	// the browser's or 3X-UI server's timezone. Empty for permanent users.
+	ExpireDate string `json:"expire_date,omitempty"`
 	TrafficLimitBytes  int64                     `json:"traffic_limit_bytes"`
 	TrafficResetPeriod domain.ResetPeriod        `json:"traffic_reset_period"`
 	Remark             string                    `json:"remark,omitempty"`
@@ -115,6 +122,10 @@ type createUserRequest struct {
 	Password           string     `json:"password"`
 	GroupID            int64      `json:"group_id" binding:"required"`
 	ExpireAt           *time.Time `json:"expire_at"`
+	// ExpireDate ("YYYY-MM-DD"), when set, is interpreted as end-of-day in
+	// the panel timezone and wins over ExpireAt. Preferred over ExpireAt for
+	// calendar-date expiry so the day can't drift with the caller's timezone.
+	ExpireDate         string     `json:"expire_date"`
 	TrafficLimitGB     int64      `json:"traffic_limit_gb"`
 	TrafficResetPeriod string     `json:"traffic_reset_period"`
 	Remark             string     `json:"remark"`
@@ -190,13 +201,25 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// A calendar date wins over a raw timestamp: it's resolved against the
+	// panel timezone so "2026-05-30" means end of that day for the panel,
+	// not whatever instant the caller's browser computed.
+	expireAt := req.ExpireAt
+	if strings.TrimSpace(req.ExpireDate) != "" {
+		inst, err := h.panelDateToInstant(c.Request.Context(), req.ExpireDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		expireAt = inst
+	}
 	in := user.CreateLocalInput{
 		UPN:                req.UPN,
 		Email:              strings.TrimSpace(req.Email),
 		DisplayName:        req.DisplayName,
 		InitialPassword:    req.Password,
 		GroupID:            req.GroupID,
-		ExpireAt:           req.ExpireAt,
+		ExpireAt:           expireAt,
 		TrafficLimitBytes:  req.TrafficLimitGB * 1024 * 1024 * 1024,
 		TrafficResetPeriod: domain.ResetPeriod(req.TrafficResetPeriod),
 		Remark:             req.Remark,
@@ -475,6 +498,10 @@ type updateUserRequest struct {
 	Role               *string    `json:"role,omitempty"`
 	Email              *string    `json:"email,omitempty"`
 	ExpireAt           *time.Time `json:"expire_at,omitempty"`
+	// ExpireDate ("YYYY-MM-DD"), when non-nil, is interpreted as end-of-day
+	// in the panel timezone and wins over ExpireAt. The date-mode UI sends
+	// this; permanent-mode sends ClearExpire instead.
+	ExpireDate         *string    `json:"expire_date,omitempty"`
 	ClearExpire        bool       `json:"clear_expire,omitempty"`
 	TrafficLimitGB     *int64     `json:"traffic_limit_gb,omitempty"`
 	TrafficResetPeriod *string    `json:"traffic_reset_period,omitempty"`
@@ -505,10 +532,22 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 		email := strings.TrimSpace(*req.Email)
 		req.Email = &email
 	}
+	// expire_date (panel-timezone calendar day) wins over a raw expire_at
+	// timestamp when supplied, so the chosen day can't drift with the
+	// caller's timezone.
+	expireAt := req.ExpireAt
+	if req.ExpireDate != nil {
+		inst, err := h.panelDateToInstant(c.Request.Context(), *req.ExpireDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		expireAt = inst
+	}
 	in := user.UpdateInput{
 		GroupID:     req.GroupID,
 		Email:       req.Email,
-		ExpireAt:    req.ExpireAt,
+		ExpireAt:    expireAt,
 		ClearExpire: req.ClearExpire,
 		Remark:      req.Remark,
 		DisplayName: req.DisplayName,
@@ -549,6 +588,20 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 
 // ---- helpers ----
 
+// panelDateToInstant turns an admin-picked "YYYY-MM-DD" into the absolute
+// end-of-day instant in the panel timezone. Empty input returns (nil, nil)
+// so callers can treat "no date supplied" distinctly from a parse error.
+func (h *AdminUserHandler) panelDateToInstant(ctx context.Context, dateStr string) (*time.Time, error) {
+	if strings.TrimSpace(dateStr) == "" {
+		return nil, nil
+	}
+	t, err := paneltz.EndOfDay(dateStr, paneltz.Location(ctx, h.settings))
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid expire_date %q (want YYYY-MM-DD)", domain.ErrValidation, dateStr)
+	}
+	return &t, nil
+}
+
 func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 	// Only fill EmergencyUsedBytes when a window is actually active — a stale
 	// baseline from a closed window is meaningless and would mislead the UI.
@@ -560,12 +613,20 @@ func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 		}
 	}
 	// Read quota from current settings; cheap because Load is cached in the
-	// repo layer. Falls back to 0 (= unlimited) if settings unreadable.
+	// repo layer. Falls back to 0 (= unlimited) if settings unreadable. The
+	// same load resolves the panel timezone used to render expire_date, so
+	// there's no extra round-trip.
 	var quotaBytes int64
+	loc := time.Local
 	if h.settings != nil {
 		if st, err := h.settings.Load(r.Context(), ports.UISettings{}); err == nil {
 			quotaBytes = int64(st.EmergencyAccessQuotaGB) * 1024 * 1024 * 1024
+			loc = paneltz.LocationOf(st.Timezone)
 		}
+	}
+	var expireDate string
+	if u.ExpireAt != nil {
+		expireDate = paneltz.DateString(*u.ExpireAt, loc)
 	}
 	return userDTO{
 		ID:                  u.ID,
@@ -579,6 +640,7 @@ func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 		UUID:                u.UUID,
 		SubURL:              h.subURLFor(r, u.SubToken),
 		ExpireAt:            u.ExpireAt,
+		ExpireDate:          expireDate,
 		TrafficLimitBytes:   u.TrafficLimitBytes,
 		TrafficResetPeriod:  u.TrafficResetPeriod,
 		Remark:              u.Remark,

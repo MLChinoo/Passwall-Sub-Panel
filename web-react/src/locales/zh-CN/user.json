@@ -8,6 +8,7 @@
     "expire_in": "还有 {{days}} 天到期",
     "expired_days": "已过期 {{days}} 天",
     "today": "今天到期",
+    "expire_tz_hint": "按你的本地时区 {{tz}} 显示",
     "traffic_limit": "流量上限",
     "traffic_used": "本周期已用",
     "today_used": "今日已用",

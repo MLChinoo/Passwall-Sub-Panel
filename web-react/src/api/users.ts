@@ -12,6 +12,9 @@ export interface UpdateUserRequest {
   group_id?: number
   role?: Role
   expire_at?: string | null
+  /** YYYY-MM-DD calendar date; interpreted as end-of-day in the panel
+   *  timezone server-side. Preferred over expire_at for a picked date. */
+  expire_date?: string
   clear_expire?: boolean
   traffic_limit_gb?: number
   traffic_reset_period?: ResetPeriod

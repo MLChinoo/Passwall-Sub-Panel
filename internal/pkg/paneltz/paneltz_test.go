@@ -128,3 +128,58 @@ func TestValidate_Rejects(t *testing.T) {
 		})
 	}
 }
+
+// TestEndOfDay_RoundTripsAcrossZones: EndOfDay anchors the picked calendar
+// day to the panel zone at 23:59:59, and DateString round-trips it back to
+// the same day — regardless of how far the zone sits from UTC. The
+// west-of-UTC case is the one that used to drift a day when a date was
+// parsed as UTC midnight and then displayed in local time.
+func TestEndOfDay_RoundTripsAcrossZones(t *testing.T) {
+	for _, name := range []string{"UTC", "Asia/Shanghai", "America/Los_Angeles"} {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Skipf("tzdata for %s unavailable: %v", name, err)
+		}
+		const day = "2026-05-30"
+		got, err := EndOfDay(day, loc)
+		if err != nil {
+			t.Fatalf("%s: EndOfDay(%q): %v", name, day, err)
+		}
+		if h, m, s := got.In(loc).Clock(); h != 23 || m != 59 || s != 59 {
+			t.Fatalf("%s: EndOfDay clock = %02d:%02d:%02d, want 23:59:59", name, h, m, s)
+		}
+		if rt := DateString(got, loc); rt != day {
+			t.Fatalf("%s: round trip = %q, want %q", name, rt, day)
+		}
+	}
+}
+
+// TestEndOfDay_IsZoneAnchored: the same picked day yields a different
+// absolute instant per zone (offsets differ), each correct for its own
+// zone — proving the instant is anchored to the panel timezone, not UTC.
+func TestEndOfDay_IsZoneAnchored(t *testing.T) {
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	utcEnd, _ := EndOfDay("2026-05-30", time.UTC)
+	laEnd, _ := EndOfDay("2026-05-30", la)
+	// LA is behind UTC, so its end-of-day instant is later in absolute terms.
+	if !laEnd.After(utcEnd) {
+		t.Fatalf("expected LA end-of-day (%s) to be after UTC end-of-day (%s)", laEnd, utcEnd)
+	}
+}
+
+func TestEndOfDay_RejectsBadInput(t *testing.T) {
+	if _, err := EndOfDay("2026/05/30", time.UTC); err == nil {
+		t.Fatal("EndOfDay accepted a non YYYY-MM-DD string")
+	}
+}
+
+func TestLocationOf_FallsBackToLocal(t *testing.T) {
+	for _, tz := range []string{"", "   ", "Not/AZone"} {
+		if got := LocationOf(tz); got != time.Local {
+			t.Fatalf("LocationOf(%q) = %v, want time.Local", tz, got)
+		}
+	}
+}

@@ -25,13 +25,52 @@ func Location(ctx context.Context, settings ports.SettingsRepo) *time.Location {
 		return time.Local
 	}
 	cfg, err := settings.Load(ctx, ports.UISettings{})
-	if err != nil || strings.TrimSpace(cfg.Timezone) == "" {
+	if err != nil {
 		return time.Local
 	}
-	if l, lerr := time.LoadLocation(cfg.Timezone); lerr == nil {
+	return LocationOf(cfg.Timezone)
+}
+
+// LocationOf resolves an IANA timezone name to a *time.Location, falling
+// back to time.Local on blank or unparseable input. Use this when you
+// already hold the settings value (e.g. inside a DTO mapper that just
+// loaded settings) to avoid a second repo round-trip.
+func LocationOf(tz string) *time.Location {
+	if strings.TrimSpace(tz) == "" {
+		return time.Local
+	}
+	if l, err := time.LoadLocation(strings.TrimSpace(tz)); err == nil {
 		return l
 	}
 	return time.Local
+}
+
+// EndOfDay parses a "2006-01-02" calendar date and returns the instant at
+// 23:59:59 of that day in loc. This is the canonical "an admin picked a
+// date" → absolute-instant conversion: the date is interpreted in the
+// panel timezone, never the browser's or the 3X-UI server's, so the same
+// pick yields the same cutoff regardless of where anyone is. The returned
+// instant is timezone-independent (it's an instant); only the calendar
+// day it represents was resolved against loc.
+func EndOfDay(dateStr string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(dateStr), loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, loc), nil
+}
+
+// DateString formats an instant as the "2006-01-02" calendar day it falls
+// on in loc — the inverse of EndOfDay for display/prefill. Round-trips:
+// DateString(EndOfDay(s, loc), loc) == s for any valid s.
+func DateString(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+	return t.In(loc).Format("2006-01-02")
 }
 
 // Now returns time.Now() in the configured panel timezone.

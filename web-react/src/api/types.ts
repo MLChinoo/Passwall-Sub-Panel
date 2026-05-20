@@ -25,7 +25,12 @@ export interface User {
   group_id: number
   uuid: string
   sub_url: string
+  /** Absolute expiry instant (RFC3339). Use for "is expired / days left" math. */
   expire_at?: string | null
+  /** expire_at rendered as the YYYY-MM-DD calendar day in the *panel* timezone.
+   *  Use this for the date picker and table so the shown day matches what was
+   *  set, independent of the browser's timezone. Empty for permanent users. */
+  expire_date?: string
   traffic_limit_bytes: number
   traffic_reset_period: ResetPeriod
   remark?: string
@@ -48,6 +53,9 @@ export interface CreateUserRequest {
   password?: string
   group_id: number
   expire_at?: string
+  /** YYYY-MM-DD calendar date; interpreted as end-of-day in the panel
+   *  timezone server-side. Preferred over expire_at for a picked date. */
+  expire_date?: string
   traffic_limit_gb?: number
   traffic_reset_period?: ResetPeriod
   remark?: string

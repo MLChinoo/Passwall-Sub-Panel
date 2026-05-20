@@ -882,6 +882,7 @@
       "expire_at": "到期时间",
       "expire_mode_date": "到期时间",
       "expire_mode_permanent": "永久",
+      "expire_tz_hint": "日期按面板时区 {{tz}} 计算",
       "traffic_limit_gb": "流量上限 (GB，0=无限)",
       "period_used_gb": "本周期已用 (GB)",
       "emergency_used_count": "紧急访问已用 {{count}} 次",

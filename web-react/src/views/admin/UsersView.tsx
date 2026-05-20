@@ -74,6 +74,7 @@ import { setUserTraffic, topTraffic, type TrafficRow } from '@/api/traffic'
 import type { Group, ResetPeriod, Role, User } from '@/api/types'
 import type { ReconcileReport } from '@/api/reconcile'
 import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import {
@@ -136,8 +137,6 @@ const EMPTY_EDIT: EditForm = {
 }
 
 function bytesToGB(b: number) { return Math.round((b / 1024 / 1024 / 1024) * 100) / 100 }
-function isoDateToInput(iso: string) { return iso.slice(0, 10) }
-function inputDateToIso(s: string) { const d = new Date(s); d.setHours(23, 59, 59, 0); return d.toISOString() }
 function isExpired(u: User) { return !!u.expire_at && new Date(u.expire_at).getTime() < Date.now() }
 function canQuickRenew(u: User) { return !!u.expire_at && u.auto_disabled_reason !== 'pending_delete' }
 function canSelect(u: User) { return u.auto_disabled_reason !== 'pending_delete' }
@@ -154,6 +153,12 @@ export default function UsersView() {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
+  // Expiry dates are set/shown in the panel timezone. Surface a hint only
+  // when the admin's browser is in a different zone, so a picked "5/30"
+  // isn't silently read as the browser's 5/30.
+  const panelTz = useSiteStore(s => s.timezone)
+  const browserTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return '' } })()
+  const expireTzDiffers = !!panelTz && panelTz !== browserTz
   const auth = useAuthStore()
 
   const [items, setItems] = useState<User[]>([])
@@ -339,7 +344,10 @@ export default function UsersView() {
       display_name: u.display_name ?? '', email: u.email ?? '',
       group_id: u.group_id, role: u.role,
       expire_mode: u.expire_at ? 'date' : 'permanent',
-      expire_at: u.expire_at ? isoDateToInput(u.expire_at) : '',
+      // Prefill from the panel-timezone calendar day the backend computed,
+      // not the raw instant — slicing the UTC date off expire_at would show
+      // the wrong day in zones west of UTC.
+      expire_at: u.expire_date ?? '',
       traffic_limit_gb: bytesToGB(u.traffic_limit_bytes),
       traffic_reset_period: u.traffic_reset_period,
       remark: u.remark ?? '',
@@ -392,7 +400,9 @@ export default function UsersView() {
         role: editForm.role,
       }
       if (editForm.expire_mode === 'permanent') req.clear_expire = true
-      else if (editForm.expire_at) req.expire_at = inputDateToIso(editForm.expire_at)
+      // Send the bare YYYY-MM-DD; the backend anchors it to end-of-day in
+      // the panel timezone so the chosen day can't drift with the browser tz.
+      else if (editForm.expire_at) req.expire_date = editForm.expire_at
       await updateUser(editing.id, req)
       // Period-used edit: only push when admin actually moved it. Sub-1MB
       // jitter is treated as no-op so refreshing the dialog without changing
@@ -712,7 +722,9 @@ export default function UsersView() {
     if (diffDays < 0) return badge(t('admin:users.status.expired_days', { days: Math.abs(diffDays) }), md.errorContainer, md.onErrorContainer)
     if (diffDays === 0) return badge(t('admin:users.status.today'), md.errorContainer, md.onErrorContainer)
     if (diffDays <= 7) return badge(t('admin:users.status.expiring_soon', { days: diffDays }), md.tertiaryContainer, md.onTertiaryContainer)
-    return <Typography sx={{ fontSize: 13, color: md.onSurface, fontVariantNumeric: 'tabular-nums' }}>{expire.toLocaleDateString()}</Typography>
+    // Show the panel-timezone calendar day (the authoritative one), falling
+    // back to the browser-local render only if the backend didn't supply it.
+    return <Typography sx={{ fontSize: 13, color: md.onSurface, fontVariantNumeric: 'tabular-nums' }}>{u.expire_date ?? expire.toLocaleDateString()}</Typography>
   }
 
   function statusBadge(u: User) {
@@ -1296,7 +1308,9 @@ export default function UsersView() {
                   value={editForm.expire_at}
                   onChange={e => setEditForm({ ...editForm, expire_at: e.target.value })}
                   error={!!editErr.expire_at}
-                  helperText={editErr.expire_at ? t(`admin:${editErr.expire_at}`) : ''}
+                  helperText={editErr.expire_at
+                    ? t(`admin:${editErr.expire_at}`)
+                    : (expireTzDiffers ? t('admin:users.field.expire_tz_hint', { tz: panelTz }) : '')}
                   sx={{ flex: 1 }} InputLabelProps={{ shrink: true }} />
               )}
             </Box>

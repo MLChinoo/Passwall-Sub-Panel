@@ -57,6 +57,7 @@ import {
   type MeProfile,
 } from '@/api/me'
 import type { M3Tokens } from '@/theme'
+import { useSiteStore } from '@/stores/site'
 import {
   getMyTrafficHistory,
   getMyUsage,
@@ -1106,6 +1107,13 @@ interface UsagePanelProps {
 
 function UsagePanel({ limitBytes, usage, expireAt, resetPeriod, md }: UsagePanelProps) {
   const { t } = useTranslation('user')
+  // The expiry shown here is in the viewer's local timezone, while the panel
+  // sets cutoffs against its own zone. Surface that only when they differ, so
+  // a user whose browser tz ≠ panel tz understands why their date may not
+  // match what an admin quoted.
+  const panelTz = useSiteStore(s => s.timezone)
+  const browserTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return '' } })()
+  const expireTzDiffers = !!panelTz && !!browserTz && panelTz !== browserTz
   const limitGB = limitBytes / 1024 / 1024 / 1024
   const usedBytes = usage?.period_used_bytes ?? 0
   const todayBytes = usage?.today_used_bytes ?? 0
@@ -1203,6 +1211,11 @@ function UsagePanel({ limitBytes, usage, expireAt, resetPeriod, md }: UsagePanel
           <Typography sx={{ fontSize: 18, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
             {expireAt ? expireDateStr : t('profile.expire_permanent')}
           </Typography>
+          {expireAt && expireTzDiffers && (
+            <Typography sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}>
+              {t('profile.expire_tz_hint', { tz: browserTz })}
+            </Typography>
+          )}
           {expireAt && (
             <Box sx={{ height: 6, borderRadius: 3, bgcolor: md.surfaceContainerHighest, overflow: 'hidden', mt: 1 }}>
               <Box sx={{

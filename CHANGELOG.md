@@ -4,6 +4,30 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.2.0-beta.1 — 2026-05-19
+
+### Added
+- **PostgreSQL 支持**：除默认 SQLite / MySQL 外新增 PostgreSQL（pgx 驱动）。
+  用 `postgres:` 块的离散字段（host/port/user/password/database/sslmode）配置，
+  或在 `mysql.dsn` 填 `postgres://` URL；环境变量 `PSP_POSTGRES_DSN` 可覆盖。
+  建表仍由 GORM AutoMigrate 按方言生成，无需迁移脚本。
+- 当浏览器时区 ≠ 面板时区时，管理端 / 用户端在到期日处显示小提示，说明该
+  日期以哪个时区为准，消除歧义。
+
+### Changed
+- 节点「未纳管」标签页改为先选服务器再查询，仅请求所选面板的 inbound（一次
+  `ListInbounds`），不再每次加载同步扫描全部 3X-UI 面板；某个面板慢或不可达
+  时错误只限于所选服务器并提供重试，进入标签页前不再访问任何面板。
+
+### Fixed
+- 管理员用户搜索改为大小写不敏感（`LOWER(col) LIKE`）。此前 PostgreSQL 的
+  `LIKE` 大小写敏感，搜 “john” 匹配不到 “John”；SQLite / MySQL 不受影响。
+- 管理端设置 / 显示的到期日改为**按面板时区**解释与渲染。此前编辑弹窗用
+  `new Date("YYYY-MM-DD")`（按 UTC 解析）再 setHours 本地小时，UTC 以西的
+  时区会让到期早一天。用户端到期仍按浏览器本地时区显示（设计如此）。
+- 审计 `before_json` / `after_json` 列由 `json` 改为 `text`：审计会写入空
+  字符串（新建无 before 状态），而 PostgreSQL 的 json 列拒绝空串。
+
 ## v3.1.1-rc.3 — 2026-05-19
 
 ### Fixed

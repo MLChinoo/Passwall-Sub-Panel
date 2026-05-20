@@ -8,6 +8,7 @@
     "expire_in": "in {{days}} day(s)",
     "expired_days": "expired {{days}}d ago",
     "today": "today",
+    "expire_tz_hint": "Shown in your local timezone {{tz}}",
     "traffic_limit": "Traffic limit",
     "traffic_used": "Period used",
     "today_used": "Today used",
