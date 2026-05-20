@@ -10,7 +10,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   IconButton,
   InputAdornment,
   InputBase,
@@ -21,7 +20,6 @@ import {
   Pagination,
   Popover,
   Select,
-  Switch,
   Table,
   TableBody,
   TableCell,
@@ -1414,29 +1412,20 @@ export default function UsersView() {
                 </Box>
               </Popover>
             </Box>
-            <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              px: 1.5, py: 0.5, borderRadius: 1, bgcolor: md.surfaceContainerHighest }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography sx={{ fontSize: 14 }}>{t('admin:users.field.account_enabled', { defaultValue: '账户状态' })}</Typography>
-                {/* Surface the auto-disable reason so the admin knows *why* it's
-                    off before flipping it back on. Self-account is locked to
-                    avoid a lock-out from inside the panel. */}
-                {!editForm.enabled && editing?.auto_disabled_reason && (
-                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }} noWrap>{editing.auto_disabled_reason}</Typography>
-                )}
-                {editing?.id === auth.userId && (
-                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                    {t('admin:users.field.account_self_locked', { defaultValue: '不能停用自己的账户' })}
-                  </Typography>
-                )}
-              </Box>
-              <FormControlLabel sx={{ m: 0 }} labelPlacement="start"
-                control={<Switch checked={editForm.enabled} disabled={editing?.id === auth.userId}
-                  onChange={(_, c) => setEditForm({ ...editForm, enabled: c })} />}
-                label={<Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
-                  {editForm.enabled ? t('admin:users.status.enabled') : t('admin:users.status.disabled')}
-                </Typography>} />
-            </Box>
+            {/* Account status as a plain select so it blends with the other
+                dropdowns. Self-account is locked to avoid a lock-out; when off,
+                the helper surfaces why (auto-disable reason). */}
+            <TextField select size="small" fullWidth label={t('admin:users.field.account_enabled', { defaultValue: '账户状态' })}
+              value={editForm.enabled ? 'enabled' : 'disabled'}
+              disabled={editing?.id === auth.userId}
+              onChange={e => setEditForm({ ...editForm, enabled: e.target.value === 'enabled' })}
+              helperText={editing?.id === auth.userId
+                ? t('admin:users.field.account_self_locked', { defaultValue: '不能停用自己的账户' })
+                : (!editForm.enabled && editing?.auto_disabled_reason ? editing.auto_disabled_reason : '')}
+              sx={{ gridColumn: '1 / -1' }}>
+              <MenuItem value="enabled">{t('admin:users.status.enabled')}</MenuItem>
+              <MenuItem value="disabled">{t('admin:users.status.disabled')}</MenuItem>
+            </TextField>
             <Box sx={{ gridColumn: '1 / -1', display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
               <TextField select size="small" label={t('admin:users.field.expire_at')}
                 value={editForm.expire_mode}
