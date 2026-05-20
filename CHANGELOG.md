@@ -4,11 +4,15 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
-## v3.2.1-beta.5 — 2026-05-20
+## v3.2.1-beta.6 — 2026-05-20
 
 ### Fixed
 - 邮件设置「发送测试邮件」的按钮与输入框未对齐：按钮改为拉伸至输入框高度，兼容
   紧凑（small）与舒适（medium）两种密度，不再用固定高度只配其一。
+
+## v3.2.1-beta.5 — 2026-05-20
+
+### Fixed
 - SMTP 发送：以发件域名（而非 net/smtp 默认的 `localhost`）作为 EHLO/HELO
   名称——更严格的中继（尤其是 Google Workspace 的 smtp-relay.gmail.com）会对
   非 FQDN 的 HELO 直接断开连接，表现为测试邮件报「EOF」。同时给各阶段错误加上
