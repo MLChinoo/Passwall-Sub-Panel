@@ -304,7 +304,10 @@ func (c *Client) DelClientByEmail(ctx context.Context, inboundID int, email stri
 func (c *Client) CopyClients(ctx context.Context, srcInboundID, dstInboundID int, emails []string) error {
 	body := map[string]any{
 		"sourceInboundId": srcInboundID,
-		"emails":          emails,
+		// 3X-UI's copyClients reads the email list from "clientEmails" (an
+		// empty list means "copy all"). The field used to be "emails", which
+		// 3X-UI ignored — so a selective copy silently became a copy-all.
+		"clientEmails": emails,
 	}
 	path := fmt.Sprintf("/panel/api/inbounds/%d/copyClients", dstInboundID)
 	return c.doJSON(ctx, http.MethodPost, path, body, nil)
