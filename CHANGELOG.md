@@ -4,6 +4,35 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.2.0-rc.1 — 2026-05-20
+
+### Fixed
+- 同步删除（Shadowsocks）：删 SS 客户端时按 settings 的 `id`(UUID) 调
+  `delClient` 会被 3X-UI 拒为 “Client Not Found In Inbound For ID”，导致用户
+  重同步的 DEL 任务无限重试（观察到 131 次）。现在 id 删失败后回退到
+  `delClientByEmail`（3X-UI 跨协议稳定的删除键），删成功即移除归属、任务正常
+  完成。VLESS / VMess / Trojan 的按-id 删除原本就有效，不受影响。
+- 用户门户「本周期用量」旁的重置周期显示成原始 key `reset_period.monthly`：
+  MeView 漏了 `profile.` 命名空间前缀，已修正。
+- 创建 / 续期用户的到期口径与编辑统一：创建表单改为日期选择器（发
+  `expire_date`，后端按面板时区 end-of-day 解析）；续期发的裸 `expire_at` 也
+  锚定到面板时区当天结束。此前创建 / 续期按“现在 + N 天”的浏览器钟点存，跨
+  时区会与编辑显示差一天、且在当天钟点而非当天结束过期。
+- PostgreSQL 列表 / 图表排序补确定性 tiebreaker（`id`）：审计 / 订阅访问 /
+  已发邮件分页此前按非唯一时间戳排序，PG 上同值行跨页可能重复或漏；流量图表
+  分桶取“桶内最后一行”在 tie 时也不确定。
+- SQLite 连接池上限改为 1（写串行化），消除高写竞争下的 “database is locked”；
+  MySQL / Postgres 保持原有连接池。
+
+### Security
+- 升级存在可达 CVE 的依赖：`golang-jwt/jwt` v5.2.2（JWT header 解析内存放大
+  DoS）、`golang.org/x/net` v0.53.0、`russellhaering/goxmldsig` v1.6.0。
+  govulncheck 复查 0 命中。
+
+### Internal
+- 清理 staticcheck（U1000）标记的未使用代码：多处 `toDomain`、legacy 行类型、
+  `settingsClients`、`panelName`、`isInboundNotFoundErr`、`activeLoginMode`。
+
 ## v3.2.0-beta.2 — 2026-05-19
 
 ### Fixed
