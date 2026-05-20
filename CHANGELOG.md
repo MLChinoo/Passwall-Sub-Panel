@@ -4,6 +4,28 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.2.1-beta.2 — 2026-05-20
+
+beta.1 实测反馈的收尾修复。
+
+### Added
+- 用户编辑弹窗加入「账户状态」开关：可在编辑表单内直接启用 / 停用账户（走
+  既有 setEnabled 接口，仅在状态变化时下发），停用时显示自动停用原因。为防自锁，
+  禁止在此停用自己的账户。
+
+### Fixed
+- 邮件 Logo 在实际收件箱裂图（预览正常）：此前未配置 Logo 时回退为内嵌
+  `data:` base64 图，而 Gmail 等网页邮箱**屏蔽 `data:` 图片**——预览（浏览器）
+  能渲染、真实邮件却裂图。改为始终输出可被邮件客户端抓取的绝对 http(s) 链接：
+  管理员配置的 Logo 仅在解析为 http(s) 绝对地址时采用（跳过 `data:` / 相对路径），
+  否则回退到公开静态资源 `{SubBaseURL}/images/logo+title-circle-darkmode.png`；
+  无 SubBaseURL 时返回空、模板跳过 `<img>` 而非裂图。
+- SSO 停用 / 待审核错误页（/sso-error）正文混语言：后端对 `account_disabled` /
+  `account_pending` 硬编码中文 `description` 覆盖了前端 i18n，英文界面下标题英文、
+  正文中文。改为不再下发 description，由前端按语言渲染。
+- 编辑弹窗里 SSO 徽章（SAML/OIDC）字体与角色 / 状态徽章不一致、整体偏上：
+  统一字号 / 字重 / 垂直内边距并居中对齐。
+
 ## v3.2.1-beta.1 — 2026-05-20
 
 ### Added

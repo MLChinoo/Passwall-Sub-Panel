@@ -10,6 +10,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   IconButton,
   InputAdornment,
   InputBase,
@@ -20,6 +21,7 @@ import {
   Pagination,
   Popover,
   Select,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -125,6 +127,9 @@ interface EditForm {
   period_used_gb: number
   period_used_initial: number
   emergency_used_count: number
+  // Account enable state. Edited inline here; submitEdit pushes it through the
+  // dedicated setEnabled endpoint (separate from updateUser) only when changed.
+  enabled: boolean
 }
 
 const EMPTY_CREATE: CreateForm = {
@@ -148,6 +153,7 @@ const EMPTY_EDIT: EditForm = {
   expire_mode: 'date', expire_at: '', traffic_limit_gb: 0,
   traffic_reset_period: 'monthly', remark: '',
   period_used_gb: 0, period_used_initial: 0, emergency_used_count: 0,
+  enabled: true,
 }
 
 function bytesToGB(b: number) { return Math.round((b / 1024 / 1024 / 1024) * 100) / 100 }
@@ -380,6 +386,7 @@ export default function UsersView() {
       period_used_gb: usedGB,
       period_used_initial: usedGB,
       emergency_used_count: u.emergency_used_count,
+      enabled: u.enabled,
     })
     setEditErr({})
     setEditOpen(true)
@@ -435,6 +442,12 @@ export default function UsersView() {
       // anything doesn't synthesise a baseline snapshot.
       if (Math.abs(editForm.period_used_gb - editForm.period_used_initial) > 0.001) {
         await setUserTraffic(editing.id, editForm.period_used_gb)
+      }
+      // Enable state rides the dedicated endpoint (updateUser has no `enabled`
+      // field). Only fire when actually flipped — and never let an admin
+      // disable their own account from here, which would lock them out.
+      if (editForm.enabled !== editing.enabled && editing.id !== auth.userId) {
+        await setEnabled(editing.id, editForm.enabled)
       }
       if (editing.id === auth.userId) auth.setDisplayName(editForm.display_name || '')
       pushSnack(t('admin:users.toast.saved'), 'success')
@@ -825,13 +838,14 @@ export default function UsersView() {
     return (
       <Tooltip title={tooltip}>
         <Box component="span" sx={{
-          display: 'inline-block',
-          px: 0.75, py: 0,
+          display: 'inline-flex', alignItems: 'center',
+          px: 1, py: 0.25,
           borderRadius: 999,
-          fontSize: 10, fontWeight: 600,
-          letterSpacing: 0.4,
+          fontSize: 12, fontWeight: 500,
+          letterSpacing: 0.3,
           bgcolor: md.tertiaryContainer,
           color: md.onTertiaryContainer,
+          whiteSpace: 'nowrap',
         }}>{label}</Box>
       </Tooltip>
     )
@@ -1270,7 +1284,7 @@ export default function UsersView() {
                   <Typography noWrap sx={{ fontSize: 12, color: md.onSurfaceVariant }}>{editing?.upn}</Typography>
                 </Box>
               </Box>
-              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
                 {editing && roleBadge(editing.role)}
                 {editing && ssoBadge(editing)}
                 {editing && statusBadge(editing)}
@@ -1399,6 +1413,29 @@ export default function UsersView() {
                   </Box>
                 </Box>
               </Popover>
+            </Box>
+            <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              px: 1.5, py: 0.5, borderRadius: 1, bgcolor: md.surfaceContainerHighest }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={{ fontSize: 14 }}>{t('admin:users.field.account_enabled', { defaultValue: '账户状态' })}</Typography>
+                {/* Surface the auto-disable reason so the admin knows *why* it's
+                    off before flipping it back on. Self-account is locked to
+                    avoid a lock-out from inside the panel. */}
+                {!editForm.enabled && editing?.auto_disabled_reason && (
+                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }} noWrap>{editing.auto_disabled_reason}</Typography>
+                )}
+                {editing?.id === auth.userId && (
+                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                    {t('admin:users.field.account_self_locked', { defaultValue: '不能停用自己的账户' })}
+                  </Typography>
+                )}
+              </Box>
+              <FormControlLabel sx={{ m: 0 }} labelPlacement="start"
+                control={<Switch checked={editForm.enabled} disabled={editing?.id === auth.userId}
+                  onChange={(_, c) => setEditForm({ ...editForm, enabled: c })} />}
+                label={<Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
+                  {editForm.enabled ? t('admin:users.status.enabled') : t('admin:users.status.disabled')}
+                </Typography>} />
             </Box>
             <Box sx={{ gridColumn: '1 / -1', display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
               <TextField select size="small" label={t('admin:users.field.expire_at')}

@@ -889,6 +889,8 @@
       "expire_tz_hint": "日期按面板时区 {{tz}} 计算",
       "traffic_limit_gb": "流量上限 (GB，0=无限)",
       "period_used_gb": "本周期已用 (GB)",
+      "account_enabled": "账户状态",
+      "account_self_locked": "不能停用自己的账户",
       "emergency_used_count": "紧急访问已用 {{count}} 次",
       "emergency_window_until": "生效至 {{time}}（剩余 {{hours}} 小时）",
       "emergency_window_used_with_quota": "本窗口已用 {{used}} / {{quota}} GB",

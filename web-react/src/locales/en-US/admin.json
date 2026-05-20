@@ -889,6 +889,8 @@
       "expire_tz_hint": "Date is in panel timezone {{tz}}",
       "traffic_limit_gb": "Traffic limit (GB, 0 = unlimited)",
       "period_used_gb": "Period used (GB)",
+      "account_enabled": "Account status",
+      "account_self_locked": "You cannot disable your own account",
       "emergency_used_count": "Emergency access used {{count}} time(s)",
       "emergency_window_until": "Active until {{time}} ({{hours}}h remaining)",
       "emergency_window_used_with_quota": "Window used {{used}} / {{quota}} GB",
