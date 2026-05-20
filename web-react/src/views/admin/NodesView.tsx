@@ -73,7 +73,7 @@ import {
 } from '@/utils/validators'
 
 type CreateProtocol = 'vless' | 'vmess' | 'trojan' | 'ss2022' | 'hysteria2'
-type VlessNetwork = 'tcp' | 'ws' | 'grpc' | 'httpupgrade'
+type VlessNetwork = 'tcp' | 'ws' | 'grpc' | 'httpupgrade' | 'xhttp'
 type VlessSecurity = 'none' | 'tls' | 'reality'
 type SS2022Method = '2022-blake3-aes-128-gcm' | '2022-blake3-aes-256-gcm' | '2022-blake3-chacha20-poly1305'
 
@@ -183,11 +183,39 @@ interface InboundFormState {
   httpupgrade_path: string
   httpupgrade_host: string
   httpupgrade_accept_proxy_protocol: boolean
+  // XHTTP — Xray 1.8.20+ universal HTTP transport. Modes:
+  //   "packet-up"  classic bidi HTTP/1.1 + upgrade
+  //   "stream-up"  HTTP/2 server-streaming
+  //   "stream-one" HTTP/3 / single-stream
+  // Empty mode = use Xray default.
+  xhttp_path: string
+  xhttp_host: string
+  xhttp_mode: string
   // TLS
   tls_server_name: string
   tls_alpn_text: string
   tls_min_version: string
   tls_max_version: string
+  // utls browser fingerprint — anti-detection knob; "chrome" / "firefox" /
+  // "safari" / "ios" / "android" / "edge" / "360" / "qq" / "random" /
+  // "randomized". Empty = no fingerprint set. VLESS+Vision deployments
+  // almost always want "chrome" or "randomized".
+  tls_fingerprint: string
+  // Skip cert chain verification when the client connects. Dev/debug only;
+  // production should always be false.
+  tls_allow_insecure: boolean
+  // Reject TLS handshakes whose SNI isn't in serverName. Tightens an
+  // inbound that hosts multiple SNIs by name.
+  tls_reject_unknown_sni: boolean
+  // Cert mode: 'file' uses paths on the 3X-UI host's filesystem (production
+  // pattern with acme/certbot), 'inline' pastes PEM directly into the
+  // config (one-off / testing). Empty / 'none' = no certificates emitted
+  // (REALITY and plain mode don't need them).
+  tls_cert_mode: '' | 'file' | 'inline'
+  tls_cert_file: string
+  tls_key_file: string
+  tls_cert_pem: string
+  tls_key_pem: string
   // Reality
   reality_dest: string
   reality_server_names_text: string
@@ -228,6 +256,21 @@ interface InboundFormState {
   //   string -> literal response body
   //   '' / unset -> masquerade block omitted entirely
   hy2_masquerade_content: string
+  // Sockopt — socket-level tuning at the listener layer. All fields are
+  // optional; empty/zero defaults emit nothing. mark is the SO_MARK
+  // applied to outgoing sockets (transparent proxy / iptables tagging).
+  // tcpFastOpen accepts boolean OR a queue length; we model as bool +
+  // queue (queue==0 means just enable). tproxy is the Linux TPROXY
+  // mode ("redirect" / "tproxy" / "off"). domainStrategy applies to
+  // dialed connections, not listeners — irrelevant for inbound so
+  // omitted here.
+  sockopt_enabled: boolean
+  sockopt_mark: number
+  sockopt_tcp_fast_open: boolean
+  sockopt_tcp_keep_alive_interval: number
+  sockopt_tcp_keep_alive_idle: number
+  sockopt_tcp_user_timeout: number
+  sockopt_tproxy: '' | 'off' | 'redirect' | 'tproxy'
   // Sniffing
   sniffing_enabled: boolean
   sniffing_dest_override_text: string
@@ -273,10 +316,21 @@ const EMPTY_INBOUND: InboundFormState = {
   httpupgrade_path: '/',
   httpupgrade_host: '',
   httpupgrade_accept_proxy_protocol: false,
+  xhttp_path: '/',
+  xhttp_host: '',
+  xhttp_mode: '',
   tls_server_name: '',
   tls_alpn_text: 'h2,http/1.1',
   tls_min_version: '',
   tls_max_version: '',
+  tls_fingerprint: 'chrome',
+  tls_allow_insecure: false,
+  tls_reject_unknown_sni: false,
+  tls_cert_mode: '',
+  tls_cert_file: '',
+  tls_key_file: '',
+  tls_cert_pem: '',
+  tls_key_pem: '',
   reality_dest: 'www.tesla.com:443',
   reality_server_names_text: 'www.tesla.com',
   private_key: '',
@@ -296,6 +350,13 @@ const EMPTY_INBOUND: InboundFormState = {
   hy2_udp_idle_timeout: 60,
   hy2_masquerade_type: '',
   hy2_masquerade_content: '',
+  sockopt_enabled: false,
+  sockopt_mark: 0,
+  sockopt_tcp_fast_open: false,
+  sockopt_tcp_keep_alive_interval: 0,
+  sockopt_tcp_keep_alive_idle: 0,
+  sockopt_tcp_user_timeout: 0,
+  sockopt_tproxy: '',
   sniffing_enabled: true,
   sniffing_dest_override_text: 'http,tls,quic',
   sniffing_metadata_only: false,
@@ -314,7 +375,10 @@ const VLESS_NETWORKS: { value: VlessNetwork; label: string }[] = [
   { value: 'ws', label: 'WebSocket' },
   { value: 'grpc', label: 'gRPC' },
   { value: 'httpupgrade', label: 'HTTPUpgrade' },
+  { value: 'xhttp', label: 'XHTTP' },
 ]
+const XHTTP_MODES = ['', 'auto', 'packet-up', 'stream-up', 'stream-one']
+const TPROXY_MODES: InboundFormState['sockopt_tproxy'][] = ['', 'off', 'redirect', 'tproxy']
 const VLESS_SECURITIES: { value: VlessSecurity; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'tls', label: 'TLS' },
@@ -463,14 +527,11 @@ function buildStreamSettings(f: InboundFormState): unknown {
     return {
       network: 'hysteria',
       security: 'tls',
-      tlsSettings: {
-        serverName: f.tls_server_name,
-        alpn: splitList(f.tls_alpn_text),
-        certificates: [],
-      },
+      tlsSettings: buildTLSSettings(f),
       hysteriaSettings,
       finalmask,
       externalProxy: [],
+      ...buildSockoptWrapper(f),
     }
   }
   // VMess can't use REALITY (clients don't support it). Trojan REQUIRES
@@ -511,19 +572,16 @@ function buildStreamSettings(f: InboundFormState): unknown {
       host: f.httpupgrade_host,
       headers: f.httpupgrade_host ? { Host: f.httpupgrade_host } : {},
     }
+  } else if (f.vless_network === 'xhttp') {
+    const xhttp: Record<string, unknown> = {
+      path: f.xhttp_path || '/',
+      host: f.xhttp_host,
+    }
+    if (f.xhttp_mode) xhttp.mode = f.xhttp_mode
+    stream.xhttpSettings = xhttp
   }
   if (security === 'tls') {
-    stream.tlsSettings = {
-      serverName: f.tls_server_name,
-      minVersion: f.tls_min_version,
-      maxVersion: f.tls_max_version,
-      cipherSuites: [],
-      alpn: splitList(f.tls_alpn_text),
-      certificates: [],
-      rejectUnknownSni: false,
-      disableSystemRoot: false,
-      enableSessionResumption: false,
-    }
+    stream.tlsSettings = buildTLSSettings(f)
   } else if (security === 'reality') {
     stream.realitySettings = {
       show: false,
@@ -543,7 +601,63 @@ function buildStreamSettings(f: InboundFormState): unknown {
       },
     }
   }
+  Object.assign(stream, buildSockoptWrapper(f))
   return stream
+}
+
+// buildTLSSettings centralises tlsSettings emission (used by both
+// the VLESS/Trojan/VMess path and the Hysteria2 branch). The form's
+// cert mode decides which shape to embed into certificates[]:
+//   file   -> { certificateFile, keyFile }
+//   inline -> { certificate: [<full PEM>], key: [<full PEM>] }
+//   ''     -> certificates: [] (REALITY / plain) — also the legacy
+//             behavior for callers that haven't filled the field
+//
+// fingerprint / allowInsecure / rejectUnknownSni surface as their own
+// uTLS knobs; cipherSuites stays empty (no UI exposure).
+function buildTLSSettings(f: InboundFormState): Record<string, unknown> {
+  const certs: Record<string, unknown>[] = []
+  if (f.tls_cert_mode === 'file' && (f.tls_cert_file || f.tls_key_file)) {
+    certs.push({
+      certificateFile: f.tls_cert_file,
+      keyFile: f.tls_key_file,
+    })
+  } else if (f.tls_cert_mode === 'inline' && (f.tls_cert_pem || f.tls_key_pem)) {
+    certs.push({
+      certificate: f.tls_cert_pem ? [f.tls_cert_pem] : [],
+      key: f.tls_key_pem ? [f.tls_key_pem] : [],
+    })
+  }
+  const out: Record<string, unknown> = {
+    serverName: f.tls_server_name,
+    minVersion: f.tls_min_version,
+    maxVersion: f.tls_max_version,
+    cipherSuites: [],
+    alpn: splitList(f.tls_alpn_text),
+    certificates: certs,
+    rejectUnknownSni: f.tls_reject_unknown_sni,
+    disableSystemRoot: false,
+    enableSessionResumption: false,
+  }
+  if (f.tls_fingerprint) out.fingerprint = f.tls_fingerprint
+  if (f.tls_allow_insecure) out.allowInsecure = true
+  return out
+}
+
+// buildSockoptWrapper returns `{ sockopt: {...} }` when the toggle is
+// on, or `{}` otherwise. Returning a wrapper object (vs writing
+// directly into stream) lets the Hysteria2 path spread it cleanly.
+function buildSockoptWrapper(f: InboundFormState): Record<string, unknown> {
+  if (!f.sockopt_enabled) return {}
+  const so: Record<string, unknown> = {}
+  if (f.sockopt_mark > 0) so.mark = f.sockopt_mark
+  if (f.sockopt_tcp_fast_open) so.tcpFastOpen = true
+  if (f.sockopt_tcp_keep_alive_interval > 0) so.tcpKeepAliveInterval = f.sockopt_tcp_keep_alive_interval
+  if (f.sockopt_tcp_keep_alive_idle > 0) so.tcpKeepAliveIdle = f.sockopt_tcp_keep_alive_idle
+  if (f.sockopt_tcp_user_timeout > 0) so.tcpUserTimeout = f.sockopt_tcp_user_timeout
+  if (f.sockopt_tproxy) so.tproxy = f.sockopt_tproxy
+  if (Object.keys(so).length === 0) return {}
+  return { sockopt: so }
 }
 
 function buildSniffing(f: InboundFormState): unknown {
@@ -579,6 +693,30 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
   const tls = (stream.tlsSettings as Record<string, unknown>) ?? {}
   const reality = (stream.realitySettings as Record<string, unknown>) ?? {}
   const realityInner = (reality.settings as Record<string, unknown>) ?? {}
+  const xhttp = (stream.xhttpSettings as Record<string, unknown>) ?? {}
+  // Pre-extract the first certificate entry — Xray's certificates is an
+  // array but the panel UI only edits one. cert.certificate / cert.key
+  // are either strings or string[]; collapse to a single multi-line
+  // string for the textarea binding. If neither file paths nor inline
+  // bodies are present, cert_mode stays '' so the form renders "no
+  // certificate" (the previous behavior).
+  const tlsCert = ((tls.certificates as Array<Record<string, unknown>>) ?? [])[0] ?? {}
+  const certFile = stringValue(tlsCert.certificateFile)
+  const keyFile = stringValue(tlsCert.keyFile)
+  const certPEMRaw = tlsCert.certificate
+  const keyPEMRaw = tlsCert.key
+  const joinPEM = (v: unknown): string => {
+    if (typeof v === 'string') return v
+    if (Array.isArray(v)) return v.map(s => String(s ?? '')).join('\n')
+    return ''
+  }
+  const certPEM = joinPEM(certPEMRaw)
+  const keyPEM = joinPEM(keyPEMRaw)
+  let certMode: InboundFormState['tls_cert_mode'] = ''
+  if (certFile || keyFile) certMode = 'file'
+  else if (certPEM || keyPEM) certMode = 'inline'
+  const sockopt = (stream.sockopt as Record<string, unknown>) ?? {}
+  const tproxyVal = stringValue(sockopt.tproxy) as InboundFormState['sockopt_tproxy']
 
   // Map 3X-UI's wire-level protocol name back onto our CreateProtocol enum.
   // Shadowsocks splits between legacy SS and SS-2022 based on the method
@@ -640,10 +778,21 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     httpupgrade_path: stringValue(httpupgrade.path, '/'),
     httpupgrade_host: stringValue(httpupgrade.host) || stringValue(httpupgradeHeaders.Host),
     httpupgrade_accept_proxy_protocol: boolValue(httpupgrade.acceptProxyProtocol),
+    xhttp_path: stringValue(xhttp.path, '/'),
+    xhttp_host: stringValue(xhttp.host),
+    xhttp_mode: stringValue(xhttp.mode),
     tls_server_name: stringValue(tls.serverName),
     tls_alpn_text: listToText(tls.alpn) || 'h2,http/1.1',
     tls_min_version: stringValue(tls.minVersion),
     tls_max_version: stringValue(tls.maxVersion),
+    tls_fingerprint: stringValue(tls.fingerprint, 'chrome'),
+    tls_allow_insecure: boolValue(tls.allowInsecure),
+    tls_reject_unknown_sni: boolValue(tls.rejectUnknownSni),
+    tls_cert_mode: certMode,
+    tls_cert_file: certFile,
+    tls_key_file: keyFile,
+    tls_cert_pem: certPEM,
+    tls_key_pem: keyPEM,
     reality_dest: stringValue(reality.dest, 'www.tesla.com:443'),
     reality_server_names_text: listToText(reality.serverNames) || 'www.tesla.com',
     private_key: stringValue(reality.privateKey),
@@ -663,6 +812,13 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     hy2_udp_idle_timeout: numberValue(hysteriaSettings.udpIdleTimeout, 60),
     hy2_masquerade_type: masqueradeType,
     hy2_masquerade_content: masqueradeContent,
+    sockopt_enabled: Object.keys(sockopt).length > 0,
+    sockopt_mark: numberValue(sockopt.mark),
+    sockopt_tcp_fast_open: boolValue(sockopt.tcpFastOpen),
+    sockopt_tcp_keep_alive_interval: numberValue(sockopt.tcpKeepAliveInterval),
+    sockopt_tcp_keep_alive_idle: numberValue(sockopt.tcpKeepAliveIdle),
+    sockopt_tcp_user_timeout: numberValue(sockopt.tcpUserTimeout),
+    sockopt_tproxy: ['off', 'redirect', 'tproxy'].includes(tproxyVal) ? tproxyVal : '',
     sniffing_enabled: boolValue(sniffing.enabled, true),
     sniffing_dest_override_text: listToText(sniffing.destOverride) || 'http,tls,quic',
     sniffing_metadata_only: boolValue(sniffing.metadataOnly),
@@ -964,33 +1120,123 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
             </Box>
           )}
 
+          {form.vless_network === 'xhttp' && (
+            <Box>
+              {sectionTitle(t('admin:nodes.create_dialog.section_xhttp', { defaultValue: 'XHTTP' }))}
+              <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+                <TextField size="small" label={t('admin:nodes.create_dialog.ws_path', { defaultValue: 'Path' })}
+                  value={form.xhttp_path}
+                  onChange={e => update('xhttp_path', e.target.value)}
+                  sx={{ flex: '1 1 180px' }} />
+                <TextField size="small" label={t('admin:nodes.create_dialog.ws_host', { defaultValue: 'Host' })}
+                  value={form.xhttp_host}
+                  onChange={e => update('xhttp_host', e.target.value)}
+                  sx={{ flex: '1 1 180px' }} />
+                <Box sx={{ flex: '1 1 150px', minWidth: 130 }}>
+                  {fieldLabel(t('admin:nodes.create_dialog.xhttp_mode', { defaultValue: 'Mode' }))}
+                  <Select size="small" fullWidth value={form.xhttp_mode}
+                    onChange={e => update('xhttp_mode', e.target.value)} displayEmpty>
+                    {XHTTP_MODES.map(m => <MenuItem key={m} value={m}>{m || '—'}</MenuItem>)}
+                  </Select>
+                </Box>
+              </Box>
+            </Box>
+          )}
+
           {/* Security-specific */}
           {form.vless_security === 'tls' && (
             <Box>
               {sectionTitle(t('admin:nodes.create_dialog.section_tls'))}
-              <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-                <TextField size="small" label={t('admin:nodes.create_dialog.tls_server_name')}
-                  value={form.tls_server_name}
-                  onChange={e => update('tls_server_name', e.target.value)}
-                  sx={{ flex: '2 1 240px' }} />
-                <TextField size="small" label={t('admin:nodes.create_dialog.tls_alpn')}
-                  value={form.tls_alpn_text}
-                  onChange={e => update('tls_alpn_text', e.target.value)}
-                  sx={{ flex: '2 1 200px' }} />
-                <Box sx={{ flex: '1 1 110px', minWidth: 100 }}>
-                  {fieldLabel(t('admin:nodes.create_dialog.tls_min_version'))}
-                  <Select size="small" fullWidth value={form.tls_min_version}
-                    onChange={e => update('tls_min_version', e.target.value)} displayEmpty>
-                    {TLS_VERSIONS.map(v => <MenuItem key={v} value={v}>{v || '—'}</MenuItem>)}
-                  </Select>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                  <TextField size="small" label={t('admin:nodes.create_dialog.tls_server_name')}
+                    value={form.tls_server_name}
+                    onChange={e => update('tls_server_name', e.target.value)}
+                    sx={{ flex: '2 1 240px' }} />
+                  <TextField size="small" label={t('admin:nodes.create_dialog.tls_alpn')}
+                    value={form.tls_alpn_text}
+                    onChange={e => update('tls_alpn_text', e.target.value)}
+                    sx={{ flex: '2 1 200px' }} />
+                  <Box sx={{ flex: '1 1 130px', minWidth: 120 }}>
+                    {fieldLabel(t('admin:nodes.create_dialog.tls_fingerprint', { defaultValue: 'Fingerprint' }))}
+                    <Select size="small" fullWidth value={form.tls_fingerprint}
+                      onChange={e => update('tls_fingerprint', e.target.value)} displayEmpty>
+                      <MenuItem value="">—</MenuItem>
+                      {FINGERPRINTS.map(fp => <MenuItem key={fp} value={fp}>{fp}</MenuItem>)}
+                    </Select>
+                  </Box>
+                  <Box sx={{ flex: '1 1 110px', minWidth: 100 }}>
+                    {fieldLabel(t('admin:nodes.create_dialog.tls_min_version'))}
+                    <Select size="small" fullWidth value={form.tls_min_version}
+                      onChange={e => update('tls_min_version', e.target.value)} displayEmpty>
+                      {TLS_VERSIONS.map(v => <MenuItem key={v} value={v}>{v || '—'}</MenuItem>)}
+                    </Select>
+                  </Box>
+                  <Box sx={{ flex: '1 1 110px', minWidth: 100 }}>
+                    {fieldLabel(t('admin:nodes.create_dialog.tls_max_version'))}
+                    <Select size="small" fullWidth value={form.tls_max_version}
+                      onChange={e => update('tls_max_version', e.target.value)} displayEmpty>
+                      {TLS_VERSIONS.map(v => <MenuItem key={v} value={v}>{v || '—'}</MenuItem>)}
+                    </Select>
+                  </Box>
                 </Box>
-                <Box sx={{ flex: '1 1 110px', minWidth: 100 }}>
-                  {fieldLabel(t('admin:nodes.create_dialog.tls_max_version'))}
-                  <Select size="small" fullWidth value={form.tls_max_version}
-                    onChange={e => update('tls_max_version', e.target.value)} displayEmpty>
-                    {TLS_VERSIONS.map(v => <MenuItem key={v} value={v}>{v || '—'}</MenuItem>)}
-                  </Select>
+                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                  {switchControl(t('admin:nodes.create_dialog.tls_allow_insecure', { defaultValue: 'Allow insecure (dev only)' }),
+                    form.tls_allow_insecure,
+                    c => update('tls_allow_insecure', c))}
+                  {switchControl(t('admin:nodes.create_dialog.tls_reject_unknown_sni', { defaultValue: 'Reject unknown SNI' }),
+                    form.tls_reject_unknown_sni,
+                    c => update('tls_reject_unknown_sni', c))}
                 </Box>
+                {/* Certificate source. File-paths is the production
+                    default; inline is for one-off / test deploys
+                    without ACME on the 3X-UI host. Empty mode keeps
+                    certificates: [] (REALITY / clients that bring
+                    their own root). */}
+                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Box sx={{ flex: '0 0 auto', minWidth: 180 }}>
+                    {fieldLabel(t('admin:nodes.create_dialog.tls_cert_mode', { defaultValue: 'Certificate source' }))}
+                    <Select size="small" value={form.tls_cert_mode}
+                      onChange={e => update('tls_cert_mode', e.target.value as InboundFormState['tls_cert_mode'])}
+                      displayEmpty sx={{ minWidth: 180 }}>
+                      <MenuItem value="">{t('admin:nodes.create_dialog.tls_cert_none', { defaultValue: 'None / REALITY' })}</MenuItem>
+                      <MenuItem value="file">{t('admin:nodes.create_dialog.tls_cert_file', { defaultValue: 'File paths on 3X-UI host' })}</MenuItem>
+                      <MenuItem value="inline">{t('admin:nodes.create_dialog.tls_cert_inline', { defaultValue: 'Inline PEM' })}</MenuItem>
+                    </Select>
+                  </Box>
+                </Box>
+                {form.tls_cert_mode === 'file' && (
+                  <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                    <TextField size="small" fullWidth
+                      label={t('admin:nodes.create_dialog.tls_cert_file_path', { defaultValue: 'Certificate file path' })}
+                      placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"
+                      value={form.tls_cert_file}
+                      onChange={e => update('tls_cert_file', e.target.value)}
+                      sx={{ flex: '1 1 320px' }} />
+                    <TextField size="small" fullWidth
+                      label={t('admin:nodes.create_dialog.tls_key_file_path', { defaultValue: 'Private key file path' })}
+                      placeholder="/etc/letsencrypt/live/example.com/privkey.pem"
+                      value={form.tls_key_file}
+                      onChange={e => update('tls_key_file', e.target.value)}
+                      sx={{ flex: '1 1 320px' }} />
+                  </Box>
+                )}
+                {form.tls_cert_mode === 'inline' && (
+                  <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                    <TextField size="small" multiline minRows={4} maxRows={10}
+                      label={t('admin:nodes.create_dialog.tls_cert_pem', { defaultValue: 'Certificate (PEM)' })}
+                      placeholder={'-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----'}
+                      value={form.tls_cert_pem}
+                      onChange={e => update('tls_cert_pem', e.target.value)}
+                      sx={{ flex: '1 1 320px', '& textarea': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12 } }} />
+                    <TextField size="small" multiline minRows={4} maxRows={10}
+                      label={t('admin:nodes.create_dialog.tls_key_pem', { defaultValue: 'Private key (PEM)' })}
+                      placeholder={'-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----'}
+                      value={form.tls_key_pem}
+                      onChange={e => update('tls_key_pem', e.target.value)}
+                      sx={{ flex: '1 1 320px', '& textarea': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12 } }} />
+                  </Box>
+                )}
               </Box>
             </Box>
           )}
@@ -1138,6 +1384,58 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
               t('admin:nodes.create_dialog.ss_iv_check', { defaultValue: 'ivCheck (拒绝重放的 IV)' }),
               form.ss_iv_check,
               c => update('ss_iv_check', c),
+            )}
+          </Box>
+        </Box>
+      )}
+
+      {/* Socket-level tuning. Hidden behind the toggle so the form
+          stays compact for the common case; admins running a transparent
+          proxy / iptables-tagged egress flip it on. tcpFastOpen,
+          tcpKeepAlive, tproxy ("tproxy" / "redirect" Linux modes) are
+          the realistic knobs — sockopt has more (mark, domainStrategy
+          on dial side) but those don't apply to inbound. */}
+      {!advanced && (
+        <Box>
+          {sectionTitle(t('admin:nodes.create_dialog.section_sockopt', { defaultValue: 'Socket options' }))}
+          <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+            {switchControl(t('admin:nodes.create_dialog.sockopt_enabled', { defaultValue: 'Enable sockopt' }),
+              form.sockopt_enabled,
+              c => update('sockopt_enabled', c))}
+            {form.sockopt_enabled && (
+              <>
+                <TextField size="small" type="number"
+                  label={t('admin:nodes.create_dialog.sockopt_mark', { defaultValue: 'SO_MARK' })}
+                  value={form.sockopt_mark || ''}
+                  onChange={e => update('sockopt_mark', Number(e.target.value) || 0)}
+                  sx={{ width: 130 }} />
+                {switchControl(t('admin:nodes.create_dialog.sockopt_tcp_fast_open', { defaultValue: 'TCP Fast Open' }),
+                  form.sockopt_tcp_fast_open,
+                  c => update('sockopt_tcp_fast_open', c))}
+                <TextField size="small" type="number"
+                  label={t('admin:nodes.create_dialog.sockopt_tcp_keep_alive_interval', { defaultValue: 'KeepAlive interval (s)' })}
+                  value={form.sockopt_tcp_keep_alive_interval || ''}
+                  onChange={e => update('sockopt_tcp_keep_alive_interval', Number(e.target.value) || 0)}
+                  sx={{ width: 170 }} />
+                <TextField size="small" type="number"
+                  label={t('admin:nodes.create_dialog.sockopt_tcp_keep_alive_idle', { defaultValue: 'KeepAlive idle (s)' })}
+                  value={form.sockopt_tcp_keep_alive_idle || ''}
+                  onChange={e => update('sockopt_tcp_keep_alive_idle', Number(e.target.value) || 0)}
+                  sx={{ width: 160 }} />
+                <TextField size="small" type="number"
+                  label={t('admin:nodes.create_dialog.sockopt_tcp_user_timeout', { defaultValue: 'TCP user timeout (ms)' })}
+                  value={form.sockopt_tcp_user_timeout || ''}
+                  onChange={e => update('sockopt_tcp_user_timeout', Number(e.target.value) || 0)}
+                  sx={{ width: 180 }} />
+                <Box sx={{ width: 150 }}>
+                  {fieldLabel(t('admin:nodes.create_dialog.sockopt_tproxy', { defaultValue: 'TPROXY mode' }))}
+                  <Select size="small" fullWidth value={form.sockopt_tproxy}
+                    onChange={e => update('sockopt_tproxy', e.target.value as InboundFormState['sockopt_tproxy'])}
+                    displayEmpty>
+                    {TPROXY_MODES.map(m => <MenuItem key={m} value={m}>{m || '—'}</MenuItem>)}
+                  </Select>
+                </Box>
+              </>
             )}
           </Box>
         </Box>
