@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
@@ -37,6 +38,30 @@ func TestDelOwnedClientUsesCurrentClientIDInsteadOfStaleOwnershipUUID(t *testing
 	}
 	if !own.removed {
 		t.Fatalf("ownership was not removed")
+	}
+}
+
+// TestDelOwnedClientFallsBackToEmailWhenIDDeleteFails reproduces the
+// Shadowsocks case: the client is present with a non-empty settings `id`,
+// but 3X-UI's delClient-by-id rejects it ("Client Not Found In Inbound For
+// ID"). The delete must fall back to delClientByEmail and succeed rather
+// than erroring forever in the resync DEL loop.
+func TestDelOwnedClientFallsBackToEmailWhenIDDeleteFails(t *testing.T) {
+	xui := &fakeXUIClient{
+		clients:      []ports.ClientDetail{{ID: "8fbbc251", Email: "u1@example.test"}},
+		delClientErr: errors.New("Something went wrong (Client Not Found In Inbound For ID: 8fbbc251)"),
+	}
+	own := newFakeOwnership("u1@example.test", "8fbbc251")
+	s := New(&fakePool{xui: xui}, own)
+
+	if err := s.DelOwnedClient(context.Background(), 1, 100, "u1@example.test"); err != nil {
+		t.Fatalf("expected email fallback to succeed, got %v", err)
+	}
+	if xui.deletedByEmail != "u1@example.test" {
+		t.Fatalf("expected fallback delete by email, deletedByEmail = %q", xui.deletedByEmail)
+	}
+	if !own.removed {
+		t.Fatalf("ownership was not removed after successful fallback")
 	}
 }
 
@@ -94,6 +119,7 @@ type fakeXUIClient struct {
 	clients        []ports.ClientDetail
 	deletedID      string
 	deletedByEmail string
+	delClientErr   error // when set, DelClient (by id) fails with this
 }
 
 func (c *fakeXUIClient) GetInboundClients(ctx context.Context, inboundID int) ([]ports.ClientDetail, error) {
@@ -101,7 +127,7 @@ func (c *fakeXUIClient) GetInboundClients(ctx context.Context, inboundID int) ([
 }
 func (c *fakeXUIClient) DelClient(ctx context.Context, inboundID int, clientUUID string) error {
 	c.deletedID = clientUUID
-	return nil
+	return c.delClientErr
 }
 func (c *fakeXUIClient) DelClientByEmail(ctx context.Context, inboundID int, email string) error {
 	c.deletedByEmail = email

@@ -170,6 +170,14 @@ func (s *Service) DelOwnedClient(ctx context.Context, panelID int64, inboundID i
 	}
 	if current.ID != "" {
 		if err := c.DelClient(ctx, inboundID, current.ID); err != nil {
+			// Some inbounds (notably Shadowsocks) make 3X-UI reject
+			// delClient-by-id with "Client Not Found In Inbound For ID" even
+			// when the client is present — those protocols key delClient by
+			// email, not the settings `id`. Fall back to delClientByEmail
+			// before giving up, otherwise the resync DEL retries forever.
+			if delErr := c.DelClientByEmail(ctx, inboundID, email); delErr == nil {
+				return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
+			}
 			if missing, vErr := s.clientMissingByEmail(ctx, c, inboundID, entry.ClientEmail); vErr == nil && missing {
 				return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
 			}
@@ -318,15 +326,6 @@ func (s *Service) ClaimClient(ctx context.Context, userID int64, panelID int64, 
 		return "", err
 	}
 	return clientUUID, nil
-}
-
-func (s *Service) panelName(panelID int64) string {
-	for _, p := range s.pool.List() {
-		if p.ID == panelID {
-			return p.Name
-		}
-	}
-	return ""
 }
 
 // DeleteInbound deletes an inbound only when the guard passes. The caller
