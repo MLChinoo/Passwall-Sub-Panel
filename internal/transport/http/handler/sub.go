@@ -47,7 +47,10 @@ func (h *SubHandler) Get(c *gin.Context) {
 	// Load settings to get client rules.
 	settings, err := h.settings.Load(c.Request.Context(), ports.UISettings{})
 	if err != nil {
-		respondError(c, err)
+		// Public endpoint: never surface the raw error (would leak DB /
+		// internal details to anonymous callers). Log full detail server-side.
+		log.Warn("sub: load settings failed", "err", err)
+		c.String(http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -79,7 +82,8 @@ clientCheckDone:
 			c.String(http.StatusNotFound, "")
 			return
 		}
-		respondError(c, err)
+		log.Warn("sub: lookup by token failed", "err", err)
+		c.String(http.StatusInternalServerError, "internal error")
 		return
 	}
 	now := time.Now()
@@ -143,7 +147,7 @@ clientCheckDone:
 
 		// Save updated violation count.
 		if err := h.users.Update(c.Request.Context(), u); err != nil {
-			fmt.Printf("failed to update violation count for user %d: %v\n", u.ID, err)
+			log.Warn("failed to update violation count", "user_id", u.ID, "err", err)
 		}
 
 		c.String(http.StatusForbidden, "client not allowed")
@@ -160,7 +164,8 @@ clientCheckDone:
 	// Render subscription.
 	out, err := h.render.RenderForUser(c.Request.Context(), u, ct)
 	if err != nil {
-		respondError(c, err)
+		log.Warn("sub: render failed", "user_id", u.ID, "err", err)
+		c.String(http.StatusInternalServerError, "internal error")
 		return
 	}
 

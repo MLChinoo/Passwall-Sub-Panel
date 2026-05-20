@@ -131,6 +131,16 @@ type createUserResponse struct {
 func (h *AdminUserHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	// Clamp to sane bounds: a caller-supplied negative/zero or absurdly large
+	// page_size would otherwise drive a huge allocation / DB scan.
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	} else if pageSize > 200 {
+		pageSize = 200
+	}
 	filter := ports.UserFilter{
 		Pagination: ports.Pagination{Page: page, PageSize: pageSize},
 		Search:     c.Query("search"),

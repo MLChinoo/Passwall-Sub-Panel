@@ -117,6 +117,22 @@ func (h *AdminTrafficHandler) Top(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": rows})
 }
 
+// operatorMayView blocks an operator caller from reading an admin/operator
+// account's traffic, mirroring the write-side guard in SetUserUsage. Returns
+// false (and writes 403) when access should be denied.
+func (h *AdminTrafficHandler) operatorMayView(c *gin.Context, userID int64) bool {
+	claims := middleware.ClaimsFrom(c)
+	if claims == nil || claims.Role != domain.RoleOperator {
+		return true
+	}
+	target, err := h.users.GetByID(c.Request.Context(), userID)
+	if err == nil && (target.Role == domain.RoleAdmin || target.Role == domain.RoleOperator) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Operators cannot view admin or operator accounts"})
+		return false
+	}
+	return true
+}
+
 func (h *AdminTrafficHandler) History(c *gin.Context) {
 	period, since, until, err := parseTrafficHistoryQuery(c, paneltz.Location(c.Request.Context(), h.settings))
 	if err != nil {
@@ -127,6 +143,9 @@ func (h *AdminTrafficHandler) History(c *gin.Context) {
 		userID, err := strconv.ParseInt(rawUserID, 10, 64)
 		if err != nil || userID <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
+			return
+		}
+		if !h.operatorMayView(c, userID) {
 			return
 		}
 		h.historyForUser(c, userID, period, since, until)
@@ -193,6 +212,9 @@ func (h *AdminTrafficHandler) UserHistory(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !h.operatorMayView(c, id) {
+		return
+	}
 	h.historyForUser(c, id, period, since, until)
 }
 
@@ -222,6 +244,9 @@ func (h *AdminTrafficHandler) UserReport(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
+		return
+	}
+	if !h.operatorMayView(c, id) {
 		return
 	}
 	report, err := h.traffic.ReportFor(c.Request.Context(), id)
