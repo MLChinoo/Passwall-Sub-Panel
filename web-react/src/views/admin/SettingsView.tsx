@@ -852,16 +852,17 @@ function MailTab() {
       <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
         <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('settings.mail.section_test')}</Typography>
         <Divider sx={{ mb: 2 }} />
-        {/* Top-align so the button lines up with the input box (not pushed
-            down by any validation helper text), and match its 56px height. */}
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start' }}>
+        {/* Stretch the button to the input box height rather than hardcoding a
+            value — the field is size="small" in compact density and medium in
+            comfortable, so any fixed height only fits one. */}
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'stretch' }}>
           <TextField fullWidth label={t('settings.mail.test_to')} type="email"
             value={testTo} onChange={e => setTestTo(e.target.value)}
             error={!!errs.test_to}
             helperText={errs.test_to ? t(`admin:${errs.test_to}`) : ''} />
           <Button variant="outlined" disabled={!testTo || testBusy} onClick={test}
             startIcon={testBusy ? <CircularProgress size={14} /> : <SendIcon />}
-            sx={{ whiteSpace: 'nowrap', flexShrink: 0, height: 56 }}>
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
             {t('settings.mail.test_send')}
           </Button>
         </Box>
