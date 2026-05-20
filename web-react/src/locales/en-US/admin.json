@@ -639,7 +639,7 @@
     "managed_count": "Showing {{shown}} of {{total}}",
     "managed_filter_empty": "No nodes match the filter",
     "managed_search_disables_drag": "Drag-to-reorder is disabled while filtering; clear the search to re-enable",
-    "unmanaged_search_placeholder": "Search panel / protocol / remark / port / ID…",
+    "unmanaged_search_placeholder": "Search protocol / remark / port / ID…",
     "unmanaged_count": "Showing {{shown}} of {{total}}",
     "unmanaged_filter_empty": "No entries match the filter",
     "unmanaged_server_label": "Server",
