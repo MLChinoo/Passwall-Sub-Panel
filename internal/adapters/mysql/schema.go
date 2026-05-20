@@ -397,20 +397,6 @@ type clientTrafficRow struct {
 
 func (clientTrafficRow) TableName() string { return "client_traffic_snapshots" }
 
-func (r *clientTrafficRow) toDomain() *domain.ClientTrafficSnapshot {
-	return &domain.ClientTrafficSnapshot{
-		ID:          r.ID,
-		UserID:      r.UserID,
-		PanelID:     r.PanelID,
-		InboundID:   r.InboundID,
-		ClientEmail: r.ClientEmail,
-		UpBytes:     r.UpBytes,
-		DownBytes:   r.DownBytes,
-		TotalBytes:  r.TotalBytes,
-		CapturedAt:  r.CapturedAt,
-	}
-}
-
 type nodeTrafficRow struct {
 	ID         int64 `gorm:"primaryKey;autoIncrement"`
 	NodeID     int64 `gorm:"not null;index:idx_node_time,priority:1"`
@@ -721,17 +707,6 @@ func xuiPanelFromDomain(p *domain.XUIPanel) (*xuiPanelRow, error) {
 }
 
 func (subLogRow) TableName() string { return "sub_logs" }
-
-func (r *subLogRow) toDomain() *domain.SubLog {
-	return &domain.SubLog{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		IP:         r.IP,
-		UA:         r.UA,
-		ClientType: r.ClientType,
-		AccessedAt: r.AccessedAt,
-	}
-}
 
 // separatorRow stores subscription-list separators (the "----- Taiwan -----"
 // decoration rows). Lives in its own table so node-iterating workers

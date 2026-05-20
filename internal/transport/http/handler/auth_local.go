@@ -26,20 +26,6 @@ func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *
 	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings}
 }
 
-// Methods reports which login methods are configured and which UI mode the
-// login page should render. Public endpoint. Reads the runtime-editable
-// login_mode from the DB on every call so admin edits propagate
-// to the next visitor without a restart. "sso" is true when EITHER SAML
-// or OIDC is enabled; the frontend further distinguishes via "saml" /
-// "oidc" booleans when rendering provider-specific buttons.
-func (h *AuthLocalHandler) activeLoginMode(c *gin.Context) string {
-	s, err := h.settings.Load(c.Request.Context(), ports.UISettings{LoginMode: "dual"})
-	if err != nil {
-		return "dual"
-	}
-	return s.LoginMode
-}
-
 // localLoginDisallowedForUsers reports whether non-admin accounts should be
 // rejected when they POST /api/auth/local/login. The /login/local route stays
 // reachable so admins always have a break-glass path.

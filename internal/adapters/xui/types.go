@@ -36,18 +36,6 @@ type rawClientTraffic struct {
 	Reset      int    `json:"reset"`
 }
 
-// settingsClients represents the relevant subset of inbound.settings JSON.
-// Each entry of Clients carries protocol-specific fields, so we keep them as
-// json.RawMessage and let the caller decode them on demand.
-type settingsClients struct {
-	Clients    []json.RawMessage `json:"clients"`
-	Decryption string            `json:"decryption,omitempty"` // VLESS
-	Fallbacks  json.RawMessage   `json:"fallbacks,omitempty"`  // VLESS / Trojan
-	Method     string            `json:"method,omitempty"`     // SS / SS-2022
-	Password   string            `json:"password,omitempty"`   // SS server-side PSK
-	Network    string            `json:"network,omitempty"`    // SS
-}
-
 // genericResponse is the envelope used by most 3X-UI endpoints.
 type genericResponse struct {
 	Success bool            `json:"success"`

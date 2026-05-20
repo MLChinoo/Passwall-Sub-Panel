@@ -126,34 +126,3 @@ type legacyOIDCConfigRow struct {
 }
 
 func (legacyOIDCConfigRow) TableName() string { return "oidc_config" }
-
-// ---- legacyOwnershipRow: pre-rename xui_clients with panel_name ----
-
-type legacyOwnershipRow struct {
-	ID          int64 `gorm:"primaryKey;autoIncrement"`
-	UserID      int64
-	PanelID     int64
-	PanelName   string // dropped in v3
-	InboundID   int
-	ClientEmail string
-	ClientUUID  string
-	CreatedAt   string // opaque shuttle
-}
-
-func (legacyOwnershipRow) TableName() string { return "xui_clients" }
-
-// ---- legacyClientTrafficRow: still keyed by raw counters; used for LastRaw seeding ----
-
-type legacyClientTrafficRow struct {
-	ID          int64 `gorm:"primaryKey;autoIncrement"`
-	UserID      int64
-	PanelID     int64
-	InboundID   int
-	ClientEmail string
-	UpBytes     int64
-	DownBytes   int64
-	TotalBytes  int64
-	CapturedAt  string // opaque shuttle (we read up/down/total only)
-}
-
-func (legacyClientTrafficRow) TableName() string { return "client_traffic_snapshots" }

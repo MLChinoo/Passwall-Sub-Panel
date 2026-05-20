@@ -1559,20 +1559,6 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	return firstErr
 }
 
-// isInboundNotFoundErr matches the "record not found" surface that the 3X-UI
-// HTTP client wraps when an inbound id is missing on the remote side. Used to
-// distinguish "permanently gone, drop the ownership row" from transient
-// network failures (which should keep retrying).
-func isInboundNotFoundErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "record not found") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "404")
-}
-
 // ProcessDueTasks runs pending user-scoped sync tasks. It is safe to call
 // from a periodic background loop; every failed remote write is persisted
 // with a backoff and retried later.
