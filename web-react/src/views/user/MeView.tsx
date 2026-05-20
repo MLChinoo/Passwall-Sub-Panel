@@ -1155,7 +1155,7 @@ function UsagePanel({ limitBytes, usage, expireAt, resetPeriod, md }: UsagePanel
             {t('profile.traffic_used')}
             {resetPeriod && resetPeriod !== 'never' && (
               <Typography component="span" sx={{ fontSize: 12, color: md.onSurfaceVariant, opacity: 0.7, ml: 0.75 }}>
-                · {t(`reset_period.${resetPeriod}`)}
+                · {t(`profile.reset_period.${resetPeriod}`)}
               </Typography>
             )}
           </Typography>
