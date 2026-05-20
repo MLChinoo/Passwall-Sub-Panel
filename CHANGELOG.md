@@ -4,6 +4,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.2.0-rc.2 — 2026-05-20
+
+### Fixed
+- Hysteria2 多用户同步打通：3X-UI 按 `auth` 字段识别 Hysteria2 客户端（auth 即
+  其「client id」，为空会被拒「empty client ID」），但面板此前的 `ClientSpec` /
+  `buildClientSpec` / `buildClientJSON` 完全没有 `auth`，同步出去的 Hysteria2
+  客户端没有凭证、3X-UI 拒收或无法认证。现在 `ClientSpec` 新增 `Auth`，
+  Hysteria2 客户端的 `auth` 设为用户 UUID（与订阅渲染用的 HY2 密码一致），
+  序列化与回读都带上。VLESS/VMess/Trojan/SS 不受影响；删除走 email 路径已覆盖。
+
 ## v3.2.0-rc.1 — 2026-05-20
 
 ### Fixed

@@ -360,6 +360,7 @@ func (c *Client) GetInboundClients(ctx context.Context, inboundID int) ([]ports.
 			Enable     *bool  `json:"enable"`
 			Flow       string `json:"flow"`
 			Password   string `json:"password"`
+			Auth       string `json:"auth"`
 			ExpiryTime int64  `json:"expiryTime"`
 			TotalGB    int64  `json:"totalGB"`
 		} `json:"clients"`
@@ -379,6 +380,7 @@ func (c *Client) GetInboundClients(ctx context.Context, inboundID int) ([]ports.
 			Enable:     enable,
 			Flow:       src.Flow,
 			Password:   src.Password,
+			Auth:       src.Auth,
 			ExpiryTime: src.ExpiryTime,
 			TotalGB:    src.TotalGB,
 		}
@@ -592,6 +594,9 @@ func buildClientJSON(s ports.ClientSpec) (json.RawMessage, error) {
 	}
 	if s.Method != "" {
 		obj["method"] = s.Method
+	}
+	if s.Auth != "" {
+		obj["auth"] = s.Auth
 	}
 	return json.Marshal(obj)
 }

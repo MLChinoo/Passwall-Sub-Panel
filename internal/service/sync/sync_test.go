@@ -65,6 +65,20 @@ func TestDelOwnedClientFallsBackToEmailWhenIDDeleteFails(t *testing.T) {
 	}
 }
 
+// TestBuildClientSpecHysteria2SetsAuth pins that Hysteria2 clients carry the
+// per-user credential in the `auth` field (3X-UI's client id for HY2), not id
+// or password — otherwise 3X-UI rejects the client as "empty client ID". The
+// value equals the user's UUID, matching what the subscription renderer emits.
+func TestBuildClientSpecHysteria2SetsAuth(t *testing.T) {
+	spec := buildClientSpec(domain.ProtoHysteria2, "uuid-xyz", "u@example.test", "", 0, 0)
+	if spec.Auth != "uuid-xyz" {
+		t.Fatalf("Auth = %q, want uuid-xyz", spec.Auth)
+	}
+	if spec.ID != "" || spec.Password != "" {
+		t.Fatalf("HY2 should set only Auth; got ID=%q Password=%q", spec.ID, spec.Password)
+	}
+}
+
 type fakePool struct {
 	xui ports.XUIClient
 }

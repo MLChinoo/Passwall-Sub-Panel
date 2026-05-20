@@ -46,6 +46,7 @@ type ClientDetail struct {
 	Enable     bool
 	Flow       string
 	Password   string // Trojan / SS / SS-2022 user PSK
+	Auth       string // Hysteria2 per-client credential
 	ExpiryTime int64
 	TotalGB    int64
 }
@@ -106,6 +107,7 @@ type ClientSpec struct {
 	// Protocol-specific
 	Password string // Trojan / SS / SS-2022
 	Method   string // SS / SS-2022 cipher
+	Auth     string // Hysteria2 per-client credential (3X-UI's "auth" / client id)
 }
 
 // ClientTraffic is the per-client traffic entry returned by 3X-UI.

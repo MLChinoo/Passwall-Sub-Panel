@@ -369,6 +369,11 @@ func buildClientSpec(protocol domain.Protocol, userUUID, email, flow string, exp
 	case domain.ProtoTrojan, domain.ProtoSS, domain.ProtoSS2022:
 		spec.ID = userUUID // 3X-UI still expects an id field
 		spec.Password = password
+	case domain.ProtoHysteria2:
+		// 3X-UI keys Hysteria2 clients by the "auth" field (it treats auth as
+		// the client id and rejects an empty one). password == userUUID here,
+		// matching what the subscription renderer emits as the HY2 password.
+		spec.Auth = password
 	}
 	return spec
 }
