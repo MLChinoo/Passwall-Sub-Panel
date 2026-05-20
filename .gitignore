@@ -45,6 +45,9 @@ node_modules/
 internal/web/dist/*
 !internal/web/dist/.gitkeep
 
+# TypeScript incremental build cache — regenerated on every build.
+web-react/tsconfig.tsbuildinfo
+
 # Reference YAML containing real credentials - never commit.
 user_*.yaml
 # Local-only reference / scratch space for real configs; never committed.

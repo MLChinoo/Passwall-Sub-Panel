@@ -100,16 +100,15 @@ export default function ServersView() {
   type ServerField = 'name' | 'url' | 'api_token' | 'password'
   const [fieldErr, setFieldErr] = useState<FieldErrors<ServerField>>({})
 
-  // Free-text filter on name / URL / remark. Small list, so a plain
-  // case-insensitive substring match is enough — no need for the grouped
-  // Autocomplete the Nodes page uses.
+  // Free-text filter on name / URL. Small list, so a plain case-insensitive
+  // substring match is enough. Remark is intentionally excluded — it's a
+  // human-readable note, not an identifier worth searching on.
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return items
     return items.filter(s =>
       s.name.toLowerCase().includes(q) ||
-      s.url.toLowerCase().includes(q) ||
-      (s.remark ?? '').toLowerCase().includes(q),
+      s.url.toLowerCase().includes(q),
     )
   }, [items, search])
 
@@ -433,7 +432,7 @@ export default function ServersView() {
           size="small"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder={t('admin:servers.search_placeholder', { defaultValue: '搜索名称 / URL / 备注' })}
+          placeholder={t('admin:servers.search_placeholder', { defaultValue: '搜索名称 / URL' })}
           sx={{ width: 320, maxWidth: '100%' }}
           InputProps={{
             startAdornment: (

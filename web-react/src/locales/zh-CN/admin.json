@@ -1114,7 +1114,7 @@
     "subtitle": "节点（inbound）关联到服务器。新增节点时从这里的列表选择。",
     "create": "新增服务器",
     "test_all": "测试全部",
-    "search_placeholder": "搜索名称 / URL / 备注",
+    "search_placeholder": "搜索名称 / URL",
     "no_match": "没有匹配的服务器",
     "edit_title": "编辑 {{name}}",
     "selection_count": "已选 {{count}}",
