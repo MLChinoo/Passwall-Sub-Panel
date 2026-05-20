@@ -212,6 +212,16 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 			return
 		}
 		expireAt = inst
+	} else if expireAt != nil {
+		// The create form sends a raw "now + N days" instant (browser clock),
+		// while the edit dialog sends expire_date → panel-tz end-of-day. Anchor
+		// the raw instant to the panel-tz end of its calendar day so both paths
+		// store the same cutoff — otherwise a created user's expiry can land on
+		// a different day (and at an arbitrary time) than the edit dialog shows.
+		loc := paneltz.Location(c.Request.Context(), h.settings)
+		if anchored, err := paneltz.EndOfDay(paneltz.DateString(*expireAt, loc), loc); err == nil {
+			expireAt = &anchored
+		}
 	}
 	in := user.CreateLocalInput{
 		UPN:                req.UPN,
@@ -543,6 +553,15 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 			return
 		}
 		expireAt = inst
+	} else if expireAt != nil && !req.ClearExpire {
+		// A raw expire_at (e.g. the renew action's "now + N days") is anchored
+		// to the panel-tz end of its calendar day, matching the date-mode path
+		// and Create — so renewals don't drift to an arbitrary time-of-day or a
+		// different day than the edit dialog renders.
+		loc := paneltz.Location(c.Request.Context(), h.settings)
+		if anchored, err := paneltz.EndOfDay(paneltz.DateString(*expireAt, loc), loc); err == nil {
+			expireAt = &anchored
+		}
 	}
 	in := user.UpdateInput{
 		GroupID:     req.GroupID,

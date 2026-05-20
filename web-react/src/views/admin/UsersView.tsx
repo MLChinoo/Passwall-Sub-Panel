@@ -83,7 +83,6 @@ import {
   validateEmail,
   validateGroupId,
   validateName,
-  validateNonNegativeInt,
   validateNonNegativeNumber,
   validatePassword,
   validateRequired,
@@ -97,7 +96,11 @@ interface CreateForm {
   display_name: string
   password: string
   group_id: number | ''
-  expire_days: number
+  // Mirrors the edit dialog: a date is interpreted as end-of-day in the panel
+  // timezone server-side (sent as expire_date), so create and edit anchor the
+  // same way. 'permanent' sends no expiry at all.
+  expire_mode: 'date' | 'permanent'
+  expire_date: string
   traffic_limit_gb: number
   traffic_reset_period: ResetPeriod
   remark: string
@@ -125,8 +128,18 @@ interface EditForm {
 
 const EMPTY_CREATE: CreateForm = {
   upn: '', email: '', display_name: '', password: '',
-  group_id: '', expire_days: 30, traffic_limit_gb: 0,
+  group_id: '', expire_mode: 'date', expire_date: '', traffic_limit_gb: 0,
   traffic_reset_period: 'monthly', remark: '', show_password: false,
+}
+
+// dateInNDays formats "n days from now" as a local YYYY-MM-DD string for the
+// create dialog's default. The exact day is resolved against the panel
+// timezone server-side; this is just the picker's pre-fill.
+function dateInNDays(n: number): string {
+  const d = new Date(Date.now() + n * 86400000)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
 }
 
 const EMPTY_EDIT: EditForm = {
@@ -177,7 +190,7 @@ export default function UsersView() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [createForm, setCreateForm] = useState<CreateForm>(EMPTY_CREATE)
-  type CreateField = 'upn' | 'email' | 'display_name' | 'password' | 'group_id' | 'expire_days' | 'traffic_limit_gb'
+  type CreateField = 'upn' | 'email' | 'display_name' | 'password' | 'group_id' | 'expire_date' | 'traffic_limit_gb'
   const [createErr, setCreateErr] = useState<FieldErrors<CreateField>>({})
 
   const [resultOpen, setResultOpen] = useState(false)
@@ -285,7 +298,7 @@ export default function UsersView() {
 
   // ---- Create ----
   function openCreate() {
-    setCreateForm({ ...EMPTY_CREATE, group_id: groups[0]?.id ?? '' })
+    setCreateForm({ ...EMPTY_CREATE, group_id: groups[0]?.id ?? '', expire_date: dateInNDays(30) })
     setCreateErr({})
     setCreateOpen(true)
   }
@@ -301,7 +314,7 @@ export default function UsersView() {
       // if the admin types one in we hold it to the floor.
       password: f.password ? validatePassword(f.password, { strong: true }) : '',
       group_id: validateGroupId(f.group_id, { required: true }),
-      expire_days: validateNonNegativeInt(f.expire_days),
+      expire_date: f.expire_mode === 'date' ? validateRequired(f.expire_date) : '',
       traffic_limit_gb: validateNonNegativeNumber(f.traffic_limit_gb),
     }
   }
@@ -314,9 +327,6 @@ export default function UsersView() {
     if (firstKey) { pushSnack(t(`admin:${firstKey}`), 'warning'); return }
     setCreateBusy(true)
     try {
-      const expireAt = createForm.expire_days > 0
-        ? new Date(Date.now() + createForm.expire_days * 86400000).toISOString()
-        : undefined
       const res = await createUser({
         upn: createForm.upn,
         email: createForm.email || undefined,
@@ -325,7 +335,9 @@ export default function UsersView() {
         // validateGroupId above proves this is a number; the FormState type
         // keeps the '' option for the empty-select state only.
         group_id: createForm.group_id as number,
-        expire_at: expireAt,
+        // Send the picked calendar day; the backend resolves it to end-of-day
+        // in the panel timezone (same path as edit). Permanent → omit entirely.
+        expire_date: createForm.expire_mode === 'date' ? createForm.expire_date : undefined,
         traffic_limit_gb: createForm.traffic_limit_gb,
         traffic_reset_period: createForm.traffic_reset_period,
         remark: createForm.remark || undefined,
@@ -1085,12 +1097,25 @@ export default function UsersView() {
                   error={!!createErr.group_id}
                   helperText={createErr.group_id ? t(`admin:${createErr.group_id}`) : ''} />
               )} />
-            <TextField fullWidth type="number" label={t('admin:users.field.expire_days')}
-              value={createForm.expire_days}
-              onChange={e => setCreateForm({ ...createForm, expire_days: Number(e.target.value) })}
-              inputProps={{ min: 0 }}
-              error={!!createErr.expire_days}
-              helperText={createErr.expire_days ? t(`admin:${createErr.expire_days}`) : ''} />
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+              <TextField select size="small" label={t('admin:users.field.expire_at')}
+                value={createForm.expire_mode}
+                onChange={e => setCreateForm({ ...createForm, expire_mode: e.target.value as 'date' | 'permanent' })}
+                sx={{ minWidth: 180 }}>
+                <MenuItem value="date">{t('admin:users.field.expire_mode_date')}</MenuItem>
+                <MenuItem value="permanent">{t('admin:users.field.expire_mode_permanent')}</MenuItem>
+              </TextField>
+              {createForm.expire_mode === 'date' && (
+                <TextField type="date" required size="small" label={t('admin:users.field.expire_at')}
+                  value={createForm.expire_date}
+                  onChange={e => setCreateForm({ ...createForm, expire_date: e.target.value })}
+                  error={!!createErr.expire_date}
+                  helperText={createErr.expire_date
+                    ? t(`admin:${createErr.expire_date}`)
+                    : (expireTzDiffers ? t('admin:users.field.expire_tz_hint', { tz: panelTz }) : '')}
+                  sx={{ flex: 1 }} InputLabelProps={{ shrink: true }} />
+              )}
+            </Box>
             <TextField fullWidth type="number" label={t('admin:users.field.traffic_limit_gb')}
               value={createForm.traffic_limit_gb}
               onChange={e => setCreateForm({ ...createForm, traffic_limit_gb: Number(e.target.value) })}
