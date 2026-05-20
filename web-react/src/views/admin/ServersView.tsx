@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   Box,
   Button,
@@ -23,6 +23,7 @@ import {
   useTheme,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
+import SearchIcon from '@mui/icons-material/Search'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import DeleteIcon from '@mui/icons-material/DeleteOutline'
 import EditIcon from '@mui/icons-material/EditOutlined'
@@ -85,6 +86,7 @@ export default function ServersView() {
   const { t } = useTranslation(['admin', 'common'])
 
   const [items, setItems] = useState<Server[]>([])
+  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [probeStates, setProbeStates] = useState<Record<number, ProbeState>>({})
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -98,9 +100,24 @@ export default function ServersView() {
   type ServerField = 'name' | 'url' | 'api_token' | 'password'
   const [fieldErr, setFieldErr] = useState<FieldErrors<ServerField>>({})
 
+  // Free-text filter on name / URL / remark. Small list, so a plain
+  // case-insensitive substring match is enough — no need for the grouped
+  // Autocomplete the Nodes page uses.
+  const filteredItems = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return items
+    return items.filter(s =>
+      s.name.toLowerCase().includes(q) ||
+      s.url.toLowerCase().includes(q) ||
+      (s.remark ?? '').toLowerCase().includes(q),
+    )
+  }, [items, search])
+
   const selectedCount = selected.size
-  const allChecked = items.length > 0 && selected.size === items.length
-  const someChecked = selected.size > 0 && selected.size < items.length
+  // Header checkbox reflects the *visible* (filtered) rows so it can't claim
+  // "all selected" while filtered-out rows sit unselected behind the search.
+  const allChecked = filteredItems.length > 0 && filteredItems.every(s => selected.has(s.id))
+  const someChecked = filteredItems.some(s => selected.has(s.id)) && !allChecked
 
   useEffect(() => { void load() }, [])
 
@@ -293,7 +310,13 @@ export default function ServersView() {
   }
 
   function toggleAll(checked: boolean) {
-    setSelected(checked ? new Set(items.map(s => s.id)) : new Set())
+    // Only flip the currently-visible rows; preserve selection of rows
+    // hidden by the active search filter.
+    setSelected(prev => {
+      const next = new Set(prev)
+      filteredItems.forEach(s => { if (checked) next.add(s.id); else next.delete(s.id) })
+      return next
+    })
   }
 
   function toggleOne(id: number, checked: boolean) {
@@ -404,6 +427,24 @@ export default function ServersView() {
         </Box>
       )}
 
+      {/* Search */}
+      <Box sx={{ mt: 2 }}>
+        <TextField
+          size="small"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder={t('admin:servers.search_placeholder', { defaultValue: '搜索名称 / URL / 备注' })}
+          sx={{ width: 320, maxWidth: '100%' }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" sx={{ color: md.onSurfaceVariant }} />
+              </InputAdornment>
+            ),
+          }}
+        />
+      </Box>
+
       {/* Table */}
       <Card sx={{ mt: 2, bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', overflow: 'hidden' }}>
         <TableContainer>
@@ -435,7 +476,12 @@ export default function ServersView() {
                   —
                 </TableCell></TableRow>
               )}
-              {items.map(s => (
+              {!loading && items.length > 0 && filteredItems.length === 0 && (
+                <TableRow><TableCell colSpan={6} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>
+                  {t('admin:servers.no_match', { defaultValue: '没有匹配的服务器' })}
+                </TableCell></TableRow>
+              )}
+              {filteredItems.map(s => (
                 <TableRow
                   key={s.id}
                   hover
