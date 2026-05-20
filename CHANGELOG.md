@@ -4,6 +4,26 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.2.0 — 2026-05-20
+
+正式版。汇总 v3.2.0-beta.1 → rc.2 的全部改动（PostgreSQL 支持、到期日按面板
+时区锚定、未纳管标签页按服务器查询、Shadowsocks 订阅 SIP022 修正、VLESS flow
+统一、Hysteria2 多用户同步、依赖 CVE 升级等），并在 rc.2 之后补入下列收尾修复。
+完整逐项见下方各 pre-release 段落。
+
+### Fixed
+- TLS `allowInsecure` 现在会渲染进客户端配置：Clash 的 `skip-cert-verify`、
+  sing-box 的 `insecure`、URI 的 `allowInsecure=1`，Hysteria2 也接上。此前面板
+  能在创建节点时勾选 allowInsecure，但订阅完全不下发，自签证书的 TLS 节点客户端
+  会因校验失败而连不上。
+- 客户端删除统一走 `delClientByEmail`：3X-UI 的 `delClient/:id` 只认 UUID /
+  password（VLESS/VMess 按 UUID、Trojan 按 password），不认 Shadowsocks(email)
+  / Hysteria2(auth)，导致 SS 客户端按存储的 UUID 删除时报 “Client Not Found In
+  Inbound For ID”、用户重同步的 DEL 任务无限重试。改为始终按 email 删除，对所有
+  协议生效（取代 rc.1 的 by-id+回退方案）。
+- 修正 `copyClients` 的请求字段：3X-UI 读 `clientEmails`，面板此前发的是
+  `emails`（被忽略），会把"选择性复制"静默变成"复制全部"。
+
 ## v3.2.0-rc.2 — 2026-05-20
 
 ### Fixed
