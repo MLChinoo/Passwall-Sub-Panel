@@ -16,17 +16,33 @@ func inboundFromNode(n *domain.Node) *ports.Inbound {
 }
 
 // nodeHasLocalConfig reports whether render can build this node's proxy block
-// from the local snapshot (zero 3X-UI calls). It is false only for nodes never
-// captured — freshly imported, or a pre-v4 row before reconcile backfills it —
-// which fall back to a one-shot live fetch.
+// from the local snapshot (zero 3X-UI calls). False for:
+//   - never captured (pre-v4 row before reconcile backfills it, or freshly
+//     imported before the capture step ran) — ConfigSyncedAt is nil
+//   - explicitly marked non-synced (future states like "broken" / "needs-attention"
+//     that a writer wants to gate render off of) — state is non-empty and not
+//     "synced". Today markSynced is the only writer and always sets "synced",
+//     so this branch is only forward-compat insurance.
 func nodeHasLocalConfig(n *domain.Node) bool {
-	return n != nil && n.ConfigSyncedAt != nil
+	if n == nil || n.ConfigSyncedAt == nil {
+		return false
+	}
+	switch n.ConfigSyncState {
+	case "", "synced":
+		return true
+	default:
+		return false
+	}
 }
 
 // inboundForNodeRender returns the node's local config snapshot, or live-fetches
-// it when the node hasn't been captured yet (transition window). The sing-box
-// and URI-list paths call this per node; the mihomo path (buildProxies) batches
-// its fallback fetch across panels, so it inlines the same decision instead.
+// it when the node hasn't been captured yet (transition window).
+//
+// All three production render paths (mihomo / sing-box / URI-list) now bucket
+// un-captured nodes by panel and call prefetchInboundsForRender once per
+// render — one ListInbounds per panel instead of one GetInbound per node.
+// This helper survives for unit tests that need to exercise the decision
+// in isolation; new render code should prefer the bulk path.
 func (s *Service) inboundForNodeRender(ctx context.Context, n *domain.Node) (*ports.Inbound, error) {
 	if nodeHasLocalConfig(n) {
 		return inboundFromNode(n), nil

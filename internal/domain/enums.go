@@ -69,11 +69,6 @@ const (
 	SyncTaskUserPushConfig SyncTaskType = "user_push_config"
 	SyncTaskNodeCreate     SyncTaskType = "node_create"
 	SyncTaskNodeDelete     SyncTaskType = "node_delete"
-	// SyncTaskNodeDetach removes the panel-managed clients from the inbound
-	// and drops the node record, but leaves the inbound itself (with any
-	// unmanaged clients) on 3X-UI. Used when an admin wants to stop
-	// managing a node without losing the upstream resource.
-	SyncTaskNodeDetach     SyncTaskType = "node_detach"
 	SyncTaskNodeSetEnabled SyncTaskType = "node_set_enabled"
 	SyncTaskNodeUpdate     SyncTaskType = "node_update"
 	SyncTaskMailNotify     SyncTaskType = "mail_notify"

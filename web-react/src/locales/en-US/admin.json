@@ -880,7 +880,7 @@
       "delete_title": "Delete node",
       "delete_message": "Delete node {{name}}? This removes the corresponding inbound from 3X-UI.",
       "detach_title": "Detach node",
-      "detach_message": "Detach node {{name}}? The panel will remove only the clients it created from 3X-UI, leaving the inbound itself and any unmanaged clients intact. The node record is then dropped from the panel.",
+      "detach_message": "Detach node {{name}}? The panel will drop the node record and forget its clients locally — 3X-UI will NOT be contacted. Any clients PSP previously created on this inbound stay on 3X-UI for you to clean up there. Use this when the upstream server is offline or decommissioned; otherwise use Delete.",
       "batch_delete_title": "Delete nodes",
       "batch_delete_message": "Delete {{count}} nodes?"
     }

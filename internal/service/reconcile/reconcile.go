@@ -206,7 +206,7 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 	}
 
 	if level == LevelFull {
-		s.checkNodes(ctx, report)
+		s.checkNodes(ctx, report, cache)
 	}
 
 	if report.Fixed > 0 || len(report.Issues) > 0 {
@@ -550,33 +550,51 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 // checkNodes verifies every nodes row still maps to an existing 3X-UI
 // inbound. Disappeared inbounds get nodes.enabled flipped to false; the
 // row is preserved so an admin can inspect what happened.
-func (s *Service) checkNodes(ctx context.Context, report *Report) {
+//
+// The cache is the same one prefetchInbounds populated at the top of
+// RunOnce — re-using it avoids a redundant ListInbounds per panel. A
+// missing entry in the cache means either (a) the panel's prefetch
+// failed (axis-B already logged a warn; surface it as an axis-A Issue
+// so it appears in the admin's reconcile report) or (b) the inbound
+// genuinely no longer exists on 3X-UI — both go through the "disabled
+// the node" branch.
+func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inboundCacheKey]*inboundCacheEntry) {
 	nodes, err := s.nodes.List(ctx)
 	if err != nil {
 		return
 	}
-	inboundsPerPanel := map[int64]map[int]ports.Inbound{}
+	// Track panels we've already complained about so each unreachable panel
+	// produces exactly one Issue regardless of how many nodes it owns.
+	reachable := map[int64]bool{}
 	for _, n := range nodes {
 		if n.IsSeparator() {
 			continue
 		}
-		known, ok := inboundsPerPanel[n.PanelID]
-		if !ok {
-			c, err := s.pool.Get(n.PanelID)
-			if err != nil {
-				continue
+		if _, seen := reachable[n.PanelID]; !seen {
+			// A panel is considered reachable iff at least one inbound for it
+			// is in the cache. prefetchInbounds populates entries per inbound
+			// on success and logs+skips per-panel on ListInbounds failure.
+			ok := false
+			for k := range cache {
+				if k.panelID == n.PanelID {
+					ok = true
+					break
+				}
 			}
-			inbs, err := c.ListInbounds(ctx)
-			if err != nil {
-				continue
+			reachable[n.PanelID] = ok
+			if !ok {
+				report.Issues = append(report.Issues, Issue{
+					PanelID:   n.PanelID,
+					PanelName: s.panelNameOf(n.PanelID),
+					Code:      "panel_unreachable",
+					Detail:    "axis-A skipped: reconcile prefetch could not list inbounds",
+				})
 			}
-			known = make(map[int]ports.Inbound, len(inbs))
-			for _, inb := range inbs {
-				known[inb.ID] = inb
-			}
-			inboundsPerPanel[n.PanelID] = known
 		}
-		live, present := known[n.InboundID]
+		if !reachable[n.PanelID] {
+			continue
+		}
+		entry, present := cache[inboundCacheKey{panelID: n.PanelID, inboundID: n.InboundID}]
 		if !present {
 			if n.Enabled {
 				n.Enabled = false
@@ -593,7 +611,7 @@ func (s *Service) checkNodes(ctx context.Context, report *Report) {
 			}
 			continue
 		}
-		s.reconcileInboundConfig(ctx, n, &live, report)
+		s.reconcileInboundConfig(ctx, n, entry.inbound, report)
 	}
 }
 
@@ -609,15 +627,37 @@ func (s *Service) checkNodes(ctx context.Context, report *Report) {
 //     is overwritten — never a client. We then re-capture the post-push live
 //     config so a JSON normalisation by 3X-UI converges instead of looping.
 func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, live *ports.Inbound, report *Report) {
+	// Stale-read guard. checkNodes pulled `n` from List() at the top of the
+	// cycle; admin write paths (CreateInbound / ImportExisting /
+	// UpdateInboundConfig) may have stored a fresh snapshot since then. If we
+	// pushed our stale copy now, the admin's edit would be silently reverted
+	// on both 3X-UI and (after re-capture) locally. Skip this node on any
+	// version mismatch — the next reconcile cycle will see the fresh row.
+	fresh, err := s.nodes.GetByID(ctx, n.ID)
+	if err != nil || fresh == nil {
+		return
+	}
+	if !sameSyncStamp(n.ConfigSyncedAt, fresh.ConfigSyncedAt) {
+		return
+	}
+	n = fresh
+
 	if n.ConfigSyncedAt == nil {
 		inboundcfg.Capture(n, live)
-		if err := s.nodes.Update(ctx, n); err == nil {
-			report.Fixed++
+		// Column-scoped write: a concurrent health pass writes port/protocol
+		// from the same probe target, full-row Save would race with it.
+		if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
 			report.Issues = append(report.Issues, Issue{
 				PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
-				Code: "inbound_config_backfilled", Detail: fmt.Sprintf("node id=%d", n.ID), Fixed: true,
+				Code: "inbound_config_backfill_failed", Detail: err.Error(),
 			})
+			return
 		}
+		report.Fixed++
+		report.Issues = append(report.Issues, Issue{
+			PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+			Code: "inbound_config_backfilled", Detail: fmt.Sprintf("node id=%d", n.ID), Fixed: true,
+		})
 		return
 	}
 	if inboundcfg.InSync(n, live) {
@@ -636,15 +676,39 @@ func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, li
 	}
 	// Converge the local snapshot to whatever 3X-UI actually persisted (it may
 	// normalise JSON / inject defaults), so the next compare reads as in-sync.
-	if fresh, ferr := c.GetInbound(ctx, n.InboundID); ferr == nil {
-		inboundcfg.Capture(n, fresh)
+	// If the re-capture fails we DON'T mark fixed and leave the snapshot as it
+	// was — otherwise we'd loop forever pushing the same drifted spec.
+	freshLive, ferr := c.GetInbound(ctx, n.InboundID)
+	if ferr != nil {
+		report.Issues = append(report.Issues, Issue{
+			PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+			Code: "inbound_config_recapture_failed", Detail: ferr.Error(),
+		})
+		return
 	}
-	_ = s.nodes.Update(ctx, n)
+	inboundcfg.Capture(n, freshLive)
+	if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
+		report.Issues = append(report.Issues, Issue{
+			PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+			Code: "inbound_config_recapture_failed", Detail: err.Error(),
+		})
+		return
+	}
 	report.Fixed++
 	report.Issues = append(report.Issues, Issue{
 		PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
 		Code: "inbound_config_drift_pushed", Detail: fmt.Sprintf("node id=%d", n.ID), Fixed: true,
 	})
+}
+
+// sameSyncStamp compares two ConfigSyncedAt pointers by value. Used as a row
+// version stamp: if the in-memory copy of a node and a freshly-re-read copy
+// disagree, the row was rewritten by an admin path mid-cycle.
+func sameSyncStamp(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 func levelName(l Level) string {

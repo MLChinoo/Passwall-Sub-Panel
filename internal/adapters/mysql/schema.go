@@ -241,10 +241,23 @@ type nodeRow struct {
 
 func (nodeRow) TableName() string { return "nodes" }
 
-func (r *nodeRow) toDomain() *domain.Node {
+func (r *nodeRow) toDomain() (*domain.Node, error) {
 	kind := domain.NodeKind(r.Kind)
 	if kind == "" {
 		kind = domain.NodeKindReal
+	}
+	// StreamSettings can hold a Reality privateKey or inline TLS certificate
+	// keys, and InboundSettings holds the SS-2022 server PSK (top-level
+	// `password`). Both are server-identity secrets; AES-GCM at rest matches
+	// the trust-boundary we already apply to xui_panels.api_token / SMTP.
+	// Pre-v4 rows are plaintext (no enc:v1: prefix) and round-trip unchanged.
+	inboundSettings, err := decryptSecret(r.InboundSettings)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt inbound_settings (node id=%d): %w", r.ID, err)
+	}
+	streamSettings, err := decryptSecret(r.StreamSettings)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt stream_settings (node id=%d): %w", r.ID, err)
 	}
 	return &domain.Node{
 		ID:                    r.ID,
@@ -271,21 +284,29 @@ func (r *nodeRow) toDomain() *domain.Node {
 		HealthDetail:          r.HealthDetail,
 		InboundListen:         r.InboundListen,
 		InboundRemark:         r.InboundRemark,
-		InboundSettings:       r.InboundSettings,
-		StreamSettings:        r.StreamSettings,
+		InboundSettings:       inboundSettings,
+		StreamSettings:        streamSettings,
 		Sniffing:              r.Sniffing,
 		Allocate:              r.Allocate,
 		InboundExpiryTime:     r.InboundExpiryTime,
 		ConfigSyncedAt:        r.ConfigSyncedAt,
 		ConfigSyncState:       r.ConfigSyncState,
 		CreatedAt:             r.CreatedAt,
-	}
+	}, nil
 }
 
-func nodeFromDomain(n *domain.Node) *nodeRow {
+func nodeFromDomain(n *domain.Node) (*nodeRow, error) {
 	kind := n.Kind
 	if kind == "" {
 		kind = domain.NodeKindReal
+	}
+	inboundSettings, err := encryptSecret(n.InboundSettings)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt inbound_settings: %w", err)
+	}
+	streamSettings, err := encryptSecret(n.StreamSettings)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt stream_settings: %w", err)
 	}
 	return &nodeRow{
 		ID:                    n.ID,
@@ -312,15 +333,15 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 		HealthDetail:          n.HealthDetail,
 		InboundListen:         n.InboundListen,
 		InboundRemark:         n.InboundRemark,
-		InboundSettings:       n.InboundSettings,
-		StreamSettings:        n.StreamSettings,
+		InboundSettings:       inboundSettings,
+		StreamSettings:        streamSettings,
 		Sniffing:              n.Sniffing,
 		Allocate:              n.Allocate,
 		InboundExpiryTime:     n.InboundExpiryTime,
 		ConfigSyncedAt:        n.ConfigSyncedAt,
 		ConfigSyncState:       n.ConfigSyncState,
 		CreatedAt:             n.CreatedAt,
-	}
+	}, nil
 }
 
 type ownershipRow struct {

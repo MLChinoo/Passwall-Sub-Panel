@@ -79,6 +79,30 @@ func TestReplaceSettingsClientsPreservesCurrentClients(t *testing.T) {
 	}
 }
 
+// Regression for the v3.5 client-wipe bug: settingsWithCurrentClients used to
+// short-circuit on blank `nextSettings`, sending an empty `settings` to 3X-UI
+// and wiping every live client. With normalised empties ("{}" substitution),
+// passing `{}` as next must still re-merge every current client back in.
+func TestReplaceSettingsClientsHandlesEmptyNext(t *testing.T) {
+	current := `{"method":"aes-128-gcm","clients":[{"id":"a","email":"a@example.test"},{"id":"b","email":"b@example.test"}]}`
+
+	got, err := replaceSettingsClients("{}", current)
+	if err != nil {
+		t.Fatalf("empty-next must not error after the substitution fix: %v", err)
+	}
+	var decoded struct {
+		Clients []struct {
+			Email string `json:"email"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Clients) != 2 {
+		t.Fatalf("blank next must not drop clients: got %d, want 2 — %s", len(decoded.Clients), got)
+	}
+}
+
 func TestDecodeTrafficObjAcceptsSingleObject(t *testing.T) {
 	raw := json.RawMessage(`{"id":9,"inboundId":4,"email":"u25-n2@psp.local","up":1048576,"down":933232640,"total":934281216,"enable":true}`)
 

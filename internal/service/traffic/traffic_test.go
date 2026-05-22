@@ -713,6 +713,7 @@ func (r *fakeNodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {
 	cur.HealthCheckedAt = n.HealthCheckedAt
 	return nil
 }
+func (r *fakeNodeRepo) UpdateInboundConfig(ctx context.Context, n *domain.Node) error { return nil }
 func (r *fakeNodeRepo) GetByID(ctx context.Context, id int64) (*domain.Node, error) {
 	n, ok := r.nodes[id]
 	if !ok {

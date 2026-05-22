@@ -497,8 +497,12 @@ func decodeTrafficObj(raw json.RawMessage) ([]rawClientTraffic, error) {
 }
 
 func (c *Client) settingsWithCurrentClients(ctx context.Context, inboundID int, nextSettings string) (string, error) {
+	// Empty/blank input would previously short-circuit and reach 3X-UI as a
+	// literal empty settings — which can wipe every live client. Treat it as
+	// "{}" so replaceSettingsClients always runs and injects whatever clients
+	// 3X-UI currently has (PSP-managed + manually-created, both preserved).
 	if strings.TrimSpace(nextSettings) == "" {
-		return nextSettings, nil
+		nextSettings = "{}"
 	}
 	inb, err := c.GetInbound(ctx, inboundID)
 	if err != nil {

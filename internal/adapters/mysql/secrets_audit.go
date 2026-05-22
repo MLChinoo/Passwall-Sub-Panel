@@ -35,6 +35,11 @@ func AuditSecretsAtRest(db *gorm.DB) {
 		{"saml_settings", "sp_private_key", "SAML SP private key"},
 		{"oidc_settings", "client_secret", "OIDC client secret"},
 		{"mail_settings", "smtp_password", "SMTP password"},
+		// v4 inbound config snapshot — SS-2022 server PSK lives in settings
+		// (top-level `password`), Reality privateKey + inline TLS keys live
+		// in stream_settings. Pre-v4 rows are plaintext until next re-save.
+		{"nodes", "inbound_settings", "inbound settings (SS-2022 server PSK)"},
+		{"nodes", "stream_settings", "inbound stream settings (Reality / TLS keys)"},
 	}
 	totalPlain := 0
 	for _, c := range checks {

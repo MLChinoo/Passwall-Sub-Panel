@@ -48,7 +48,7 @@ func StripClients(settingsJSON string) string {
 func ApplySpec(n *domain.Node, spec ports.InboundSpec) {
 	n.InboundListen = spec.Listen
 	n.InboundRemark = spec.Remark
-	n.InboundSettings = StripClients(spec.Settings)
+	n.InboundSettings = normalizeSettings(StripClients(spec.Settings))
 	n.StreamSettings = spec.StreamSettings
 	n.Sniffing = spec.Sniffing
 	n.Allocate = spec.Allocate
@@ -68,7 +68,7 @@ func ApplySpec(n *domain.Node, spec ports.InboundSpec) {
 func Capture(n *domain.Node, inb *ports.Inbound) {
 	n.InboundListen = inb.Listen
 	n.InboundRemark = inb.Remark
-	n.InboundSettings = StripClients(inb.Settings)
+	n.InboundSettings = normalizeSettings(StripClients(inb.Settings))
 	n.StreamSettings = inb.StreamSettings
 	n.Sniffing = inb.Sniffing
 	n.Allocate = inb.Allocate
@@ -80,6 +80,18 @@ func Capture(n *domain.Node, inb *ports.Inbound) {
 		n.Protocol = p
 	}
 	markSynced(n)
+}
+
+// normalizeSettings substitutes "{}" for blank input so the snapshot is always
+// syntactically valid JSON. A blank settings string would otherwise survive
+// drift comparison as a perpetual mismatch and — worse — would be pushed
+// verbatim to 3X-UI, where the RMW client-preservation path bails on empty
+// input. Storing {} forces every downstream consumer through the merge logic.
+func normalizeSettings(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "{}"
+	}
+	return s
 }
 
 // SpecFromNode builds the InboundSpec reconcile pushes to 3X-UI from the node

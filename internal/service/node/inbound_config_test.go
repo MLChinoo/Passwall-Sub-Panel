@@ -30,6 +30,10 @@ func (r *captureNodeRepo) Update(_ context.Context, n *domain.Node) error {
 	r.updated = n
 	return nil
 }
+func (r *captureNodeRepo) UpdateInboundConfig(_ context.Context, n *domain.Node) error {
+	r.updated = n
+	return nil
+}
 
 type stubXUIClient struct {
 	ports.XUIClient

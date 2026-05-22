@@ -13,8 +13,9 @@ import (
 
 type recNodeRepo struct {
 	ports.NodeRepo
-	nodes   []*domain.Node
-	updates []*domain.Node
+	nodes       []*domain.Node
+	updates     []*domain.Node
+	getOverride func(int64) (*domain.Node, error)
 }
 
 func (r *recNodeRepo) List(context.Context) ([]*domain.Node, error) { return r.nodes, nil }
@@ -22,6 +23,32 @@ func (r *recNodeRepo) Update(_ context.Context, n *domain.Node) error {
 	cp := *n
 	r.updates = append(r.updates, &cp)
 	return nil
+}
+
+// UpdateInboundConfig is the column-scoped v4 snapshot writer; tests treat it
+// the same as Update for assertion purposes — both indicate the node was
+// persisted.
+func (r *recNodeRepo) UpdateInboundConfig(_ context.Context, n *domain.Node) error {
+	cp := *n
+	r.updates = append(r.updates, &cp)
+	return nil
+}
+
+// GetByID returns whatever the test currently has staged for that id. Tests
+// that want to simulate "admin wrote a fresh row mid-cycle" can mutate the
+// node pointer in r.nodes between checkNodes invocations or override this
+// behaviour via getOverride.
+func (r *recNodeRepo) GetByID(_ context.Context, id int64) (*domain.Node, error) {
+	if r.getOverride != nil {
+		return r.getOverride(id)
+	}
+	for _, n := range r.nodes {
+		if n.ID == id {
+			cp := *n
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrNotFound
 }
 
 type recPool struct{ c ports.XUIClient }
@@ -55,20 +82,35 @@ func (c *recClient) UpdateInbound(_ context.Context, _ int, spec ports.InboundSp
 	return nil
 }
 
+// cacheFromInbounds builds an inboundCacheKey→entry map identical to what
+// prefetchInbounds would have populated at the top of RunOnce. Each test
+// supplies its own live inbounds; this helper does the same shape conversion
+// the prefetch does so checkNodes sees the test's intended live state.
+func cacheFromInbounds(panelID int64, inbs []ports.Inbound) map[inboundCacheKey]*inboundCacheEntry {
+	out := map[inboundCacheKey]*inboundCacheEntry{}
+	for i := range inbs {
+		out[inboundCacheKey{panelID: panelID, inboundID: inbs[i].ID}] = &inboundCacheEntry{
+			inbound: &inbs[i],
+		}
+	}
+	return out
+}
+
 // Node with no captured config + a live inbound → reconcile should pull the
 // config into the node (backfill) and NOT push anything.
 func TestCheckNodes_BackfillsMissingConfig(t *testing.T) {
 	node := &domain.Node{ID: 1, PanelID: 1, InboundID: 3, Enabled: true} // ConfigSyncedAt nil
-	client := &recClient{inbounds: []ports.Inbound{{
+	live := []ports.Inbound{{
 		ID: 3, Protocol: "vless", Port: 443,
 		StreamSettings: `{"network":"tcp","security":"reality"}`,
 		Settings:       `{"decryption":"none","clients":[{"id":"x"}]}`,
-	}}}
+	}}
+	client := &recClient{inbounds: live}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
 	svc := &Service{nodes: repo, pool: recPool{c: client}}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report)
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, live))
 
 	if len(repo.updates) != 1 {
 		t.Fatalf("want 1 node update (backfill), got %d", len(repo.updates))
@@ -107,7 +149,7 @@ func TestCheckNodes_DriftPushed(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report)
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
 
 	if len(client.updated) != 1 {
 		t.Fatalf("want 1 push to 3X-UI on drift, got %d", len(client.updated))
@@ -117,6 +159,51 @@ func TestCheckNodes_DriftPushed(t *testing.T) {
 	}
 	if report.Fixed != 1 {
 		t.Fatalf("want report.Fixed=1, got %d", report.Fixed)
+	}
+}
+
+// Regression: admin write that lands between List() and the per-node push
+// must NOT have its edit reverted by reconcile. The fresh row's
+// ConfigSyncedAt differs from the cached row's stamp; reconcile must skip.
+func TestCheckNodes_StaleReadDoesNotRevertAdminEdit(t *testing.T) {
+	cachedStamp := time.Now().Add(-1 * time.Hour) // what reconcile pulled at top of cycle
+	freshStamp := time.Now()                      // what admin just wrote
+	cached := &domain.Node{
+		ID: 1, PanelID: 1, InboundID: 3, Enabled: true,
+		Protocol:        "vless",
+		Port:            443,
+		StreamSettings:  `{"network":"ws","security":"tls"}`, // PSP's *old* truth
+		InboundSettings: `{"decryption":"none"}`,
+		ConfigSyncedAt:  &cachedStamp,
+	}
+	live := ports.Inbound{
+		ID: 3, Protocol: "vless", Port: 443,
+		StreamSettings: `{"network":"tcp","security":"reality"}`, // admin just pushed this
+		Settings:       `{"decryption":"none","clients":[{"id":"x"}]}`,
+	}
+	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live}
+	repo := &recNodeRepo{nodes: []*domain.Node{cached}}
+	// Simulate the admin write: GetByID returns the freshly-stamped row
+	// while the in-flight reconcile iteration still holds `cached`.
+	repo.getOverride = func(id int64) (*domain.Node, error) {
+		fresh := *cached
+		fresh.StreamSettings = `{"network":"tcp","security":"reality"}`
+		fresh.ConfigSyncedAt = &freshStamp
+		return &fresh, nil
+	}
+	svc := &Service{nodes: repo, pool: recPool{c: client}}
+
+	report := &Report{}
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+
+	if len(client.updated) != 0 {
+		t.Fatalf("stale reconcile must NOT push to 3X-UI when admin row advanced; got %d pushes", len(client.updated))
+	}
+	if len(repo.updates) != 0 {
+		t.Fatalf("stale reconcile must NOT write back to DB; got %d updates", len(repo.updates))
+	}
+	if report.Fixed != 0 {
+		t.Fatalf("stale reconcile must not mark Fixed; got %d", report.Fixed)
 	}
 }
 
@@ -142,7 +229,7 @@ func TestCheckNodes_InSync_NoOp(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report)
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
 
 	if len(client.updated) != 0 || len(repo.updates) != 0 {
 		t.Fatalf("in-sync node must be a no-op: pushes=%d updates=%d", len(client.updated), len(repo.updates))

@@ -33,6 +33,7 @@ import (
 // Defined here so the node package never imports sync.
 type InboundCleaner interface {
 	DelAllOwnedForInbound(ctx context.Context, panelID int64, inboundID int) error
+	UnclaimAllForInbound(ctx context.Context, panelID int64, inboundID int) error
 	EnsureInboundDeletable(ctx context.Context, panelID int64, inboundID int) error
 	DeleteInbound(ctx context.Context, panelID int64, inboundID int) error
 }
@@ -339,10 +340,10 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 	// v4 write-through (local-first): PSP owns the inbound config, so persist
 	// the new config into the local snapshot before pushing. Render reflects it
 	// immediately and survives a 3X-UI outage; the push (or its retry task)
-	// then aligns 3X-UI. This also keeps the cached protocol current and
-	// backfills pre-v4 rows.
+	// then aligns 3X-UI. Use the column-scoped writer so a concurrent health
+	// pass doesn't clobber our snapshot — and we don't clobber its writes.
 	inboundcfg.ApplySpec(n, spec)
-	if err := s.nodes.Update(ctx, n); err != nil {
+	if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
 		return err
 	}
 	c, err := s.pool.Get(n.PanelID)
@@ -407,22 +408,25 @@ func (s *Service) DeleteAndSync(ctx context.Context, id int64) error {
 	return s.enqueueNodeTask(ctx, domain.SyncTaskNodeDelete, n, "delete node", nil)
 }
 
-// DetachAndSync stops managing a node without deleting the upstream inbound.
-// Panel-managed clients (those tracked in the ownership table) get removed
-// from 3X-UI; the inbound itself and any unmanaged clients are left intact.
-// The node record on the panel side is dropped so subscriptions stop rendering
-// it. No EnsureInboundDeletable preflight is needed — we are not deleting
-// the inbound, so unmanaged clients don't block the operation.
+// DetachAndSync drops the node record and the panel's ownership rows for
+// this inbound without contacting 3X-UI. Intended for nodes whose upstream
+// is already unreachable (server decommissioned, panel offline) where
+// queueing a remote delete would just retry forever. Clients PSP previously
+// created on the inbound remain in 3X-UI; the admin can clean them up
+// there directly. Separators (layout-only rows) have no upstream binding,
+// so detach falls back to a plain local delete.
 func (s *Service) DetachAndSync(ctx context.Context, id int64) error {
 	n, err := s.nodes.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	n.Enabled = false
-	if err := s.nodes.Update(ctx, n); err != nil {
-		return err
+	if n.IsSeparator() {
+		return s.nodes.Delete(ctx, id)
 	}
-	return s.enqueueNodeTask(ctx, domain.SyncTaskNodeDetach, n, "detach node", nil)
+	if err := s.cleaner.UnclaimAllForInbound(ctx, n.PanelID, n.InboundID); err != nil {
+		return fmt.Errorf("unclaim owned clients: %w", err)
+	}
+	return s.nodes.Delete(ctx, n.ID)
 }
 
 // ProcessDueTasks runs pending node-scoped 3X-UI write tasks.
@@ -437,7 +441,6 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 	for _, task := range tasks {
 		if task.Type != domain.SyncTaskNodeCreate &&
 			task.Type != domain.SyncTaskNodeDelete &&
-			task.Type != domain.SyncTaskNodeDetach &&
 			task.Type != domain.SyncTaskNodeSetEnabled &&
 			task.Type != domain.SyncTaskNodeUpdate {
 			continue
@@ -492,24 +495,18 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 			return err
 		}
 		return s.nodes.Delete(ctx, n.ID)
-	case domain.SyncTaskNodeDetach:
-		// Remove only the clients we created. Inbound + unmanaged clients
-		// stay on 3X-UI, available to whatever else is using them.
-		if err := s.cleaner.DelAllOwnedForInbound(ctx, n.PanelID, n.InboundID); err != nil {
-			return fmt.Errorf("clear owned clients: %w", err)
-		}
-		return s.nodes.Delete(ctx, n.ID)
 	case domain.SyncTaskNodeSetEnabled:
 		if err := c.SetInboundEnable(ctx, n.InboundID, n.Enabled); err != nil {
 			return fmt.Errorf("xui setEnable: %w", err)
 		}
 		return nil
 	case domain.SyncTaskNodeUpdate:
-		var spec ports.InboundSpec
-		if err := json.Unmarshal([]byte(task.Payload), &spec); err != nil {
-			return err
-		}
-		return c.UpdateInbound(ctx, n.InboundID, spec)
+		// Use the local snapshot, NOT task.Payload. The snapshot is the v4
+		// source of truth and reflects the latest admin edit even if multiple
+		// edits stacked between enqueue and run (or if dedup collapsed them
+		// onto this one task). Pushing the captured-at-enqueue payload could
+		// regress 3X-UI to a superseded spec.
+		return c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n))
 	default:
 		return nil
 	}
@@ -594,12 +591,15 @@ func (s *Service) enqueueNodeTask(ctx context.Context, typ domain.SyncTaskType, 
 	if s.tasks == nil {
 		return nil
 	}
-	if typ != domain.SyncTaskNodeUpdate {
-		if _, err := s.tasks.GetActiveByTarget(ctx, typ, "node", n.ID); err == nil {
-			return nil
-		} else if !errors.Is(err, domain.ErrNotFound) {
-			return err
-		}
+	// Dedup uniformly across task types. NodeUpdate used to bypass dedup so
+	// rapid edits could each enqueue their own spec — now the runner reads
+	// the latest snapshot at execution time (see SyncTaskNodeUpdate case
+	// above), so collapsing to a single pending task is the correct
+	// behaviour: whoever's snapshot is latest wins.
+	if _, err := s.tasks.GetActiveByTarget(ctx, typ, "node", n.ID); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
 	}
 	var payloadJSON string
 	if payload != nil {

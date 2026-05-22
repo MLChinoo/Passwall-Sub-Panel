@@ -4,6 +4,67 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.2 — 2026-05-22
+
+### Fixed (v4 inbound 配置本地化的修补)
+
+- **空 settings 的 inbound 在 reconcile drift push 时可能清空 3X-UI 全部 client**:
+  `Capture`/`ApplySpec` 把 `settings==""` 落库为空字符串,后续 `InSync` 视作 drift 推空
+  settings,而 xui client 的 RMW 兜底 `settingsWithCurrentClients` 又把空 `nextSettings`
+  直接放行——3X-UI 收到 `settings=""` 可能持久化并清空 `clients[]`。两层都加防御:
+  `Capture`/`ApplySpec` 把空规范化为 `{}`;`settingsWithCurrentClients` 也把空 next
+  规范化为 `{}` 并强制走 RMW merge,确保 live clients 一定被注入。
+- **admin 编辑可能被 reconcile 静默撤销**:reconcile cycle 顶部 `List()` 拿到的 node 行,
+  如果在 `reconcileInboundConfig` 执行前被 admin 写过(`UpdateInboundConfig`),旧代码
+  会拿 stale snapshot 当真相去 push,覆盖 admin 刚保存的配置。push 前重读节点行,
+  对比 `ConfigSyncedAt` 时间戳作为乐观锁——不一致就跳过本轮,下一轮拿到 fresh 自动收敛。
+- **post-push re-capture 失败 → 无限 drift 循环**:推完 3X-UI 后调 `GetInbound` 重抓
+  snapshot 失败时,旧代码忽略错误继续 `nodes.Update`,但本地 snapshot 没变 → 下一轮
+  reconcile 又判定 drift 又推,死循环。改成显式 emit Issue 并 return,**不** mark fixed,
+  下一轮重试到成功为止。
+- **inbound 配置 snapshot 列与 `UpdateHealth` / `UpdateTrafficCounters` 列级冲突**:
+  reconcile 和 admin 写路径用 GORM `Save`(全行 UPDATE)写 snapshot,与 health/traffic
+  的列级写法在并发时互相 clobber。新增 `NodeRepo.UpdateInboundConfig` 列级写法,所有
+  snapshot 写路径(admin write-through、reconcile backfill、post-push convergence)都改
+  走它,跟 `UpdateHealth` / `UpdateTrafficCounters` 同等并发安全。
+- **Reality `privateKey` / 内联 TLS 证书私钥明文存数据库**:v3.5 把这些字段从 3X-UI
+  迁到 PSP 本地后,新增的 `nodes.stream_settings` 和 `nodes.inbound_settings`(后者含
+  SS-2022 server PSK)成了"无人看管"的 server-identity secret。两列加进 AES-GCM
+  加密管道,跟 SAML 私钥 / OIDC client_secret / SMTP 密码同等保护。**老明文行无需迁移**——
+  `encryptSecret` 在没配 `PSP_SECRET_KEY_MATERIAL` 时直接 passthrough,`decryptSecret`
+  见到没 `enc:v1:` 前缀也 passthrough,下次写入时自动加密。`secrets-at-rest` 启动 audit
+  也增加这两列的提醒。
+
+### Changed
+
+- **reconcile axis-A 异常更可观测**:之前的几条静默失败路径现在都 emit Issue,反映在
+  reconcile 报告里:`inbound_config_backfill_failed`、`inbound_config_recapture_failed`、
+  `panel_unreachable`(每个不可达 panel 一次,避免刷屏)。3X-UI 离线或本地写失败不再无声。
+- **reconcile `checkNodes` 复用 `RunOnce` 预取的 cache**:axis-A 之前在 prefetch 之外又
+  自己跑了一遍 ListInbounds,每个 panel 每轮 reconcile 多打一次 API。现在 checkNodes
+  接收同一份 cache,axis-A / axis-B 共用,3X-UI API 调用减半。
+- **sing-box / URI-list 渲染的 live fallback 也批量化**:beta.1 只让 mihomo `buildProxies`
+  用 panel 分桶 + 并发 ListInbounds 预取,sing-box 和 URI-list 还是每个未捕获节点
+  单独 `GetInbound`(N+1)。两者改用同一 `prefetchInboundsForRender`——过渡期一个 10
+  节点 / 2 panel 的订阅,原本 10 次 `GetInbound`,现在 2 次 `ListInbounds`。
+- **`SyncTaskNodeUpdate` 重试用本地 snapshot 而不是入队时的 spec**:rapid edits 收敛
+  靠队列里最新的 spec,但旧实现把 enqueue 时的 spec 写进 `task.Payload`、运行时反序列
+  化推过去,多次连续编辑可能让 3X-UI 短暂被推回老配置。改成运行时读
+  `inboundcfg.SpecFromNode(n)`(本地真相源),同时统一开启 dedup:同节点的 NodeUpdate
+  任务总只保留一条,本地 snapshot 谁后写谁赢。
+
+### Detach 行为变化(behavioral change)
+
+- **`Detach Node` 改为纯本地操作,不再联系 3X-UI**:之前 detach 会入队任务、调 3X-UI
+  清掉 PSP 创建的 client(保留 inbound 和其它 client)。问题是 detach 的真实使用场景就是
+  "服务器已经下线 / 面板不可达 → 我不想 PSP 再去那个面板上重试任何东西",旧实现会对
+  一个死面板无限退避重试。改为:detach = 删本地 node 行 + 清本地 ownership 白名单,
+  **不**调 3X-UI;之前在该 inbound 上由 PSP 创建的 client 留在 3X-UI 上,需要的话管理员
+  自行去 3X-UI 清理。`SyncTaskNodeDetach` 任务类型移除。
+- **Delete 语义不变**:仍走异步 sync 任务,先在 3X-UI 清 PSP 拥有的 client、再删 inbound、
+  最后删本地 node 行,远端失败按 1min 退避重试。Delete 适合"服务器还在但我不再用了";
+  Detach 适合"服务器没了 / 不可达"。两者前端都有确认对话框。
+
 ## v3.5.0-beta.1 — 2026-05-22
 
 ### Changed

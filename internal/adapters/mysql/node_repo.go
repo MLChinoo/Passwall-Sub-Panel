@@ -13,7 +13,10 @@ import (
 type nodeRepo struct{ db *gorm.DB }
 
 func (r *nodeRepo) Create(ctx context.Context, n *domain.Node) error {
-	row := nodeFromDomain(n)
+	row, err := nodeFromDomain(n)
+	if err != nil {
+		return err
+	}
 	if err := r.db.WithContext(ctx).Create(row).Error; err != nil {
 		return err
 	}
@@ -23,7 +26,11 @@ func (r *nodeRepo) Create(ctx context.Context, n *domain.Node) error {
 }
 
 func (r *nodeRepo) Update(ctx context.Context, n *domain.Node) error {
-	return r.db.WithContext(ctx).Save(nodeFromDomain(n)).Error
+	row, err := nodeFromDomain(n)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Save(row).Error
 }
 
 // UpdateTrafficCounters writes only the lifetime + last-raw counter columns.
@@ -69,6 +76,41 @@ func (r *nodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {
 		}).Error
 }
 
+// UpdateInboundConfig writes only the v4 snapshot columns (plus port/protocol
+// which the snapshot also owns). Same column-scoping rationale as
+// UpdateHealth / UpdateTrafficCounters: snapshot writers (admin create/update,
+// reconcile backfill, post-push capture) run concurrently with the health
+// pass and the traffic poll, so a full-row Save would clobber their writes.
+func (r *nodeRepo) UpdateInboundConfig(ctx context.Context, n *domain.Node) error {
+	if n == nil || n.ID == 0 {
+		return fmt.Errorf("UpdateInboundConfig requires a non-zero node ID; got %+v", n)
+	}
+	inboundSettings, err := encryptSecret(n.InboundSettings)
+	if err != nil {
+		return fmt.Errorf("encrypt inbound_settings: %w", err)
+	}
+	streamSettings, err := encryptSecret(n.StreamSettings)
+	if err != nil {
+		return fmt.Errorf("encrypt stream_settings: %w", err)
+	}
+	return r.db.WithContext(ctx).
+		Model(&nodeRow{}).
+		Where("id = ?", n.ID).
+		Updates(map[string]any{
+			"inbound_listen":      n.InboundListen,
+			"inbound_remark":      n.InboundRemark,
+			"inbound_settings":    inboundSettings,
+			"stream_settings":     streamSettings,
+			"sniffing":            n.Sniffing,
+			"allocate":            n.Allocate,
+			"inbound_expiry_time": n.InboundExpiryTime,
+			"config_synced_at":    n.ConfigSyncedAt,
+			"config_sync_state":   n.ConfigSyncState,
+			"port":                n.Port,
+			"protocol":            n.Protocol,
+		}).Error
+}
+
 // BatchUpdateSortOrder rewrites sort_order for the listed nodes inside one
 // transaction. Used by the drag-to-reorder UI: the admin drags a row, the
 // frontend re-numbers the visible list in 10-step increments, and POSTs the
@@ -99,7 +141,7 @@ func (r *nodeRepo) GetByID(ctx context.Context, id int64) (*domain.Node, error) 
 	if err := r.db.WithContext(ctx).First(&row, id).Error; err != nil {
 		return nil, wrapNotFound(err)
 	}
-	return row.toDomain(), nil
+	return row.toDomain()
 }
 
 func (r *nodeRepo) GetByPanelInbound(ctx context.Context, panelID int64, inboundID int) (*domain.Node, error) {
@@ -110,7 +152,7 @@ func (r *nodeRepo) GetByPanelInbound(ctx context.Context, panelID int64, inbound
 	if err != nil {
 		return nil, wrapNotFound(err)
 	}
-	return row.toDomain(), nil
+	return row.toDomain()
 }
 
 func (r *nodeRepo) List(ctx context.Context) ([]*domain.Node, error) {
@@ -120,7 +162,11 @@ func (r *nodeRepo) List(ctx context.Context) ([]*domain.Node, error) {
 	}
 	out := make([]*domain.Node, len(rows))
 	for i := range rows {
-		out[i] = rows[i].toDomain()
+		n, err := rows[i].toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = n
 	}
 	return out, nil
 }
@@ -136,7 +182,11 @@ func (r *nodeRepo) ListEnabled(ctx context.Context) ([]*domain.Node, error) {
 	}
 	out := make([]*domain.Node, len(rows))
 	for i := range rows {
-		out[i] = rows[i].toDomain()
+		n, err := rows[i].toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = n
 	}
 	return out, nil
 }

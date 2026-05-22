@@ -87,6 +87,33 @@ func TestCaptureAndRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCaptureEmptySettingsStoresValidJSON guards against the v3.5 client-wipe
+// bug: a node captured from an inbound with blank settings used to land in the
+// DB with InboundSettings="". Subsequent reconcile would see drift against a
+// non-empty live, push "", and the RMW guard's empty-input shortcut would let
+// the empty push reach 3X-UI — wiping every live client. Both ends are now
+// hardened; this test pins the snapshot side.
+func TestCaptureEmptySettingsStoresValidJSON(t *testing.T) {
+	for _, raw := range []string{"", "   ", "\n"} {
+		n := &domain.Node{ID: 1}
+		Capture(n, &ports.Inbound{Protocol: "vless", Port: 443, Settings: raw})
+		if strings.TrimSpace(n.InboundSettings) == "" {
+			t.Fatalf("blank live settings %q must not produce blank snapshot", raw)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(n.InboundSettings), &m); err != nil {
+			t.Fatalf("snapshot must be valid JSON; got %q (%v)", n.InboundSettings, err)
+		}
+	}
+
+	// ApplySpec (admin write-through) has the same guarantee.
+	n := &domain.Node{ID: 1}
+	ApplySpec(n, ports.InboundSpec{Protocol: "vless", Port: 443, Settings: ""})
+	if strings.TrimSpace(n.InboundSettings) == "" {
+		t.Fatalf("ApplySpec with blank settings must normalise to {}")
+	}
+}
+
 func TestInSync(t *testing.T) {
 	live := &ports.Inbound{
 		Port:           443,

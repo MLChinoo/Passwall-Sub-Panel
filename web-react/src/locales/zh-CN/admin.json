@@ -880,7 +880,7 @@
       "delete_title": "删除节点",
       "delete_message": "确定删除节点 {{name}}？该操作会从 3X-UI 移除对应 inbound。",
       "detach_title": "脱离节点",
-      "detach_message": "确定脱离节点 {{name}}？面板会从 3X-UI 移除由系统创建的 client，但保留 inbound 和原有的非纳管 client；本节点的面板记录也会被删除。",
+      "detach_message": "确定脱离节点 {{name}}？面板只会删除本地节点记录并清空本地 ownership 白名单，**不会**联系 3X-UI；之前由 PSP 创建的 client 会留在 3X-UI 上，需要的话请到 3X-UI 自行清理。建议仅在上游服务器已下线 / 面板不可达时使用，否则请用「删除」。",
       "batch_delete_title": "批量删除节点",
       "batch_delete_message": "确定删除 {{count}} 个节点？"
     }

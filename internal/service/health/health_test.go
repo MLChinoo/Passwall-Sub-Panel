@@ -67,6 +67,7 @@ func (r *fakeNodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {
 	return nil
 }
 func (r *fakeNodeRepo) UpdateTrafficCounters(ctx context.Context, n *domain.Node) error { return nil }
+func (r *fakeNodeRepo) UpdateInboundConfig(ctx context.Context, n *domain.Node) error   { return nil }
 func (r *fakeNodeRepo) Create(ctx context.Context, n *domain.Node) error                       { return nil }
 func (r *fakeNodeRepo) Delete(ctx context.Context, id int64) error                             { return nil }
 func (r *fakeNodeRepo) BatchUpdateSortOrder(ctx context.Context, updates []ports.NodeSortUpdate) error {

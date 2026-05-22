@@ -171,10 +171,10 @@ export async function deleteNode(id: number) {
   await client.delete(`/admin/nodes/${id}`)
 }
 
-// detachNode stops managing the node without deleting the upstream inbound.
-// Panel-created clients are removed from 3X-UI; the inbound itself and any
-// unmanaged clients are preserved. Use when an admin wants to release a
-// shared inbound back to its non-panel users.
+// detachNode drops the node record + ownership whitelist locally and does
+// NOT contact 3X-UI. Use when the upstream server is offline so PSP doesn't
+// burn retries against a dead panel; any clients PSP previously created
+// stay on 3X-UI for the admin to clean up there.
 export async function detachNode(id: number) {
   await client.post(`/admin/nodes/${id}/detach`)
 }

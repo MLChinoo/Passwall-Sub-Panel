@@ -2089,9 +2089,9 @@ export default function NodesView() {
     pushSnack(t('admin:nodes.toast.deleted'), 'success')
   }
 
-  // Detach: stop managing the node but keep the upstream inbound (and any
-  // non-panel clients) untouched. Useful for inbounds shared with users
-  // outside the panel — admin reclaims their inbound without nuking it.
+  // Detach: pure local forget. Drops the node record + ownership whitelist
+  // without touching 3X-UI. Use when the upstream server is offline or
+  // decommissioned, so PSP doesn't burn retries against a dead panel.
   async function confirmDetach(n: Node) {
     const ok = await confirm({
       title: t('admin:nodes.confirm.detach_title'),

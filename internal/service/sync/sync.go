@@ -281,6 +281,24 @@ func (s *Service) DelAllOwnedForInbound(ctx context.Context, panelID int64, inbo
 	return nil
 }
 
+// UnclaimAllForInbound drops every ownership row for the given inbound
+// without contacting 3X-UI. Used by node detach when the upstream panel
+// may be offline — we forget the clients locally so leftover 3X-UI rows
+// are no longer considered panel-managed.
+func (s *Service) UnclaimAllForInbound(ctx context.Context, panelID int64, inboundID int) error {
+	entries, err := s.ownership.ListByInbound(ctx, panelID, inboundID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		if err := s.ownership.RemoveByMatch(ctx, e.PanelID, e.InboundID, e.ClientEmail); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // ClaimClient records ownership of an existing 3X-UI client under a panel
 // user without touching 3X-UI itself. Used by the "import existing client"
 // admin flow — the friend keeps their original UUID and the panel just
