@@ -4,6 +4,21 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.4.0-beta.12 — 2026-05-22
+
+### Changed
+- **节点健康检测改为「端口是否开放」(数据面可达性)**:之前只问 3X-UI「inbound 在不在 /
+  启没启用」(控制面),节点机器挂了但面板还活着也显示 Up。改为直接探测代理端口:
+  - TCP 协议(VLESS/VMess/Trojan/SS):TCP connect `ServerAddress:Port`,连上=Up、拒绝/
+    超时=Down(并发探测,每个 5s 超时)。
+  - Hysteria2(UDP):best-effort UDP 探测(open|filtered——只有收到 ICMP 端口不可达才判
+    Down;UDP 无连接,精度只能到这)。不引入 QUIC 依赖。
+  - 不再因 inbound 被停用单独判定——停用的端口本就不监听,探测自然失败=Down。
+  - 新增 `Node.Port` 缓存(从 inbound 刷新,AutoMigrate 无需迁移):面板 admin API 临时
+    挂掉时仍能用缓存端口探测,所以「面板 API 不可达」不等于「节点不可达」。
+- **「最后检查」时间改为每轮都更新**:之前因「状态没变就跳过写库」的优化,时间戳只在状态
+  变化时更新,显示的其实是「上次状态变化时间」。现每轮探测都刷新,名副其实。
+
 ## v3.4.0-beta.11 — 2026-05-22
 
 ### Fixed

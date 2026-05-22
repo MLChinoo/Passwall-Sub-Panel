@@ -61,6 +61,11 @@ func (r *nodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {
 			"health_state":      string(n.HealthState),
 			"health_detail":     n.HealthDetail,
 			"health_checked_at": n.HealthCheckedAt,
+			// The health pass also refreshes the cached probe target learned
+			// from the inbound, so a port/protocol change propagates without a
+			// separate write path.
+			"port":     n.Port,
+			"protocol": n.Protocol,
 		}).Error
 }
 

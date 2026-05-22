@@ -174,7 +174,7 @@ func coarseNodeStatus(s domain.NodeHealthState) string {
 	switch s {
 	case domain.NodeHealthOK:
 		return "ok"
-	case domain.NodeHealthPanelUnreachable, domain.NodeHealthInboundMissing, domain.NodeHealthInboundDisabled:
+	case domain.NodeHealthPanelUnreachable, domain.NodeHealthInboundMissing, domain.NodeHealthInboundDisabled, domain.NodeHealthUnreachable:
 		return "down"
 	default:
 		return "unknown"

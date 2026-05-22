@@ -329,6 +329,11 @@ type Node struct {
 	// 3X-UI fetch. Populated on import / create / inbound edit; empty for
 	// rows written before this column existed (treated as "unknown").
 	Protocol      string
+	// Port caches the upstream inbound's listen port so the health checker can
+	// TCP-probe ServerAddress:Port without a live 3X-UI lookup (and still
+	// probe when the panel's admin API is temporarily down). Refreshed from
+	// the inbound on each health pass. 0 = not yet learned.
+	Port          int
 	Region        string
 	Tags          []string
 	SortOrder     int
@@ -446,6 +451,11 @@ const (
 	// it's flagged off in 3X-UI — subscriptions will render it as a dead
 	// proxy.
 	NodeHealthInboundDisabled NodeHealthState = "inbound_disabled"
+	// NodeHealthUnreachable means the inbound exists and is enabled in 3X-UI
+	// (control-plane OK) but a TCP connection to the node's ServerAddress:Port
+	// failed — i.e. the proxy endpoint isn't actually reachable from the panel
+	// server. This is the data-plane probe layered on top of the inbound check.
+	NodeHealthUnreachable NodeHealthState = "unreachable"
 )
 
 // NodeTrafficSnapshot is the per-node analogue of TrafficSnapshot: a

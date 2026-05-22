@@ -200,6 +200,9 @@ type nodeRow struct {
 	// protocol-specific fields without a live 3X-UI fetch. Empty for rows
 	// written before this column existed; AutoMigrate adds it, no backfill.
 	Protocol              string `gorm:"size:32;default:''"`
+	// Port caches the inbound's listen port for the health TCP/UDP probe.
+	// AutoMigrate adds it; the health pass backfills it from the inbound.
+	Port                  int    `gorm:"default:0"`
 	Region                string `gorm:"size:16;not null"`
 	Tags                  jsonStrings
 	SortOrder             int    `gorm:"default:0"`
@@ -234,6 +237,7 @@ func (r *nodeRow) toDomain() *domain.Node {
 		InboundID:             r.InboundID,
 		DisplayName:           r.DisplayName,
 		ServerAddress:         r.ServerAddress,
+		Port:                  r.Port,
 		Flow:                  r.Flow,
 		Protocol:              r.Protocol,
 		Region:                r.Region,
@@ -265,6 +269,7 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 		InboundID:             n.InboundID,
 		DisplayName:           n.DisplayName,
 		ServerAddress:         n.ServerAddress,
+		Port:                  n.Port,
 		Flow:                  n.Flow,
 		Protocol:              n.Protocol,
 		Region:                n.Region,

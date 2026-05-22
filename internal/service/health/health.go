@@ -1,49 +1,105 @@
-// Package health probes each enabled node against its 3X-UI panel and
-// persists the outcome on the Node row so the admin UI can show a live
-// status indicator without making the page hit 3X-UI directly.
+// Package health probes each enabled node and persists the outcome on the Node
+// row so the admin UI / user portal can show a live status dot without hitting
+// 3X-UI directly.
 //
-// The probe is deliberately cheap: one ListInbounds call per panel (not per
-// node — multiple nodes can share a panel), and the result is pattern-matched
-// against the node's recorded inbound ID. This keeps the per-tick cost
-// proportional to the number of panels, not the number of nodes.
+// The health verdict is pure reachability — "is the proxy port open?" — not a
+// 3X-UI control-plane check:
+//   - TCP protocols (VLESS/VMess/Trojan/Shadowsocks): a TCP connect to
+//     ServerAddress:Port. Connect succeeds → up; refused/timeout → down.
+//   - UDP-only protocols (Hysteria2): a best-effort UDP probe. UDP is
+//     connectionless, so this is "open|filtered" — we only call it down when
+//     the OS surfaces an ICMP port-unreachable; otherwise it's treated as up.
+//
+// The port is read from the inbound (one ListInbounds per panel) and cached on
+// the Node, so a probe still runs from the cache when the panel's admin API is
+// temporarily down. Disabled inbounds aren't special-cased — their port simply
+// isn't listening, so the probe fails and the node shows down on its own.
 package health
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+)
+
+const (
+	// healthProbeTimeout bounds each TCP/UDP probe.
+	healthProbeTimeout = 5 * time.Second
+	// healthProbeConcurrency caps simultaneous probes so a fleet of slow /
+	// timing-out endpoints can't make one pass take nodeCount × timeout.
+	healthProbeConcurrency = 8
 )
 
 type Service struct {
 	nodes ports.NodeRepo
 	pool  ports.XUIPool
+	// probe reports whether the proxy port is open. network is "tcp" or "udp".
+	// Injectable so tests drive the up/down branches without real sockets.
+	probe func(ctx context.Context, network, host string, port int) error
 }
 
 func New(nodes ports.NodeRepo, pool ports.XUIPool) *Service {
-	return &Service{nodes: nodes, pool: pool}
+	return &Service{nodes: nodes, pool: pool, probe: portOpen}
+}
+
+// isUDPProtocol reports whether a proxy protocol carries its traffic over UDP
+// (so the port must be probed with a UDP, not TCP, check). Currently just the
+// Hysteria2 / QUIC family.
+func isUDPProtocol(proto string) bool {
+	p := strings.ToLower(strings.TrimSpace(proto))
+	return p == string(domain.ProtoHysteria2) || strings.Contains(p, "hysteria") || p == "hy2"
+}
+
+// portOpen probes host:port and returns nil when the port is open. For TCP a
+// successful connect is definitive. For UDP it's a best-effort "open|filtered":
+// a connectionless socket can only prove closed when the OS reports an ICMP
+// port-unreachable (surfaced as a write/read error); silence is treated as open.
+func portOpen(ctx context.Context, network, host string, port int) error {
+	dctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(dctx, network, net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if network != "udp" {
+		return nil // TCP handshake completed → open.
+	}
+	// UDP: poke the port and watch for an ICMP refusal. No reply within the
+	// deadline = open or filtered, which we report as open.
+	_ = conn.SetDeadline(time.Now().Add(healthProbeTimeout))
+	if _, err := conn.Write([]byte{0}); err != nil {
+		return err
+	}
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return nil // open|filtered
+		}
+		return err // ECONNREFUSED (ICMP port-unreachable) → closed
+	}
+	return nil
 }
 
 // CheckOnce probes every enabled node and updates its HealthState. Disabled
-// nodes are not probed (admin chose to take them out of rotation; a "down"
-// dot would be misleading) and their previous health is left as-is until
-// they're re-enabled.
-//
-// Errors per node / per panel are logged but don't abort the pass.
+// nodes and separators are skipped. Errors per node / per panel are logged but
+// don't abort the pass.
 func (s *Service) CheckOnce(ctx context.Context) error {
 	allNodes, err := s.nodes.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
 	}
-	// Group enabled real nodes by panel so one ListInbounds call covers
-	// every node on that panel. Separator nodes are layout-only entries
-	// with no 3X-UI inbound to probe — including them here would always
-	// fail the lookup against the panel's inbound list and surface a
-	// "missing" health badge for what's actually working as intended.
 	byPanel := make(map[int64][]*domain.Node, len(allNodes))
 	for _, n := range allNodes {
 		if !n.Enabled || n.IsSeparator() {
@@ -53,60 +109,88 @@ func (s *Service) CheckOnce(ctx context.Context) error {
 	}
 
 	now := time.Now()
+	type target struct {
+		n       *domain.Node
+		host    string
+		network string
+	}
+	var targets []target
+
 	for panelID, nodes := range byPanel {
-		c, err := s.pool.Get(panelID)
-		if err != nil {
-			// Panel not configured / missing from pool. Mark every node
-			// behind it as unreachable so the admin can spot the broken
-			// link without opening per-node detail pages.
-			for _, n := range nodes {
-				s.persist(ctx, n, domain.NodeHealthPanelUnreachable, err.Error(), now)
+		// Learn the live port/protocol from the panel when reachable; otherwise
+		// fall back to whatever we cached on the node last time.
+		var byInbound map[int]ports.Inbound
+		var panelErr string
+		if c, err := s.pool.Get(panelID); err != nil {
+			panelErr = err.Error()
+		} else if listed, err := c.ListInbounds(ctx); err != nil {
+			panelErr = err.Error()
+		} else {
+			byInbound = make(map[int]ports.Inbound, len(listed))
+			for _, inb := range listed {
+				byInbound[inb.ID] = inb
 			}
-			continue
 		}
-		listed, err := c.ListInbounds(ctx)
-		if err != nil {
-			for _, n := range nodes {
-				s.persist(ctx, n, domain.NodeHealthPanelUnreachable, err.Error(), now)
-			}
-			continue
-		}
-		// Index inbounds by ID for O(1) per-node lookup.
-		byInbound := make(map[int]ports.Inbound, len(listed))
-		for _, inb := range listed {
-			byInbound[inb.ID] = inb
-		}
+
 		for _, n := range nodes {
-			state, detail := decideHealth(n.InboundID, byInbound)
-			s.persist(ctx, n, state, detail, now)
+			port, proto := n.Port, n.Protocol // cached fallback
+			if byInbound != nil {
+				if inb, ok := byInbound[n.InboundID]; ok {
+					port, proto = inb.Port, strings.ToLower(inb.Protocol)
+				} else if port <= 0 {
+					s.persist(ctx, n, port, proto, domain.NodeHealthInboundMissing,
+						fmt.Sprintf("inbound %d not present on panel", n.InboundID), now)
+					continue
+				}
+			}
+			if n.ServerAddress == "" || port <= 0 {
+				state, detail := domain.NodeHealthUnreachable, "no known port to probe"
+				if panelErr != "" {
+					state, detail = domain.NodeHealthPanelUnreachable, "panel unreachable: "+panelErr
+				}
+				s.persist(ctx, n, port, proto, state, detail, now)
+				continue
+			}
+			network := "tcp"
+			if isUDPProtocol(proto) {
+				network = "udp"
+			}
+			// Cache the (possibly refreshed) probe target onto the node so a
+			// later pass can probe even if the panel API is down by then.
+			n.Port, n.Protocol = port, proto
+			targets = append(targets, target{n: n, host: n.ServerAddress, network: network})
 		}
 	}
+
+	sem := make(chan struct{}, healthProbeConcurrency)
+	var wg sync.WaitGroup
+	for _, tg := range targets {
+		tg := tg
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer safego.Recover("health.port-probe")
+			addr := net.JoinHostPort(tg.host, strconv.Itoa(tg.n.Port))
+			if err := s.probe(ctx, tg.network, tg.host, tg.n.Port); err != nil {
+				s.persist(ctx, tg.n, tg.n.Port, tg.n.Protocol, domain.NodeHealthUnreachable,
+					fmt.Sprintf("%s %s: %v", tg.network, addr, err), now)
+				return
+			}
+			s.persist(ctx, tg.n, tg.n.Port, tg.n.Protocol, domain.NodeHealthOK, "", now)
+		}()
+	}
+	wg.Wait()
 	return nil
 }
 
-// decideHealth is split out so the tests can drive every branch without
-// spinning up a fake pool / repo.
-func decideHealth(inboundID int, byInbound map[int]ports.Inbound) (domain.NodeHealthState, string) {
-	inb, ok := byInbound[inboundID]
-	if !ok {
-		return domain.NodeHealthInboundMissing, fmt.Sprintf("inbound %d not present on panel", inboundID)
-	}
-	if !inb.Enable {
-		return domain.NodeHealthInboundDisabled, "inbound is disabled on 3X-UI"
-	}
-	return domain.NodeHealthOK, ""
-}
-
-func (s *Service) persist(ctx context.Context, n *domain.Node, state domain.NodeHealthState, detail string, at time.Time) {
-	// Skip the write when nothing changed — health checks are frequent and
-	// most ticks are "still healthy". Cuts DB churn dramatically on stable
-	// deployments.
-	if n.HealthState == state && n.HealthDetail == detail {
-		return
-	}
+func (s *Service) persist(ctx context.Context, n *domain.Node, port int, proto string, state domain.NodeHealthState, detail string, at time.Time) {
 	n.HealthState = state
 	n.HealthDetail = detail
-	n.HealthCheckedAt = &at
+	n.HealthCheckedAt = &at // always stamped so "last checked" reflects the real probe time
+	n.Port = port
+	n.Protocol = proto
 	if err := s.nodes.UpdateHealth(ctx, n); err != nil {
 		// Don't propagate — one stuck node row mustn't block updates for
 		// the rest of the fleet.
