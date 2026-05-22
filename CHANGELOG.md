@@ -4,6 +4,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.4.0-beta.9 — 2026-05-22
+
+### Changed
+- **创建 inbound 对话框的 Tags 改为可搜索下拉**:之前是纯文本框,只有编辑 / 导入对话框
+  用的是带搜索 + 选已有标签的 `TagsAutocomplete`。统一为同一个组件——创建节点时也能从
+  现有标签(Trusted / Premium / Starter…)里搜索勾选,或敲回车新建,避免手抖打错把标签
+  命名空间打散。
+
 ## v3.4.0-beta.8 — 2026-05-22
 
 ### Changed

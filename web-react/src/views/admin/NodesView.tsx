@@ -929,9 +929,12 @@ interface FieldsProps {
   // hatch for any 3X-UI option not modelled in our structured form.
   advanced?: boolean
   onSetAdvanced?: (v: boolean) => void
+  // Existing tags across all nodes, surfaced as the Tags autocomplete's
+  // suggestion list (same as the edit/import dialogs).
+  allTags?: string[]
 }
 
-function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced }: FieldsProps) {
+function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced, allTags }: FieldsProps) {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
@@ -1599,10 +1602,13 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                 value={form.region}
                 onChange={e => update('region', e.target.value)}
                 sx={{ flex: '1 1 120px' }} />
-              <TextField size="small" label={t('admin:nodes.field.tags')}
-                value={form.tags_text}
-                onChange={e => update('tags_text', e.target.value)}
-                sx={{ flex: '2 1 240px' }} />
+              <Box sx={{ flex: '2 1 240px' }}>
+                <TagsAutocomplete
+                  label={t('admin:nodes.field.tags')}
+                  value={form.tags_text}
+                  options={allTags ?? []}
+                  onChange={v => update('tags_text', v)} />
+              </Box>
             </Box>
           </Box>
         </Box>
@@ -2916,6 +2922,7 @@ export default function NodesView() {
               genKeysBusy={genKeysBusy}
               advanced={createAdvanced}
               onSetAdvanced={setCreateAdvanced}
+              allTags={allTags}
             />
           </Box>
         </DialogContent>
