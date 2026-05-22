@@ -25,7 +25,7 @@ func (r *recNodeRepo) Update(_ context.Context, n *domain.Node) error {
 	return nil
 }
 
-// UpdateInboundConfig is the column-scoped v4 snapshot writer; tests treat it
+// UpdateInboundConfig is the column-scoped v3.5 snapshot writer; tests treat it
 // the same as Update for assertion purposes — both indicate the node was
 // persisted.
 func (r *recNodeRepo) UpdateInboundConfig(_ context.Context, n *domain.Node) error {

@@ -4,9 +4,36 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.3 — 2026-05-22
+
+### Fixed
+
+- **inbound `remark` 在 3X-UI 被改不会被 reconcile 拉回**:axis-A 的 `InSync`
+  漏比 `Remark` 字段——`Capture` 落库、`SpecFromNode` 发回去都带它,但 drift
+  判定却跳过。结果是操作员在 3X-UI 直接改 inbound 备注后,PSP 既不重写回 PSP
+  版本、也不更新本地快照,处于"知道有但视而不见"的状态。`InSync` 补加 Remark
+  对比,跟其它字段同等强制。
+- **`UpdateInboundConfig` 推到 3X-UI 收到 4xx 后无限重试**:之前 retry 退避里
+  的 `isPermanentNodeTaskError` 只识别 `ErrAlreadyExists` / `ErrValidation` /
+  `ErrInboundHasUnmanagedClients` 三种,而 `xui.doJSON` 把所有 HTTP 错误都包成
+  普通字符串错误,4xx(无效 spec / 找不到 inbound 等)永远命不中 permanent,
+  每分钟一次推下去、每次都失败。改成在 `doJSON` 把 4xx(401 / 408 / 429 除外)
+  统一 wrap 进 `domain.ErrValidation`,task 运行器现在能正确把它标记为永久失败、
+  停止重试;401 走原有的 re-auth 路径,408 / 429 / 5xx / 网络错误仍归类为
+  瞬时、继续退避重试。
+
+### Changed
+
+- **文档与代码注释统一去掉 v4 前缀,改用 v3.5**:本次"inbound 配置本地化"
+  原计划在 v4.0.0 major 切版做,实际决定非破坏性、增量发布在 v3.5.0-beta.1,
+  但代码注释 / docs 文件名仍带"v4"字样,容易跟"下一个 major v4.0.0"混淆。
+  改名:`docs/v4-inbound-ownership.md` → `docs/inbound-ownership.md`;所有
+  架构相关的 v4 注释 → v3.5。UUID v4(协议层 UUID 版本)与 v4.0.0(指未来
+  major)的引用保持不变。
+
 ## v3.5.0-beta.2 — 2026-05-22
 
-### Fixed (v4 inbound 配置本地化的修补)
+### Fixed (v3.5 inbound 配置本地化的修补)
 
 - **空 settings 的 inbound 在 reconcile drift push 时可能清空 3X-UI 全部 client**:
   `Capture`/`ApplySpec` 把 `settings==""` 落库为空字符串,后续 `InSync` 视作 drift 推空
@@ -69,7 +96,7 @@ small improvement).
 
 ### Changed
 - **订阅渲染不再实时回源 3X-UI:inbound 连接配置本地化,PSP 成为真相源**(详见
-  [docs/v4-inbound-ownership.md](docs/v4-inbound-ownership.md))。之前每次拉订阅,render 都在请求
+  [docs/inbound-ownership.md](docs/inbound-ownership.md))。之前每次拉订阅,render 都在请求
   热路径上调 3X-UI 的 `ListInbounds` 取端口 / stream / TLS / Reality 等连接参数——高频轮询把
   压力传导到上游,且面板一挂订阅就渲染失败。现把这些配置完整存进 `nodes` 表(全保真,镜像
   `InboundSpec`:listen / remark / settings(去 clients) / streamSettings / sniffing / allocate /

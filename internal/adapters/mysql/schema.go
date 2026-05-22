@@ -221,12 +221,12 @@ type nodeRow struct {
 	HealthState           string `gorm:"size:32;default:''"`
 	HealthCheckedAt       *time.Time
 	HealthDetail          string `gorm:"size:512;default:''"`
-	// ---- Inbound config snapshot (v4) ----
+	// ---- Inbound config snapshot (v3.5) ----
 	// Faithful copy of the 3X-UI inbound's connection config (mirrors
 	// ports.InboundSpec minus clients[]) so render reads locally and reconcile
-	// can push PSP's version back. Empty on rows written before v4; backfilled
-	// by the health/traffic poll and write-through on create/update/import.
-	// See docs/v4-inbound-ownership.md.
+	// can push PSP's version back. Empty on rows written before v3.5;
+	// backfilled by the health/traffic poll and write-through on
+	// create/update/import. See docs/inbound-ownership.md.
 	InboundListen     string `gorm:"size:64;default:''"`
 	InboundRemark     string `gorm:"size:255;default:''"`
 	InboundSettings   string `gorm:"type:text"`
@@ -250,7 +250,7 @@ func (r *nodeRow) toDomain() (*domain.Node, error) {
 	// keys, and InboundSettings holds the SS-2022 server PSK (top-level
 	// `password`). Both are server-identity secrets; AES-GCM at rest matches
 	// the trust-boundary we already apply to xui_panels.api_token / SMTP.
-	// Pre-v4 rows are plaintext (no enc:v1: prefix) and round-trip unchanged.
+	// Pre-v3.5 rows are plaintext (no enc:v1: prefix) and round-trip unchanged.
 	inboundSettings, err := decryptSecret(r.InboundSettings)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt inbound_settings (node id=%d): %w", r.ID, err)

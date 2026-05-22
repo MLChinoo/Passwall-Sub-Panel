@@ -1,10 +1,10 @@
 // Package inboundcfg maps between the 3X-UI inbound representation
 // (ports.Inbound / ports.InboundSpec) and a node's locally stored config
-// snapshot. v4 makes PSP the source of truth for the inbound connection
+// snapshot. v3.5 makes PSP the source of truth for the inbound connection
 // config: the node service writes the snapshot on create/import/update, the
 // renderer reads it (zero live fetch), and reconcile pushes it back over
 // server-side drift. Shared here so the mapping lives in exactly one place.
-// See docs/v4-inbound-ownership.md.
+// See docs/inbound-ownership.md.
 package inboundcfg
 
 import (
@@ -148,6 +148,9 @@ func InSync(n *domain.Node, live *ports.Inbound) bool {
 		return false
 	}
 	if n.InboundListen != live.Listen {
+		return false
+	}
+	if n.InboundRemark != live.Remark {
 		return false
 	}
 	if n.InboundExpiryTime != live.ExpiryTime {

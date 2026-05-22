@@ -288,7 +288,7 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 	}
 	n.InboundID = inboundID
 	n.Enabled = true
-	// v4 write-through: persist the just-pushed config into the local snapshot
+	// v3.5 write-through: persist the just-pushed config into the local snapshot
 	// so the node renders without a live fetch from its first subscription.
 	inboundcfg.ApplySpec(n, spec)
 	if err := s.nodes.Create(ctx, n); err != nil {
@@ -337,7 +337,7 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 	if err != nil {
 		return err
 	}
-	// v4 write-through (local-first): PSP owns the inbound config, so persist
+	// v3.5 write-through (local-first): PSP owns the inbound config, so persist
 	// the new config into the local snapshot before pushing. Render reflects it
 	// immediately and survives a 3X-UI outage; the push (or its retry task)
 	// then aligns 3X-UI. Use the column-scoped writer so a concurrent health
@@ -501,7 +501,7 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 		}
 		return nil
 	case domain.SyncTaskNodeUpdate:
-		// Use the local snapshot, NOT task.Payload. The snapshot is the v4
+		// Use the local snapshot, NOT task.Payload. The snapshot is the v3.5
 		// source of truth and reflects the latest admin edit even if multiple
 		// edits stacked between enqueue and run (or if dedup collapsed them
 		// onto this one task). Pushing the captured-at-enqueue payload could

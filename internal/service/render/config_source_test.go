@@ -45,7 +45,7 @@ func (p *recordingPool) Add(*domain.XUIPanel) error { return nil }
 func (p *recordingPool) Remove(int64) error         { return nil }
 
 // vlessRealityNode returns a node carrying a faithful VLESS+Reality config
-// snapshot, as the v4 write-through / poll backfill would store it.
+// snapshot, as the v3.5 write-through / poll backfill would store it.
 func vlessRealityNode(synced bool) *domain.Node {
 	n := &domain.Node{
 		ID:            7,
@@ -100,7 +100,7 @@ func TestInboundFromNode(t *testing.T) {
 	}
 }
 
-// TestBuildProxies_LocalConfig_ZeroFetch is the headline v4 guarantee: a node
+// TestBuildProxies_LocalConfig_ZeroFetch is the headline v3.5 guarantee: a node
 // with a captured snapshot renders entirely from the DB, never touching the
 // 3X-UI pool (panicPool would crash the test if it did). The emitted block must
 // reflect the stored VLESS+Reality config.

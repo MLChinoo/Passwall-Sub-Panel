@@ -1,9 +1,9 @@
-# inbound 配置本地化与订阅渲染零回源（v4-track 设计，自 v3.5.0-beta.1 起实现）
+# inbound 配置本地化与订阅渲染零回源（自 v3.5.0-beta.1 起实现）
 
-> 状态：**已实现（首个切片，v3.5.0-beta.1）**。后端写路径 / render / reconcile 轴 A 均已落地并有单测覆盖。
+> 状态：**已实现（首个切片，v3.5.0-beta.1；客户端清零等安全修补在 v3.5.0-beta.2）**。后端写路径 / render / reconcile 轴 A 均已落地并有单测覆盖。
 > 关联：[ARCHITECTURE.md](ARCHITECTURE.md) §3.2 / §4 / §9 / §16；[internal/migrate/README.md](../internal/migrate/README.md)。
 > 实现位置：映射逻辑统一在 [internal/service/inboundcfg](../internal/service/inboundcfg/)（node / render / reconcile 共用）。
-> 版本：本特性属 v4-track 重构，但非破坏性、增量发布，首个切片走 v3.5.0-beta.1（升级无需迁移工具）。
+> 历史：原计划走 v4.0.0 major 切版，最终决定非破坏性、增量发布在 v3.5.x（升级无需迁移工具）。
 
 ## 0. 一句话
 
@@ -70,11 +70,11 @@ inbound 的状态分两层，归属与方向**不同**：
 
 ## 3. 与现有架构文档的关系（supersedes / 保留）
 
-本设计是 v4 大版本变更，以下既有约定按表更新。**实现时同步改 ARCHITECTURE.md。**
+本设计触及多条核心架构约定，以下条目按表更新。**实现时同步改 ARCHITECTURE.md。**
 
 ### 3.1 被推翻 / 修改的条目
 
-| 位置 | 原约定 | v4 改为 |
+| 位置 | 原约定 | v3.5 改为 |
 |---|---|---|
 | §3.2 表「修改 inbound 协议参数」 | 本地只存展示元数据，协议参数以 3X-UI 为真相源 | PSP 托管 inbound 的连接配置存本地 DB，PSP 为真相源 |
 | §9.3 节点元数据存储表 | 协议/地址/端口/TLS/Reality 存 3X-UI | 上述参数对**托管 inbound** 存 `nodes` 表 |
@@ -82,7 +82,7 @@ inbound 的状态分两层，归属与方向**不同**：
 | §9.4.5 🚫「修改 inbound 协议参数」 | 绝对不做 | 对托管 inbound：reconcile **会**下发覆盖配置漂移（仅连接配置层，RMW 保留 clients） |
 | §9.5.1「inbound 协议参数零变更」 | 导入完全不调 3X-UI 写 API | 导入 = 接管：吸配置进 DB；此后配置以 PSP 为准 |
 
-### 3.2 完全保留的不变量（v4 不动）
+### 3.2 完全保留的不变量（v3.5 不动）
 
 - §4.3 **client 写护栏** `ensureClientOwned`：所有写 client 入口必须命中归属表。
 - §4.4 **inbound 删除护栏** `ensureInboundDeletable`：删 inbound 必须内部全部 client 纳管。
@@ -94,7 +94,7 @@ inbound 的状态分两层，归属与方向**不同**：
 
 ### 3.3 一个需要明确的张力
 
-§9.5 的复用哲学是"复用现有 inbound 而不动它"。v4 的"导入=接管"会让**被接管的既有 inbound 的连接配置改由 PSP 持续强制**。结论与约束：
+§9.5 的复用哲学是"复用现有 inbound 而不动它"。v3.5 的"导入=接管"会让**被接管的既有 inbound 的连接配置改由 PSP 持续强制**。结论与约束：
 
 - 接管**只影响连接配置层**（端口/TLS/stream），**不影响任何 client**（私人/朋友 client 全程保留）。
 - 接管后，该 inbound 的连接配置应**经 PSP UI 修改**；若维护者绕过 PSP 直接在 3X-UI 改，reconcile 会按 PSP 版本改回（这是"持续强制"的有意行为，用户已确认接受）。
@@ -182,7 +182,7 @@ render 生成 proxy 块（[protocols.go `emitProxy`](../internal/service/render/
 ### 阶段 6 · 文档与版本
 - [x] CHANGELOG（中文，v3.5.0-beta.1）。
 - [ ] *TODO*：ARCHITECTURE.md §3.2 / §9.3 / §9.4.5 / §9.5.1 正文仍写"3X-UI 是配置单源真相"——已被本特性 supersede，待回写（本文 §3 已列对照表）。
-- [ ] *TODO*：`internal/migrate/` 改写为 v3.x→v4 属真正 major 切版时再做（本切片非破坏性、增量发布）。
+- [ ] *TODO*：`internal/migrate/` 改写为 v3.x→v4.0.0 的迁移逻辑等到真正切下个 major 时再做（本特性非破坏性、增量发布）。
 - [ ] *TODO*：前端可选——节点列表展示 `ConfigSyncState`；编辑对话框 `GetInboundConfig` 可改读本地快照（当前仍 live-fetch，admin 编辑低频、可接受）。
 
 ---

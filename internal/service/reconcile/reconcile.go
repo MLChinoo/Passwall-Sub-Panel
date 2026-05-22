@@ -615,9 +615,9 @@ func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inbo
 	}
 }
 
-// reconcileInboundConfig maintains the v4 axis-A invariant: PSP is the source
-// of truth for a managed inbound's connection config (see
-// docs/v4-inbound-ownership.md §2.1).
+// reconcileInboundConfig maintains the v3.5 axis-A invariant: PSP is the
+// source of truth for a managed inbound's connection config (see
+// docs/inbound-ownership.md §2.1).
 //
 //   - No local snapshot yet (legacy row / freshly imported before capture):
 //     pull the live inbound into the node so render stops live-fetching it.

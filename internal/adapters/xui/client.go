@@ -174,8 +174,21 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	// so the operator gets an actionable message instead of "unexpected end
 	// of JSON input".
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %d (body: %s)",
+		// 4xx (except 401/408/429) indicates the request itself is wrong —
+		// invalid spec, missing field, wrong id. Wrap in ErrValidation so
+		// task runners can mark the task permanently failed instead of
+		// retrying forever. 401 means re-auth (handled above), 408/429 are
+		// transient and stay as raw errors so retry logic kicks in.
+		// 5xx and network errors also stay raw → retried.
+		base := fmt.Errorf("%s %s: HTTP %d (body: %s)",
 			method, path, resp.StatusCode, snippet(trimmed, 200))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+			resp.StatusCode != http.StatusUnauthorized &&
+			resp.StatusCode != http.StatusRequestTimeout &&
+			resp.StatusCode != http.StatusTooManyRequests {
+			return fmt.Errorf("%w: %s", domain.ErrValidation, base.Error())
+		}
+		return base
 	}
 	if trimmed == "" {
 		hint := "verify URL and api_token / username+password — 3X-UI returns an empty body when auth is wrong"

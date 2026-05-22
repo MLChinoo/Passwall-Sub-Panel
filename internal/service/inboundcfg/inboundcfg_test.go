@@ -146,4 +146,14 @@ func TestInSync(t *testing.T) {
 	if InSync(&drift2, live) {
 		t.Fatalf("expected drift when port differs")
 	}
+
+	// Remark change is drift — PSP owns the inbound's display name on 3X-UI,
+	// so operator-side edits to remark should be pushed back.
+	drift3 := *n
+	drift3.InboundRemark = "psp-managed"
+	liveWithRemark := *live
+	liveWithRemark.Remark = "manual-rename"
+	if InSync(&drift3, &liveWithRemark) {
+		t.Fatalf("expected drift when remark differs")
+	}
 }

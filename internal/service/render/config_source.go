@@ -9,15 +9,15 @@ import (
 )
 
 // inboundFromNode reconstructs a ports.Inbound from the node's locally stored
-// config snapshot (v4: PSP is the source of truth for inbound config). The
-// mapping lives in inboundcfg so the node service and reconcile share it.
+// config snapshot (v3.5: PSP is the source of truth for inbound config).
+// The mapping lives in inboundcfg so the node service and reconcile share it.
 func inboundFromNode(n *domain.Node) *ports.Inbound {
 	return inboundcfg.InboundFromNode(n)
 }
 
 // nodeHasLocalConfig reports whether render can build this node's proxy block
 // from the local snapshot (zero 3X-UI calls). False for:
-//   - never captured (pre-v4 row before reconcile backfills it, or freshly
+//   - never captured (pre-v3.5 row before reconcile backfills it, or freshly
 //     imported before the capture step ran) — ConfigSyncedAt is nil
 //   - explicitly marked non-synced (future states like "broken" / "needs-attention"
 //     that a writer wants to gate render off of) — state is non-empty and not

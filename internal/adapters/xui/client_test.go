@@ -1,9 +1,14 @@
 package xui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
@@ -83,6 +88,46 @@ func TestReplaceSettingsClientsPreservesCurrentClients(t *testing.T) {
 // short-circuit on blank `nextSettings`, sending an empty `settings` to 3X-UI
 // and wiping every live client. With normalised empties ("{}" substitution),
 // passing `{}` as next must still re-merge every current client back in.
+// doJSON must wrap 4xx (except auth/timeout/rate-limit) in domain.ErrValidation
+// so SyncTask runners can mark the task permanently failed. Without this,
+// pushing an invalid spec to 3X-UI loops every minute forever.
+func TestDoJSON_4xxWrapsAsErrValidation(t *testing.T) {
+	for _, code := range []int{400, 403, 404, 422} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"success":false,"msg":"bad spec"}`))
+		}))
+		c := &Client{baseURL: srv.URL, http: srv.Client(), apiToken: "t"}
+		err := c.doJSON(context.Background(), http.MethodPost, "/panel/api/inbounds/update/1", nil, nil)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("status %d should error", code)
+		}
+		if !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("status %d: want errors.Is(err, ErrValidation), got %v", code, err)
+		}
+	}
+}
+
+// Transient 4xx (timeout, rate-limit) must NOT be wrapped — those should
+// stay raw so the task runner retries them.
+func TestDoJSON_TransientCodesStayRaw(t *testing.T) {
+	for _, code := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		}))
+		c := &Client{baseURL: srv.URL, http: srv.Client(), apiToken: "t"}
+		err := c.doJSON(context.Background(), http.MethodPost, "/panel/api/inbounds/update/1", nil, nil)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("status %d should error", code)
+		}
+		if errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("status %d must NOT be wrapped as ErrValidation (it's transient)", code)
+		}
+	}
+}
+
 func TestReplaceSettingsClientsHandlesEmptyNext(t *testing.T) {
 	current := `{"method":"aes-128-gcm","clients":[{"id":"a","email":"a@example.test"},{"id":"b","email":"b@example.test"}]}`
 

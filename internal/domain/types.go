@@ -357,7 +357,7 @@ type Node struct {
 	// HealthDetail carries the panel/inbound error string for the most
 	// recent failed probe; empty when healthy.
 	HealthDetail string
-	// ---- Inbound config snapshot (v4: PSP is the source of truth) ----
+	// ---- Inbound config snapshot (v3.5: PSP is the source of truth) ----
 	//
 	// PSP stores a faithful copy of the 3X-UI inbound's connection config so
 	// subscription rendering reads purely from the local DB (zero live fetch)
@@ -365,7 +365,7 @@ type Node struct {
 	// stored set mirrors ports.InboundSpec field-for-field; clients[] is NOT
 	// stored (it's materialised from the ownership table at push time and
 	// merged with whatever live clients exist, so manually-created clients
-	// are preserved). See docs/v4-inbound-ownership.md.
+	// are preserved). See docs/inbound-ownership.md.
 	//
 	// InboundSettings holds the protocol settings JSON with clients[] stripped
 	// (SS/SS-2022 method + server PSK, VLESS/VMess decryption/fallbacks, etc.

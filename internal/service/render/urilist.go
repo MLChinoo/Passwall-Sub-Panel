@@ -34,7 +34,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
-	// v4 fallback prefetch: same as mihomo's buildProxies. Un-captured nodes
+	// v3.5 fallback prefetch: same as mihomo's buildProxies. Un-captured nodes
 	// share one ListInbounds per panel instead of one GetInbound per node.
 	var fallbackItems []renderItem
 	for _, it := range items {

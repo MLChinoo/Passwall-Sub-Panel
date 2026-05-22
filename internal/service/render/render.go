@@ -243,10 +243,10 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
-	// v4: nodes with a captured config snapshot render purely from the local
-	// DB (zero 3X-UI calls), so a subscription still renders while 3X-UI is
-	// unreachable. Only nodes never captured (ConfigSyncedAt==nil — freshly
-	// imported, or a pre-v4 row before the first health/traffic poll) fall
+	// v3.5: nodes with a captured config snapshot render purely from the
+	// local DB (zero 3X-UI calls), so a subscription still renders while
+	// 3X-UI is unreachable. Only nodes never captured (ConfigSyncedAt==nil
+	// — freshly imported, or a pre-v3.5 row before the first poll) fall
 	// back to a live ListInbounds; that transient cost disappears once a poll
 	// backfills them. When every node has local config the pool is never
 	// touched.

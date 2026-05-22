@@ -79,7 +79,7 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
-	// v4 fallback prefetch: bucket all un-captured nodes by panel so the
+	// v3.5 fallback prefetch: bucket all un-captured nodes by panel so the
 	// transition window only costs one ListInbounds per panel, not one
 	// GetInbound per node (mihomo's buildProxies does the same).
 	var fallbackItems []renderItem

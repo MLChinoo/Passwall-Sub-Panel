@@ -114,12 +114,12 @@ type NodeRepo interface {
 	// own columns instead of a full-row Save that would clobber the other.
 	UpdateTrafficCounters(ctx context.Context, n *domain.Node) error
 	UpdateHealth(ctx context.Context, n *domain.Node) error
-	// UpdateInboundConfig writes only the v4 inbound-config snapshot columns
-	// (and the cached port/protocol the snapshot also bears). Same column-
-	// scoped rationale as UpdateHealth / UpdateTrafficCounters: snapshot
-	// writers (admin create/update, reconcile backfill, post-push capture)
-	// must not clobber the health probe's port/HealthState/HealthCheckedAt
-	// columns it may be writing concurrently.
+	// UpdateInboundConfig writes only the v3.5 inbound-config snapshot
+	// columns (and the cached port/protocol the snapshot also bears). Same
+	// column-scoped rationale as UpdateHealth / UpdateTrafficCounters:
+	// snapshot writers (admin create/update, reconcile backfill, post-push
+	// capture) must not clobber the health probe's port/HealthState/
+	// HealthCheckedAt columns it may be writing concurrently.
 	UpdateInboundConfig(ctx context.Context, n *domain.Node) error
 	// BatchUpdateSortOrder rewrites Node.SortOrder for every (id, sort_order)
 	// pair in a single transaction. Driven by the drag-to-reorder UI in the

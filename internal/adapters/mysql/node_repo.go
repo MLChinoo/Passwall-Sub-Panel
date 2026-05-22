@@ -76,11 +76,12 @@ func (r *nodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {
 		}).Error
 }
 
-// UpdateInboundConfig writes only the v4 snapshot columns (plus port/protocol
-// which the snapshot also owns). Same column-scoping rationale as
-// UpdateHealth / UpdateTrafficCounters: snapshot writers (admin create/update,
-// reconcile backfill, post-push capture) run concurrently with the health
-// pass and the traffic poll, so a full-row Save would clobber their writes.
+// UpdateInboundConfig writes only the v3.5 inbound-config snapshot columns
+// (plus port/protocol which the snapshot also owns). Same column-scoping
+// rationale as UpdateHealth / UpdateTrafficCounters: snapshot writers (admin
+// create/update, reconcile backfill, post-push capture) run concurrently
+// with the health pass and the traffic poll, so a full-row Save would
+// clobber their writes.
 func (r *nodeRepo) UpdateInboundConfig(ctx context.Context, n *domain.Node) error {
 	if n == nil || n.ID == 0 {
 		return fmt.Errorf("UpdateInboundConfig requires a non-zero node ID; got %+v", n)
