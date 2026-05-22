@@ -118,13 +118,13 @@ func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _
 		return buildVMessURI(name, n.ServerAddress, inb.Port, u.UUID, stream), nil
 	case domain.ProtoTrojan:
 		return buildTrojanURI(name, n.ServerAddress, inb.Port,
-			crypto.DeriveProxyPassword(u.UUID, protocol), stream), nil
+			crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method), stream), nil
 	case domain.ProtoSS:
 		return buildSSURI(name, n.ServerAddress, inb.Port, settings.Method,
-			crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+			crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoSS2022:
 		return buildSS2022URI(name, n.ServerAddress, inb.Port, settings.Method,
-			settings.Password, crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+			settings.Password, crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoHysteria2:
 		return buildHysteria2URI(name, n.ServerAddress, inb.Port, u.UUID,
 			parseHysteria2Opts(inb.Settings, inb.StreamSettings)), nil

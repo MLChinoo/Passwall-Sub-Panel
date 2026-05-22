@@ -44,7 +44,7 @@ type ClientSyncer interface {
 	// floor, so callers pass 0; the next traffic-poll cycle's
 	// pushClientConfigToAll will set the correct value.
 	AddClientToInbound(ctx context.Context, userID int64, panelID int64, inboundID int,
-		protocol domain.Protocol, userUUID, email, flow string, expireTime, totalGB int64) error
+		protocol domain.Protocol, ssMethod, userUUID, email, flow string, expireTime, totalGB int64) error
 }
 
 type Service struct {
@@ -664,7 +664,7 @@ func (s *Service) syncExistingUsersToNode(ctx context.Context, n *domain.Node) e
 			// after node creation). Adding TrafficUsageReader to node.Service
 			// would invert the dependency graph for marginal benefit.
 			if err := s.syncer.AddClientToInbound(ctx, u.ID, n.PanelID, n.InboundID,
-				info.protocol, u.UUID, email, info.flow, expireTime, 0); err != nil {
+				info.protocol, info.ssMethod, u.UUID, email, info.flow, expireTime, 0); err != nil {
 				log.Warn("new-node sync add client",
 					"user_id", u.ID, "node_id", n.ID, "err", err)
 				continue
@@ -680,6 +680,7 @@ func (s *Service) syncExistingUsersToNode(ctx context.Context, n *domain.Node) e
 type inboundInfo struct {
 	protocol domain.Protocol
 	flow     string
+	ssMethod string
 }
 
 // inspectInbound reads the inbound from 3X-UI and extracts the bits needed
@@ -705,6 +706,7 @@ func (s *Service) inspectInbound(ctx context.Context, n *domain.Node) (*inboundI
 		}
 		_ = json.Unmarshal([]byte(inb.Settings), &s)
 		info.protocol = crypto.DetectProtocol(inb.Protocol, s.Method)
+		info.ssMethod = s.Method
 		for _, c := range s.Clients {
 			if c.Flow != "" {
 				info.flow = c.Flow

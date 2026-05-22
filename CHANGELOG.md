@@ -4,6 +4,37 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.3.0-beta.5 — 2026-05-21
+
+一次借助多个子 agent + 外部规范核查的全量复查,只查出一条实锤功能 bug。
+
+### Fixed
+- **SS-2022 对 `2022-blake3-aes-128-gcm` 派生的 PSK 长度错误**:`DeriveProxyPassword`
+  对所有 SS-2022 cipher 一律返回 `base64(SHA-256(uuid))` = 32 字节,但
+  [SIP022](https://shadowsocks.org/doc/sip022.html) 要求 `aes-128-gcm` 的 PSK 必须
+  是 **16 字节**(`aes-256-gcm` / `chacha20-poly1305` 才是 32)。结果:任何用
+  `2022-blake3-aes-128-gcm` 的 inbound,写给 3X-UI 的凭证和渲染出的订阅两端都是错
+  长度,Xray 以 "bad key length, required 16" 拒绝,该节点对所有用户连不上。
+  修法:把 inbound 的 SS method 串进凭证派生链路(`DeriveProxyPassword` 新增
+  `ssMethod` 参数,按 cipher 截断到 16/32;sync 写入、render、reconcile 三条产出
+  credential 的路径同步传入),`aes-256-gcm` 行为不变。有单测覆盖三种 cipher 的
+  PSK 字节长度 + buildClientSpec 端到端长度。
+
+### 复查确认无问题(留档)
+JWT(算法固定 / TokenVersion 撤销)、SAML/OIDC(签名 / replay / nonce / state /
+零隐式 fallback)、AES-GCM 加密(随机 nonce、无复用)、流量 `monotonicDelta`、
+3X-UI v2.x API 对接、三套订阅渲染对各协议(Reality/Hysteria2/SS-2022 URI/transport)
+的字段名均符合官方 schema。`crewjam/saml v0.4.14` 恰为修复
+[CVE-2023-45683](https://nvd.nist.gov/vuln/detail/CVE-2023-45683) 的版本,不受任何
+已知 CVE 影响。
+
+### 已知 / 待办(非本版改动)
+- 上游 **3X-UI v3.x 已重构 API**(client 路由迁到 `/panel/api/clients/*` + CSRF)。
+  本面板对接的是 v2.9.x legacy API——**若把 3X-UI 升级到 v3.x,所有 client 写操作
+  与流量查询会 404**,届时需要适配。
+- 默认客户端关键词里 V2RayN 族的裸 `v2ray` 子串偏宽(会顺带匹配 `v2rayA`/`v2rayU`
+  等),低优,暂不动。
+
 ## v3.3.0-beta.4 — 2026-05-21
 
 修复 + 加固一批,主要来自一次全量内部审查。

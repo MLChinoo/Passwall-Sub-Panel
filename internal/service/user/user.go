@@ -36,13 +36,13 @@ type NodeSelector interface {
 // Defined here (not imported) so the user package never imports sync.
 type ClientSyncer interface {
 	AddClientToInbound(ctx context.Context, userID int64, panelID int64, inboundID int,
-		protocol domain.Protocol, userUUID, email, flow string, expireTime, totalGB int64) error
+		protocol domain.Protocol, ssMethod, userUUID, email, flow string, expireTime, totalGB int64) error
 	DelOwnedClient(ctx context.Context, panelID int64, inboundID int, email string) error
 	SetOwnedClientEnable(ctx context.Context, panelID int64, inboundID int, email string,
-		protocol domain.Protocol, userUUID, flow string, enable bool, expireTime, totalGB int64) error
+		protocol domain.Protocol, ssMethod, userUUID, flow string, enable bool, expireTime, totalGB int64) error
 	DelAllOwnedForUser(ctx context.Context, userID int64) error
 	RotateClientUUID(ctx context.Context, panelID int64, inboundID int, email string,
-		protocol domain.Protocol, oldUUID, newUUID, flow string, enable bool, expireTime, totalGB int64) error
+		protocol domain.Protocol, ssMethod, oldUUID, newUUID, flow string, enable bool, expireTime, totalGB int64) error
 }
 
 // TrafficUsageReader yields the bytes a user has consumed in their current
@@ -669,7 +669,7 @@ func (s *Service) ResetCredentialsAndSync(ctx context.Context, userID int64) (*R
 			continue
 		}
 		if err := s.syncer.RotateClientUUID(ctx, e.PanelID, e.InboundID, e.ClientEmail,
-			info.protocol, oldUUID, newUUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
+			info.protocol, info.ssMethod, oldUUID, newUUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
 			needsRetry = true
 		}
 	}
@@ -854,7 +854,7 @@ func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (
 		email := u.ClientEmail(n.ID, rules)
 		expireTime := u.PushExpireTime()
 		if err := s.syncer.AddClientToInbound(ctx, u.ID, n.PanelID, n.InboundID,
-			info.protocol, u.UUID, email, info.flow, expireTime, floor); err != nil {
+			info.protocol, info.ssMethod, u.UUID, email, info.flow, expireTime, floor); err != nil {
 			needsRetry = true
 			continue
 		}
@@ -1317,7 +1317,7 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		email := u.ClientEmail(n.ID, rules)
 		expireTime := u.PushExpireTime()
 		if err := s.syncer.AddClientToInbound(ctx, u.ID, k.panelID, k.inboundID,
-			info.protocol, u.UUID, email, info.flow, expireTime, floor); err != nil {
+			info.protocol, info.ssMethod, u.UUID, email, info.flow, expireTime, floor); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("add to %d/%d: %w", k.panelID, k.inboundID, err)
 			}
@@ -1344,7 +1344,7 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		}
 		expireTime := u.PushExpireTime()
 		if err := s.syncer.SetOwnedClientEnable(ctx, e.PanelID, e.InboundID, e.ClientEmail,
-			info.protocol, u.UUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
+			info.protocol, info.ssMethod, u.UUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("update %d/%d: %w", k.panelID, k.inboundID, err)
 			}
@@ -1527,7 +1527,7 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 			pushSem <- struct{}{}
 			defer func() { <-pushSem }()
 			perr := s.syncer.SetOwnedClientEnable(ctx, entry.PanelID, entry.InboundID, entry.ClientEmail,
-				infoCopy.protocol, u.UUID, infoCopy.flow, u.EffectiveEnabled(time.Now()), expireTime, floor)
+				infoCopy.protocol, infoCopy.ssMethod, u.UUID, infoCopy.flow, u.EffectiveEnabled(time.Now()), expireTime, floor)
 			outcomes <- pushOutcome{entry: entry, err: perr}
 		}()
 	}
@@ -1693,7 +1693,7 @@ func (s *Service) ResetUUIDAndSync(ctx context.Context, userID int64) (string, e
 			continue
 		}
 		if err := s.syncer.RotateClientUUID(ctx, e.PanelID, e.InboundID, e.ClientEmail,
-			info.protocol, oldUUID, newUUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
+			info.protocol, info.ssMethod, oldUUID, newUUID, info.flow, u.EffectiveEnabled(time.Now()), expireTime, floor); err != nil {
 			needsRetry = true
 		}
 	}

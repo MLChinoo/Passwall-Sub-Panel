@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
@@ -52,12 +53,36 @@ func TestDelOwnedClientDeletesByEmailNotByStoredID(t *testing.T) {
 // or password — otherwise 3X-UI rejects the client as "empty client ID". The
 // value equals the user's UUID, matching what the subscription renderer emits.
 func TestBuildClientSpecHysteria2SetsAuth(t *testing.T) {
-	spec := buildClientSpec(domain.ProtoHysteria2, "uuid-xyz", "u@example.test", "", 0, 0)
+	spec := buildClientSpec(domain.ProtoHysteria2, "", "uuid-xyz", "u@example.test", "", 0, 0)
 	if spec.Auth != "uuid-xyz" {
 		t.Fatalf("Auth = %q, want uuid-xyz", spec.Auth)
 	}
 	if spec.ID != "" || spec.Password != "" {
 		t.Fatalf("HY2 should set only Auth; got ID=%q Password=%q", spec.ID, spec.Password)
+	}
+}
+
+// TestBuildClientSpecSS2022KeyLength confirms the ssMethod threaded into
+// buildClientSpec reaches the derived PSK, so the credential pushed to 3X-UI
+// matches the inbound cipher's required key length (16 bytes for aes-128-gcm,
+// 32 for aes-256-gcm). A length mismatch makes Xray reject the client.
+func TestBuildClientSpecSS2022KeyLength(t *testing.T) {
+	cases := []struct {
+		method    string
+		wantBytes int
+	}{
+		{"2022-blake3-aes-128-gcm", 16},
+		{"2022-blake3-aes-256-gcm", 32},
+	}
+	for _, tc := range cases {
+		spec := buildClientSpec(domain.ProtoSS2022, tc.method, "uuid-xyz", "u@example.test", "", 0, 0)
+		raw, err := base64.StdEncoding.DecodeString(spec.Password)
+		if err != nil {
+			t.Fatalf("method %q: PSK %q not base64: %v", tc.method, spec.Password, err)
+		}
+		if len(raw) != tc.wantBytes {
+			t.Fatalf("method %q: PSK %d bytes, want %d", tc.method, len(raw), tc.wantBytes)
+		}
 	}
 }
 

@@ -165,19 +165,19 @@ func emitSingBoxOutbound(tag string, n *domain.Node, u *domain.User, inb *ports.
 		return base, nil
 	case domain.ProtoTrojan:
 		base["type"] = "trojan"
-		base["password"] = crypto.DeriveProxyPassword(u.UUID, protocol)
+		base["password"] = crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)
 		applySingBoxTLS(base, stream)
 		applySingBoxTransport(base, stream)
 		return base, nil
 	case domain.ProtoSS:
 		base["type"] = "shadowsocks"
 		base["method"] = settings.Method
-		base["password"] = crypto.DeriveProxyPassword(u.UUID, protocol)
+		base["password"] = crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)
 		return base, nil
 	case domain.ProtoSS2022:
 		base["type"] = "shadowsocks"
 		base["method"] = settings.Method
-		base["password"] = settings.Password + ":" + crypto.DeriveProxyPassword(u.UUID, protocol)
+		base["password"] = settings.Password + ":" + crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)
 		return base, nil
 	case domain.ProtoHysteria2:
 		// buildSingBoxHysteria2Outbound takes its own base map shape, so

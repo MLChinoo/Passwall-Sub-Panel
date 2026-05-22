@@ -50,12 +50,12 @@ func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.In
 	case domain.ProtoVMess:
 		return emitVMess(base, u.UUID, stream), nil
 	case domain.ProtoTrojan:
-		return emitTrojan(base, crypto.DeriveProxyPassword(u.UUID, protocol), stream), nil
+		return emitTrojan(base, crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method), stream), nil
 	case domain.ProtoSS:
-		return emitSSProxy(base, settings.Method, crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+		return emitSSProxy(base, settings.Method, crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoSS2022:
 		return emitSS2022(base, settings.Method, settings.Password,
-			crypto.DeriveProxyPassword(u.UUID, protocol)), nil
+			crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoHysteria2:
 		// Per-user password is the user's UUID (same convention as VLESS:
 		// the panel-managed credential is what 3X-UI stores per client).
