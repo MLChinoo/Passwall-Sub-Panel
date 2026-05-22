@@ -560,6 +560,13 @@ type MailRepo interface {
 	SaveTemplate(ctx context.Context, t *domain.MailTemplate) error
 	HasSent(ctx context.Context, userID int64, kind domain.MailReminderKind, windowKey string) (bool, error)
 	RecordSent(ctx context.Context, userID int64, kind domain.MailReminderKind, windowKey, toEmail string) error
+	// ReserveSentSlot atomically inserts the (user, kind, windowKey) row and
+	// reports whether THIS call won the insert (true) or it already existed
+	// (false). Lets capped soft notifications reserve a per-day slot before
+	// sending so concurrent senders can't both clear the same cap. Like
+	// RecordSent it relies on OnConflict DoNothing; the only difference is the
+	// boolean return.
+	ReserveSentSlot(ctx context.Context, userID int64, kind domain.MailReminderKind, windowKey, toEmail string) (bool, error)
 	// CountSentInWindow counts mail_sent rows for (user, kind) whose window_key
 	// starts with the given prefix. Lets soft notifications (e.g. the
 	// blocked-client warning) cap at N per day by passing the date as prefix.

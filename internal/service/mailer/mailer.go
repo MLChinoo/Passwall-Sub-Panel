@@ -560,22 +560,24 @@ func (s *Service) SendAccountEnabledToUser(ctx context.Context, userID int64, en
 }
 
 // SendBlockedClientWarning emails the user that they used a blocked /
-// unsupported client, when the admin enabled SubBlockNotifyUser. Capped at
-// SubBlockNotifyMaxPerDay per user per day (windowKey = "YYYY-MM-DD#seq") so a
-// polling client can't trigger a mail storm. Best-effort: NOT enqueued for
-// retry — it's a soft notice and the client re-fetches on its own schedule, so
-// a retry queue would just amplify the storm we're trying to avoid.
-func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, clientName string) error {
+// unsupported client. The caller (sub handler) has already gated on
+// SubBlockNotifyUser and passes the loaded UI settings in, so this never
+// re-reads them. Capped at SubBlockNotifyMaxPerDay per user per day.
+//
+// Cap is enforced insert-first to stay race-safe: concurrent blocked fetches
+// would otherwise both read the same count, both send, then collide on the
+// same window_key (OnConflict DoNothing drops the second) — over-sending while
+// under-recording. Instead we reserve the next "YYYY-MM-DD#seq" slot via an
+// atomic insert and only send if we won it; a lost race simply doesn't send
+// (we prefer under- to over-send for a soft notice). Best-effort: NOT enqueued
+// for retry — the client re-fetches on its own schedule.
+func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, clientName string, uiCfg ports.UISettings) error {
+	if !uiCfg.SubBlockNotifyUser {
+		return nil
+	}
 	settings, err := s.LoadSettings(ctx)
 	if err != nil || !settings.Enabled {
 		return err
-	}
-	uiCfg, err := s.settings.Load(ctx, ports.UISettings{})
-	if err != nil {
-		return err
-	}
-	if !uiCfg.SubBlockNotifyUser {
-		return nil
 	}
 	maxPerDay := uiCfg.SubBlockNotifyMaxPerDay
 	if maxPerDay <= 0 {
@@ -593,6 +595,8 @@ func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, 
 	if sent >= int64(maxPerDay) {
 		return nil // daily cap already reached
 	}
+	// Resolve the template before reserving a slot so a missing/disabled
+	// template doesn't consume the day's quota.
 	var tpl *domain.MailTemplate
 	templates, err := s.ListTemplates(ctx)
 	if err != nil {
@@ -607,6 +611,16 @@ func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, 
 	if tpl == nil {
 		return nil
 	}
+	// Reserve this slot atomically. If we lost the race, another goroutine
+	// already claimed it and will (or did) send — we stay silent.
+	windowKey := today + "#" + strconv.FormatInt(sent, 10)
+	won, err := s.repo.ReserveSentSlot(ctx, u.ID, domain.MailReminderBlockedClient, windowKey, to)
+	if err != nil {
+		return err
+	}
+	if !won {
+		return nil
+	}
 	data := s.templateData(ctx, settings, uiCfg, u)
 	data["ClientName"] = clientName
 	subject, err := renderTemplate("blocked_client_subject", tpl.Subject, data)
@@ -617,10 +631,7 @@ func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, 
 	if err != nil {
 		return err
 	}
-	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
-		return err
-	}
-	return s.repo.RecordSent(ctx, u.ID, domain.MailReminderBlockedClient, today+"#"+strconv.FormatInt(sent, 10), to)
+	return sendSMTP(ctx, settings, to, subject, body)
 }
 
 type AnnouncementInput struct {

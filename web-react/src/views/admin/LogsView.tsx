@@ -80,6 +80,10 @@ export default function LogsView() {
   const [subPage, setSubPage] = useState(1)
   const [subLoading, setSubLoading] = useState(false)
   const [subSearch, setSubSearch] = useState('')
+  // appliedSearch is what loads/pagination key off; subSearch is just the live
+  // input. Splitting them means paging doesn't pick up a half-typed term, and
+  // submitting drives a single effect-triggered reload (no stale-page flash).
+  const [subAppliedSearch, setSubAppliedSearch] = useState('')
   const [subDetailOpen, setSubDetailOpen] = useState(false)
   const [subDetail, setSubDetail] = useState<SubLog | null>(null)
 
@@ -113,6 +117,7 @@ export default function LogsView() {
   const [auditPage, setAuditPage] = useState(1)
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditSearch, setAuditSearch] = useState('')
+  const [auditAppliedSearch, setAuditAppliedSearch] = useState('')
   const [auditDetailOpen, setAuditDetailOpen] = useState(false)
   const [auditDetail, setAuditDetail] = useState<AuditEntry | null>(null)
 
@@ -125,6 +130,7 @@ export default function LogsView() {
   const [emailPage, setEmailPage] = useState(1)
   const [emailLoading, setEmailLoading] = useState(false)
   const [emailSearch, setEmailSearch] = useState('')
+  const [emailAppliedSearch, setEmailAppliedSearch] = useState('')
   const [emailDetailOpen, setEmailDetailOpen] = useState(false)
   const [emailDetail, setEmailDetail] = useState<EmailLog | null>(null)
   const [emailRetentionDays, setEmailRetentionDays] = useState<number | null>(null)
@@ -155,12 +161,12 @@ export default function LogsView() {
     else if (tab === 'audit') void loadAudit()
     else void loadEmail()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, subPage, auditPage, emailPage])
+  }, [tab, subPage, auditPage, emailPage, subAppliedSearch, auditAppliedSearch, emailAppliedSearch])
 
   async function loadSub() {
     setSubLoading(true)
     try {
-      const res = await getSubLogs({ page: subPage, page_size: PAGE_SIZE, search: subSearch || undefined })
+      const res = await getSubLogs({ page: subPage, page_size: PAGE_SIZE, search: subAppliedSearch || undefined })
       setSubItems(res.items); setSubTotal(res.total)
     } finally { setSubLoading(false) }
   }
@@ -170,7 +176,7 @@ export default function LogsView() {
     try {
       const res = await listAudit({
         page: auditPage, page_size: PAGE_SIZE,
-        search: auditSearch || undefined,
+        search: auditAppliedSearch || undefined,
       })
       setAuditItems(res.items); setAuditTotal(res.total)
     } finally { setAuditLoading(false) }
@@ -208,14 +214,16 @@ export default function LogsView() {
     await loadAudit()
   }
 
-  function onAuditFilter(e: FormEvent) { e.preventDefault(); setAuditPage(1); void loadAudit() }
-  function onSubFilter(e: FormEvent) { e.preventDefault(); setSubPage(1); void loadSub() }
-  function onEmailFilter(e: FormEvent) { e.preventDefault(); setEmailPage(1); void loadEmail() }
+  // Submitting a filter resets to page 1 and applies the typed term; the
+  // single effect above (keyed on page + appliedSearch) does the one reload.
+  function onAuditFilter(e: FormEvent) { e.preventDefault(); setAuditPage(1); setAuditAppliedSearch(auditSearch) }
+  function onSubFilter(e: FormEvent) { e.preventDefault(); setSubPage(1); setSubAppliedSearch(subSearch) }
+  function onEmailFilter(e: FormEvent) { e.preventDefault(); setEmailPage(1); setEmailAppliedSearch(emailSearch) }
 
   async function loadEmail() {
     setEmailLoading(true)
     try {
-      const res = await getEmailLogs({ page: emailPage, page_size: PAGE_SIZE, search: emailSearch || undefined })
+      const res = await getEmailLogs({ page: emailPage, page_size: PAGE_SIZE, search: emailAppliedSearch || undefined })
       setEmailItems(res.items); setEmailTotal(res.total)
     } finally { setEmailLoading(false) }
   }

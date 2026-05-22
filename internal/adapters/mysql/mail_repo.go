@@ -88,6 +88,23 @@ func (r *mailRepo) RecordSent(ctx context.Context, userID int64, kind domain.Mai
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
 }
 
+func (r *mailRepo) ReserveSentSlot(ctx context.Context, userID int64, kind domain.MailReminderKind, windowKey, toEmail string) (bool, error) {
+	row := &mailSentRow{
+		UserID:    userID,
+		Kind:      string(kind),
+		WindowKey: windowKey,
+		ToEmail:   toEmail,
+		SentAt:    time.Now(),
+	}
+	// OnConflict DoNothing: RowsAffected is 1 when we inserted, 0 when the
+	// (user_id, kind, window_key) row already existed (uk_mail_once).
+	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
 func (r *mailRepo) CountSentInWindow(ctx context.Context, userID int64, kind domain.MailReminderKind, windowKeyPrefix string) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&mailSentRow{}).

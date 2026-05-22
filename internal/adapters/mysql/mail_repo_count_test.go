@@ -66,3 +66,63 @@ func TestMailRepoCountSentInWindow(t *testing.T) {
 		})
 	}
 }
+
+// TestMailRepoReserveSentSlot covers the race-safe cap primitive: the first
+// reservation of a (user, kind, window_key) wins (true), a second on the same
+// key loses (false) — so concurrent blocked-client warnings can't both clear
+// the same per-day slot. A different key, user, or kind reserves independently.
+func TestMailRepoReserveSentSlot(t *testing.T) {
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, _ := db.DB(); sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	repo := &mailRepo{db: db}
+	ctx := context.Background()
+	k := domain.MailReminderBlockedClient
+
+	// First reservation of slot 0 wins.
+	won, err := repo.ReserveSentSlot(ctx, 1, k, "2026-05-21#0", "u@example.com")
+	if err != nil {
+		t.Fatalf("ReserveSentSlot first: %v", err)
+	}
+	if !won {
+		t.Fatal("first reservation should win the slot")
+	}
+
+	// Second reservation of the SAME slot loses (the race-safety guarantee).
+	won, err = repo.ReserveSentSlot(ctx, 1, k, "2026-05-21#0", "u@example.com")
+	if err != nil {
+		t.Fatalf("ReserveSentSlot dup: %v", err)
+	}
+	if won {
+		t.Fatal("second reservation of the same slot must lose")
+	}
+
+	// A different slot / user / kind each reserve independently.
+	for _, tc := range []struct {
+		name      string
+		uid       int64
+		kind      domain.MailReminderKind
+		windowKey string
+	}{
+		{"next slot", 1, k, "2026-05-21#1"},
+		{"other user", 2, k, "2026-05-21#0"},
+		{"other kind", 1, domain.MailReminderExpired, "2026-05-21#0"},
+	} {
+		won, err := repo.ReserveSentSlot(ctx, tc.uid, tc.kind, tc.windowKey, "u@example.com")
+		if err != nil {
+			t.Fatalf("ReserveSentSlot %s: %v", tc.name, err)
+		}
+		if !won {
+			t.Fatalf("%s should win an independent slot", tc.name)
+		}
+	}
+}

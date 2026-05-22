@@ -57,7 +57,8 @@ type userRow struct {
 	Enabled             bool   `gorm:"not null"`
 	AutoDisabledReason  string `gorm:"size:32"`
 	DisableDetail       string `gorm:"type:text"`
-	BlockViolationCount int    `gorm:"default:0"`
+	BlockViolationCount  int `gorm:"default:0"`
+	LastBlockViolationAt *time.Time
 	EmergencyUsedCount     int
 	EmergencyUntil         *time.Time
 	EmergencyBaselineBytes int64 `gorm:"default:0"`
@@ -102,6 +103,7 @@ func (r *userRow) toDomain() *domain.User {
 		AutoDisabledReason:  domain.AutoDisabledReason(r.AutoDisabledReason),
 		DisableDetail:       r.DisableDetail,
 		BlockViolationCount:    r.BlockViolationCount,
+		LastBlockViolationAt:   r.LastBlockViolationAt,
 		EmergencyUsedCount:     r.EmergencyUsedCount,
 		EmergencyUntil:         r.EmergencyUntil,
 		EmergencyBaselineBytes: r.EmergencyBaselineBytes,
@@ -140,6 +142,7 @@ func userFromDomain(u *domain.User) *userRow {
 		AutoDisabledReason:  string(u.AutoDisabledReason),
 		DisableDetail:       u.DisableDetail,
 		BlockViolationCount:    u.BlockViolationCount,
+		LastBlockViolationAt:   u.LastBlockViolationAt,
 		EmergencyUsedCount:     u.EmergencyUsedCount,
 		EmergencyUntil:         u.EmergencyUntil,
 		EmergencyBaselineBytes: u.EmergencyBaselineBytes,

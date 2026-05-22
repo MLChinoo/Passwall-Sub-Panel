@@ -19,6 +19,13 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 )
 
+// blockViolationDedupWindow caps how often a single user's blocked-client
+// violation count can advance. Proxy clients (Clash, etc.) poll the
+// subscription on a timer; without this window, passive polling with a
+// blocked UA alone would climb to the auto-disable threshold and lock out a
+// user who never touched anything. One fetch burst ≈ one violation.
+const blockViolationDedupWindow = 10 * time.Minute
+
 // SubHandler serves the public subscription endpoint.
 type SubHandler struct {
 	user     *user.Service
@@ -99,12 +106,21 @@ func (h *SubHandler) Get(c *gin.Context) {
 			AccessedAt: time.Now(),
 		})
 
-		// Increment violation count.
-		u.BlockViolationCount++
-		u.DisableDetail = fmt.Sprintf("last blocked client: %s", detected.ClientName)
+		// Dedup: only advance the count once per window so a polling client
+		// can't auto-disable a passive user. When skipped we also skip the
+		// DB write below — the whole point is to cut churn on the hot path.
+		countViolation := u.LastBlockViolationAt == nil ||
+			now.Sub(*u.LastBlockViolationAt) >= blockViolationDedupWindow
 
-		// Check if auto-disable is enabled and threshold reached.
-		if settings.SubBlockAutoDisable && u.BlockViolationCount >= settings.SubBlockAutoDisableCount {
+		if countViolation {
+			u.BlockViolationCount++
+			u.LastBlockViolationAt = &now
+			u.DisableDetail = fmt.Sprintf("last blocked client: %s", detected.ClientName)
+		}
+
+		// Check if auto-disable is enabled and threshold reached. Only a counted
+		// violation can newly cross the threshold.
+		if countViolation && settings.SubBlockAutoDisable && u.BlockViolationCount >= settings.SubBlockAutoDisableCount {
 			detail := fmt.Sprintf("auto-disabled after %d violations, last client: %s", u.BlockViolationCount, detected.ClientName)
 			u.DisableDetail = detail
 
@@ -133,20 +149,24 @@ func (h *SubHandler) Get(c *gin.Context) {
 			return
 		}
 
-		// Save updated violation count.
-		if err := h.users.Update(c.Request.Context(), u); err != nil {
-			log.Warn("failed to update violation count", "user_id", u.ID, "err", err)
+		// Save updated violation count (only when we actually advanced it).
+		if countViolation {
+			if err := h.users.Update(c.Request.Context(), u); err != nil {
+				log.Warn("failed to update violation count", "user_id", u.ID, "err", err)
+			}
 		}
 
 		// Soft notice (async): tell the user they used a blocked client, before
-		// they hit the auto-disable threshold. SendBlockedClientWarning no-ops
-		// when SubBlockNotifyUser is off and is per-day capped inside the
-		// mailer, so calling it unconditionally here is safe.
-		if h.mailer != nil && h.async != nil {
+		// they hit the auto-disable threshold. Gate on the already-loaded
+		// setting here so we don't spawn a goroutine (and its DB reads) when
+		// the feature is off — the per-day cap inside the mailer handles the
+		// rest. Pass the loaded UI settings through to avoid re-reading them.
+		if settings.SubBlockNotifyUser && h.mailer != nil && h.async != nil {
 			userCopy := u
 			clientName := detected.ClientName
+			uiCfg := settings
 			h.async.Go("sub.blocked-client-warning", func(ctx context.Context) {
-				if err := h.mailer.SendBlockedClientWarning(ctx, userCopy, clientName); err != nil {
+				if err := h.mailer.SendBlockedClientWarning(ctx, userCopy, clientName, uiCfg); err != nil {
 					log.Warn("failed to send blocked-client warning", "user_id", userCopy.ID, "err", err)
 				}
 			})

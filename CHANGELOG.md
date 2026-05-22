@@ -4,6 +4,32 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.3.0-beta.4 — 2026-05-21
+
+修复 + 加固一批,主要来自一次全量内部审查。
+
+### Fixed
+- **邮件模板 `blocked_client` 标签页点了没反应**:模板 tab 的 URL 白名单
+  (`useTabParam` 的 `allowed`)漏列 `blocked_client`,点击后回退成默认 tab,永远
+  切不过去。补上即可。
+- **封禁计数被轮询客户端刷高导致误停用**:代理客户端按定时器轮询订阅,旧逻辑每次
+  被禁拉取都 `BlockViolationCount++`,被动轮询就能堆到自动停用阈值、锁死一个从没
+  动过手的用户。新增 `LastBlockViolationAt`,每用户每 10 分钟最多记一次违规
+  (一次拉取突发 ≈ 一次违规);窗口内的被禁拉取不再写库,顺带减少热路径 DB 写。
+
+### Changed
+- **被禁客户端邮件提醒热路径优化**:`SendBlockedClientWarning` 改为由调用方
+  (sub handler)用**已加载的** `SubBlockNotifyUser` 提前 gate——功能默认关时连
+  goroutine 都不再 spawn,省掉原先「先查 mail_settings + 全 KV 表扫一遍才发现没开」
+  的两次无谓 DB 读;UI 设置直接透传进去,函数内不再二次加载。
+- **被禁邮件每日上限改为 insert-first 防并发超发**:并发被禁拉取原会都读到同一
+  已发计数 → 都发 → 在同一 windowKey 上 `OnConflict DoNothing` 吞掉第二条(超发且
+  计数不增)。新增 `MailRepo.ReserveSentSlot`:发信前先原子占位,只有抢到名额者才
+  发(抢不到则静默,宁可少发不可多发),有单测覆盖。
+- **日志三个标签页搜索翻页修正**:提交搜索时若不在第 1 页,旧逻辑会用旧页号先多发
+  一次请求并闪一下错页;且翻页用的是输入框里**未提交**的词。改为 `appliedSearch`
+  与输入分离——提交只重置页码 + 应用关键词,由单个 effect 统一驱动一次重载。
+
 ## v3.3.0-beta.3 — 2026-05-21
 
 ### Added

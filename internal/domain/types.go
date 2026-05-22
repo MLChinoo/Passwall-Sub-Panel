@@ -97,7 +97,12 @@ type User struct {
 	DisableDetail string
 	// BlockViolationCount tracks how many times the user attempted to use a blocked subscription client.
 	BlockViolationCount int
-	EmergencyUsedCount  int
+	// LastBlockViolationAt is when BlockViolationCount was last incremented.
+	// A polling client re-fetches every few minutes; without this, passive
+	// polling alone would rack up violations and auto-disable a user who never
+	// acted. The sub handler counts at most one violation per dedup window.
+	LastBlockViolationAt *time.Time
+	EmergencyUsedCount   int
 	EmergencyUntil      *time.Time
 	// EmergencyBaselineBytes snapshots LifetimeTotalBytes at the moment an
 	// emergency-access window was granted. The traffic poll uses it to compute

@@ -650,7 +650,7 @@ function MailTab() {
   const [testTo, setTestTo] = useState('')
   const [testBusy, setTestBusy] = useState(false)
   const [activeTpl, setActiveTpl] = useTabParam<MailReminderKind>('tpl', 'expire_before',
-    ['expire_before', 'expired', 'traffic_low', 'traffic_exhausted', 'account_disabled', 'account_enabled', 'announcement'])
+    ['expire_before', 'expired', 'traffic_low', 'traffic_exhausted', 'account_disabled', 'account_enabled', 'announcement', 'blocked_client'])
   const [tplBusy, setTplBusy] = useState(false)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [preview, setPreview] = useState<{ subject: string; body: string; kind: MailReminderKind } | null>(null)
