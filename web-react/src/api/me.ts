@@ -18,6 +18,13 @@ export interface SubImportClient {
 export interface QuickLink {
   label: string
   url: string
+  /** Icon source: "http(s)://…" → image, "mui:Name" → built-in icon,
+   *  anything else → literal text (emoji). Empty = no icon. */
+  icon: string
+  description: string
+  /** Optional section name for grouping on the portal. */
+  group: string
+  highlight: boolean
   new_window: boolean
   enabled: boolean
   sort: number

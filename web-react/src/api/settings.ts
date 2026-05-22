@@ -33,6 +33,16 @@ export interface SubClientFamily {
 export interface QuickLink {
   label: string
   url: string
+  /** Icon source, auto-detected by the portal: "http(s)://…" → image,
+   *  "mui:Name" → built-in icon, anything else → literal text (emoji). */
+  icon: string
+  /** Optional one/two-line subtitle under the label. */
+  description: string
+  /** Optional section name; links sharing a group render under a header.
+   *  When no link has a group the portal shows a flat grid. */
+  group: string
+  /** Visually emphasize the card (featured link). */
+  highlight: boolean
   new_window: boolean
   enabled: boolean
   sort: number

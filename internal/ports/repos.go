@@ -533,13 +533,26 @@ type SubClientApp struct {
 	RecommendedFor []string `yaml:"recommended_for" json:"recommended_for"`
 }
 
-// QuickLink defines a user-facing shortcut button on the self-service page.
+// QuickLink defines a user-facing shortcut on the self-service page.
 type QuickLink struct {
-	Label     string `yaml:"label" json:"label"`
-	URL       string `yaml:"url" json:"url"`
-	NewWindow bool   `yaml:"new_window" json:"new_window"`
-	Enabled   bool   `yaml:"enabled" json:"enabled"`
-	Sort      int    `yaml:"sort" json:"sort"`
+	Label string `yaml:"label" json:"label"`
+	URL   string `yaml:"url" json:"url"`
+	// Icon is rendered by the portal with auto-detected source: an
+	// "http(s)://" value is shown as an <img>; a "mui:Name" value picks a
+	// built-in icon from the curated allowlist; anything else is treated as
+	// literal text (emoji). Empty = no icon.
+	Icon string `yaml:"icon" json:"icon"`
+	// Description is an optional one/two-line subtitle under the label.
+	Description string `yaml:"description" json:"description"`
+	// Group is an optional section name. Links sharing a group render under a
+	// section header; links with no group render ungrouped. When NO link has a
+	// group the portal shows a single flat grid (no headers).
+	Group string `yaml:"group" json:"group"`
+	// Highlight visually emphasizes the card (e.g. featured tutorial).
+	Highlight bool `yaml:"highlight" json:"highlight"`
+	NewWindow bool `yaml:"new_window" json:"new_window"`
+	Enabled   bool `yaml:"enabled" json:"enabled"`
+	Sort      int  `yaml:"sort" json:"sort"`
 }
 
 // GlobalAnnouncement is a single pinned notice shown to all users.

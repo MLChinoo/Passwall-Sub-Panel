@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.4.0-beta.5 — 2026-05-22
+
+### Added
+- **快捷链接增强自定义**:每条快捷链接新增 **图标 / 描述 / 分组 / 突出** 四项。
+  - **图标**单字段自动判别来源:`http(s)://…` 当图片渲染、`mui:Name` 用内置精选图标库
+    (~22 个快捷链接常用图标,后台下拉选)、其余当 emoji/文本。后台编辑器带实时预览。
+  - **描述**:标签下可选副标题。
+  - **分组**:同名分组在门户里归到一个分区(带分区标题);**无分组则平铺**,不强制。
+  - **突出**:高亮某条(填充色卡片),适合重点推教程 / 续费。
+  - 门户的快捷链接从「一排朴素按钮」变成 图标 + 标签 + 描述的卡片网格,按分组分区。
+  - 全是 `QuickLink` 的新增字段(KV JSON,AutoMigrate 无需迁移),旧数据读出即带空值兼容。
+
 ## v3.4.0-beta.4 — 2026-05-22
 
 ### Changed

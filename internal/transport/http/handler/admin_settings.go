@@ -317,6 +317,9 @@ func normalizeQuickLinks(links []ports.QuickLink) []ports.QuickLink {
 	for _, link := range links {
 		link.Label = strings.TrimSpace(link.Label)
 		link.URL = strings.TrimSpace(link.URL)
+		link.Icon = strings.TrimSpace(link.Icon)
+		link.Description = strings.TrimSpace(link.Description)
+		link.Group = strings.TrimSpace(link.Group)
 		if link.Label == "" || link.URL == "" {
 			continue
 		}

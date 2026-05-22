@@ -71,6 +71,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import type { LoginMode } from '@/api/types'
 import { pushSnack } from '@/components/SnackbarHost'
 import { confirm } from '@/components/ConfirmHost'
+import { QuickLinkIcon, QUICK_LINK_ICONS } from '@/components/QuickLinkIcon'
 import {
   type FieldErrors,
   firstError,
@@ -1060,7 +1061,7 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
   const remove = (i: number) => onChange(links.filter((_, idx) => idx !== i))
   const add = () => onChange([
     ...links,
-    { label: '', url: '', new_window: true, enabled: true, sort: (links.at(-1)?.sort ?? 0) + 10 },
+    { label: '', url: '', icon: '', description: '', group: '', highlight: false, new_window: true, enabled: true, sort: (links.at(-1)?.sort ?? 0) + 10 },
   ])
   // Drag-to-reorder. Unlike the nodes table, quick links are part of the
   // settings doc and only persist when admin hits Save — so reordering is
@@ -1149,6 +1150,32 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
                     }} />
                 )
               })()}
+              <TextField size="small" label={t('settings.portal.link_table.icon', { defaultValue: '图标' })}
+                value={l.icon} onChange={e => update(i, { icon: e.target.value })}
+                placeholder="😀 / https://… / mui:"
+                InputProps={l.icon ? { startAdornment: (
+                  <Box sx={{ display: 'flex', alignItems: 'center', mr: 0.75 }}>
+                    <QuickLinkIcon icon={l.icon} size={18} />
+                  </Box>
+                ) } : undefined}
+                sx={{ flex: '1 1 150px' }} />
+              <TextField size="small" select label={t('settings.portal.link_table.icon_pick', { defaultValue: '内置图标' })}
+                value={(l.icon || '').startsWith('mui:') ? l.icon.slice(4) : ''}
+                onChange={e => update(i, { icon: e.target.value ? `mui:${e.target.value}` : '' })}
+                sx={{ flex: '0 1 130px' }}>
+                <MenuItem value="">—</MenuItem>
+                {QUICK_LINK_ICONS.map(ic => (
+                  <MenuItem key={ic.key} value={ic.key}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><ic.Icon fontSize="small" />{ic.label}</Box>
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField size="small" label={t('settings.portal.link_table.group', { defaultValue: '分组' })}
+                value={l.group} onChange={e => update(i, { group: e.target.value })}
+                sx={{ flex: '1 1 110px' }} />
+              <TextField size="small" label={t('settings.portal.link_table.description', { defaultValue: '描述' })}
+                value={l.description} onChange={e => update(i, { description: e.target.value })}
+                sx={{ flex: '2 1 200px' }} />
               <FormControlLabel
                 label={t('settings.portal.link_table.new_window')}
                 control={<Switch size="small" checked={l.new_window}
@@ -1159,6 +1186,12 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
                 label={t('settings.portal.link_table.enabled')}
                 control={<Switch size="small" checked={l.enabled}
                   onChange={(_, c) => update(i, { enabled: c })} />}
+                sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
+              />
+              <FormControlLabel
+                label={t('settings.portal.link_table.highlight', { defaultValue: '突出' })}
+                control={<Switch size="small" checked={l.highlight}
+                  onChange={(_, c) => update(i, { highlight: c })} />}
                 sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }}
               />
               <IconButton size="small" onClick={() => remove(i)} sx={{ color: md.onSurfaceVariant }}>

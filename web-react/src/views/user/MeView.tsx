@@ -55,8 +55,10 @@ import {
   useEmergencyAccess,
   type MeProfile,
   type MyNodeStatus,
+  type QuickLink,
 } from '@/api/me'
 import { useTabParam } from '@/hooks/useTabParam'
+import { QuickLinkIcon } from '@/components/QuickLinkIcon'
 import type { M3Tokens } from '@/theme'
 import { useSiteStore } from '@/stores/site'
 import {
@@ -174,6 +176,55 @@ function ServerStatusPanel({ md }: { md: M3Tokens }) {
         </Typography>
       )}
     </Card>
+  )
+}
+
+// QuickLinkGrid renders a responsive row of quick-link cards (icon + label +
+// optional description, with an optional highlighted style). Shared by the flat
+// and grouped layouts of the overview's Quick links card.
+function QuickLinkGrid({ links, md, onOpen }: {
+  links: QuickLink[]
+  md: M3Tokens
+  onOpen: (l: { url: string; new_window: boolean }) => void
+}) {
+  return (
+    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 1.25 }}>
+      {links.map((l, i) => {
+        const hl = l.highlight
+        return (
+          <Box key={`${l.url}-${i}`} onClick={() => onOpen(l)}
+            sx={{
+              display: 'flex', gap: 1.25, alignItems: 'flex-start', cursor: 'pointer',
+              p: 1.5, borderRadius: 2,
+              border: `1px solid ${hl ? 'transparent' : md.outlineVariant}`,
+              bgcolor: hl ? md.primaryContainer : md.surface,
+              color: hl ? md.onPrimaryContainer : 'inherit',
+              transition: 'border-color .15s, background .15s',
+              '&:hover': { borderColor: md.primary },
+            }}>
+            {l.icon && (
+              <Box sx={{
+                flexShrink: 0, width: 32, height: 32, display: 'grid', placeItems: 'center',
+                borderRadius: 1.5,
+                bgcolor: hl ? 'rgba(255,255,255,0.16)' : md.surfaceContainerHighest,
+              }}>
+                <QuickLinkIcon icon={l.icon} size={20} />
+              </Box>
+            )}
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography sx={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {l.label}
+              </Typography>
+              {l.description && (
+                <Typography variant="caption" sx={{ display: 'block', mt: 0.25, opacity: hl ? 0.85 : 1, color: hl ? 'inherit' : md.onSurfaceVariant }}>
+                  {l.description}
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        )
+      })}
+    </Box>
   )
 }
 
@@ -817,14 +868,31 @@ export default function MeView() {
       {quickLinks.length > 0 && (
         <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
           <Typography sx={{ fontWeight: 500, mb: 1.5 }}>{t('links.title')}</Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {quickLinks.map(l => (
-              <Button key={l.url} size="small" variant="outlined"
-                onClick={() => openQuickLink(l)}>
-                {l.label}
-              </Button>
-            ))}
-          </Box>
+          {(() => {
+            // Group by `group`; preserve first-seen order, ungrouped ('') first.
+            // When no link has a group, render a single flat grid (no headers).
+            const hasGroups = quickLinks.some(l => (l.group || '').trim() !== '')
+            if (!hasGroups) return <QuickLinkGrid links={quickLinks} md={md} onOpen={openQuickLink} />
+            const order: string[] = []
+            const byGroup = new Map<string, QuickLink[]>()
+            for (const l of quickLinks) {
+              const g = (l.group || '').trim()
+              if (!byGroup.has(g)) { byGroup.set(g, []); order.push(g) }
+              byGroup.get(g)!.push(l)
+            }
+            order.sort((a, b) => (a === '' ? -1 : b === '' ? 1 : 0)) // ungrouped first
+            return order.map(g => (
+              <Box key={g || '__ungrouped'} sx={{ mb: 2, '&:last-of-type': { mb: 0 } }}>
+                {g && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, color: md.onSurfaceVariant }}>
+                    <Typography variant="caption" sx={{ fontWeight: 600, letterSpacing: '.4px', textTransform: 'uppercase' }}>{g}</Typography>
+                    <Box sx={{ flex: 1, height: '1px', bgcolor: md.outlineVariant }} />
+                  </Box>
+                )}
+                <QuickLinkGrid links={byGroup.get(g)!} md={md} onOpen={openQuickLink} />
+              </Box>
+            ))
+          })()}
         </Card>
       )}
       </Box>
