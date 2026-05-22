@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.4.0-beta.8 — 2026-05-22
+
+### Changed
+- **改 Group filter 后保存:立即执行 + 后台**(在 beta.7 基础上调整为更符合预期的做法):
+  Group 记录本身**同步存库、立即返回**;成员的 3X-UI 重同步改为**后台 goroutine 里立即
+  执行**(每个成员先尝试同步、失败才入异步队列 `ResyncMembershipOrEnqueue`),不再阻塞
+  保存请求、也不必干等 sync-task 周期。reconcile 兜底进程中断的残余。
+- **节点编辑框移除「Flow」字段**:Flow 是 VLESS inbound 级设置,应在创建 / 导入 inbound
+  时配,不属于节点元信息;之前所有节点(含 SS/VMess/Trojan)的 Edit 都显示它(旧节点
+  `protocol` 为空触发了「未知则显示」的兜底)。现从节点 meta 编辑里去掉——既有值照常
+  round-trip 保留,只是不在此处编辑。VLESS 的 Flow 仍在 inbound 配置 / 导入表单里。
+
 ## v3.4.0-beta.7 — 2026-05-22
 
 ### Fixed

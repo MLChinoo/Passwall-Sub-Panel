@@ -3079,21 +3079,10 @@ export default function NodesView() {
               onChange={e => setEditForm({ ...editForm, server_address: e.target.value })}
               error={!!editMetaErr.server_address}
               helperText={editMetaErr.server_address ? t(`admin:${editMetaErr.server_address}`) : ''} />
-            {/* Flow is VLESS-only. Hide it for known non-VLESS protocols;
-                show it when the protocol is VLESS or unknown (rows imported
-                before the protocol column existed — they self-heal on the
-                next inbound edit / re-import). */}
-            {(!editing?.protocol || editing.protocol === 'vless') && (
-              <Box>
-                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.25 }}>
-                  {t('admin:nodes.field.flow')}
-                </Typography>
-                <Select size="small" fullWidth value={editForm.flow} displayEmpty
-                  onChange={e => setEditForm({ ...editForm, flow: e.target.value })}>
-                  {VLESS_FLOWS.map(f => <MenuItem key={f} value={f}>{f || '—'}</MenuItem>)}
-                </Select>
-              </Box>
-            )}
+            {/* Flow is a VLESS inbound-level setting, configured where the
+                inbound is created / imported — not a node-meta field. It's
+                deliberately NOT editable here; editForm.flow round-trips the
+                node's existing value unchanged on save. */}
             <TextField required fullWidth label={t('admin:nodes.field.region')}
               value={editForm.region}
               onChange={e => setEditForm({ ...editForm, region: e.target.value })}
