@@ -26,6 +26,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/inboundcfg"
 )
 
 // InboundCleaner is the narrow subset of sync.Service used by node deletion.
@@ -248,10 +249,15 @@ func (s *Service) ImportExisting(ctx context.Context, n *domain.Node) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.GetInbound(ctx, n.InboundID); err != nil {
+	inb, err := c.GetInbound(ctx, n.InboundID)
+	if err != nil {
 		return fmt.Errorf("inbound %d not found on panel %d: %w", n.InboundID, n.PanelID, err)
 	}
 	n.Enabled = true
+	// Import = take ownership: capture the live inbound's config into the local
+	// snapshot so render reads it without a live fetch and reconcile can keep
+	// 3X-UI aligned to PSP. clients[] is stripped (ownership-managed).
+	inboundcfg.Capture(n, inb)
 	if err := s.nodes.Create(ctx, n); err != nil {
 		return err
 	}
@@ -281,6 +287,9 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 	}
 	n.InboundID = inboundID
 	n.Enabled = true
+	// v4 write-through: persist the just-pushed config into the local snapshot
+	// so the node renders without a live fetch from its first subscription.
+	inboundcfg.ApplySpec(n, spec)
 	if err := s.nodes.Create(ctx, n); err != nil {
 		_ = c.DelInbound(context.Background(), inboundID)
 		return err
@@ -327,15 +336,14 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 	if err != nil {
 		return err
 	}
-	// Keep the cached protocol in sync with the inbound being written. This
-	// also opportunistically backfills rows imported before the protocol
-	// column existed, so the UI's protocol-specific gating self-heals the
-	// next time an admin edits the inbound.
-	if p := strings.ToLower(spec.Protocol); p != "" && p != n.Protocol {
-		n.Protocol = p
-		if err := s.nodes.Update(ctx, n); err != nil {
-			log.Warn("persist node protocol on inbound update", "node_id", n.ID, "err", err)
-		}
+	// v4 write-through (local-first): PSP owns the inbound config, so persist
+	// the new config into the local snapshot before pushing. Render reflects it
+	// immediately and survives a 3X-UI outage; the push (or its retry task)
+	// then aligns 3X-UI. This also keeps the cached protocol current and
+	// backfills pre-v4 rows.
+	inboundcfg.ApplySpec(n, spec)
+	if err := s.nodes.Update(ctx, n); err != nil {
+		return err
 	}
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
@@ -532,6 +540,7 @@ func (s *Service) runNodeCreateTask(ctx context.Context, task *domain.SyncTask) 
 	}
 	n.InboundID = inboundID
 	n.Enabled = true
+	inboundcfg.ApplySpec(&n, p.Spec)
 	if err := s.nodes.Create(ctx, &n); err != nil {
 		_ = c.DelInbound(context.Background(), inboundID)
 		return err

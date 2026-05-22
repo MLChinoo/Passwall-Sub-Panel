@@ -243,13 +243,23 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
-	// Batch-prefetch inbounds: bucket nodes by panel, do one
-	// ListInbounds per panel instead of one GetInbound per node. A
-	// 10-node user previously triggered 10 separate 3X-UI HTTP round
-	// trips on every subscription refresh — now it's bounded by the
-	// number of distinct panels (typically 1-3 for a Kazuha-style
-	// deployment).
-	inboundByNode := s.prefetchInboundsForRender(ctx, items)
+	// v4: nodes with a captured config snapshot render purely from the local
+	// DB (zero 3X-UI calls), so a subscription still renders while 3X-UI is
+	// unreachable. Only nodes never captured (ConfigSyncedAt==nil — freshly
+	// imported, or a pre-v4 row before the first health/traffic poll) fall
+	// back to a live ListInbounds; that transient cost disappears once a poll
+	// backfills them. When every node has local config the pool is never
+	// touched.
+	var fallbackItems []renderItem
+	for _, it := range items {
+		if !it.isSeparator && !nodeHasLocalConfig(it.node) {
+			fallbackItems = append(fallbackItems, it)
+		}
+	}
+	var fetched map[int64]*ports.Inbound
+	if len(fallbackItems) > 0 {
+		fetched = s.prefetchInboundsForRender(ctx, fallbackItems)
+	}
 
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
@@ -257,9 +267,14 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 			out = append(out, emitSeparator(it.name))
 			continue
 		}
-		inb := inboundByNode[it.node.ID]
+		var inb *ports.Inbound
+		if nodeHasLocalConfig(it.node) {
+			inb = inboundFromNode(it.node)
+		} else {
+			inb = fetched[it.node.ID]
+		}
 		if inb == nil {
-			log.Warn("render: skip node, inbound not found in panel listing",
+			log.Warn("render: skip node, inbound config unavailable (no local snapshot and live fetch failed)",
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID)
 			continue
 		}

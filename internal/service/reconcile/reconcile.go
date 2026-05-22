@@ -24,6 +24,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xrayspec"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/inboundcfg"
 )
 
 type Level int
@@ -554,8 +555,11 @@ func (s *Service) checkNodes(ctx context.Context, report *Report) {
 	if err != nil {
 		return
 	}
-	inboundsPerPanel := map[int64]map[int]bool{}
+	inboundsPerPanel := map[int64]map[int]ports.Inbound{}
 	for _, n := range nodes {
+		if n.IsSeparator() {
+			continue
+		}
 		known, ok := inboundsPerPanel[n.PanelID]
 		if !ok {
 			c, err := s.pool.Get(n.PanelID)
@@ -566,26 +570,81 @@ func (s *Service) checkNodes(ctx context.Context, report *Report) {
 			if err != nil {
 				continue
 			}
-			known = make(map[int]bool, len(inbs))
+			known = make(map[int]ports.Inbound, len(inbs))
 			for _, inb := range inbs {
-				known[inb.ID] = true
+				known[inb.ID] = inb
 			}
 			inboundsPerPanel[n.PanelID] = known
 		}
-		if !known[n.InboundID] && n.Enabled {
-			n.Enabled = false
-			if err := s.nodes.Update(ctx, n); err == nil {
-				report.Issues = append(report.Issues, Issue{
-					PanelID:   n.PanelID,
-					PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
-					Code:   "inbound_missing_disabled_node",
-					Detail: fmt.Sprintf("node id=%d", n.ID),
-					Fixed:  true,
-				})
-				report.Fixed++
+		live, present := known[n.InboundID]
+		if !present {
+			if n.Enabled {
+				n.Enabled = false
+				if err := s.nodes.Update(ctx, n); err == nil {
+					report.Issues = append(report.Issues, Issue{
+						PanelID:   n.PanelID,
+						PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+						Code:   "inbound_missing_disabled_node",
+						Detail: fmt.Sprintf("node id=%d", n.ID),
+						Fixed:  true,
+					})
+					report.Fixed++
+				}
 			}
+			continue
 		}
+		s.reconcileInboundConfig(ctx, n, &live, report)
 	}
+}
+
+// reconcileInboundConfig maintains the v4 axis-A invariant: PSP is the source
+// of truth for a managed inbound's connection config (see
+// docs/v4-inbound-ownership.md §2.1).
+//
+//   - No local snapshot yet (legacy row / freshly imported before capture):
+//     pull the live inbound into the node so render stops live-fetching it.
+//   - Snapshot present but 3X-UI drifted: push PSP's config back. The client
+//     adapter's UpdateInbound read-modify-write preserves every live client
+//     (PSP-managed and manually-created alike), so only the connection config
+//     is overwritten — never a client. We then re-capture the post-push live
+//     config so a JSON normalisation by 3X-UI converges instead of looping.
+func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, live *ports.Inbound, report *Report) {
+	if n.ConfigSyncedAt == nil {
+		inboundcfg.Capture(n, live)
+		if err := s.nodes.Update(ctx, n); err == nil {
+			report.Fixed++
+			report.Issues = append(report.Issues, Issue{
+				PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+				Code: "inbound_config_backfilled", Detail: fmt.Sprintf("node id=%d", n.ID), Fixed: true,
+			})
+		}
+		return
+	}
+	if inboundcfg.InSync(n, live) {
+		return
+	}
+	c, err := s.pool.Get(n.PanelID)
+	if err != nil {
+		return
+	}
+	if err := c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n)); err != nil {
+		report.Issues = append(report.Issues, Issue{
+			PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+			Code: "inbound_config_push_failed", Detail: err.Error(),
+		})
+		return
+	}
+	// Converge the local snapshot to whatever 3X-UI actually persisted (it may
+	// normalise JSON / inject defaults), so the next compare reads as in-sync.
+	if fresh, ferr := c.GetInbound(ctx, n.InboundID); ferr == nil {
+		inboundcfg.Capture(n, fresh)
+	}
+	_ = s.nodes.Update(ctx, n)
+	report.Fixed++
+	report.Issues = append(report.Issues, Issue{
+		PanelID: n.PanelID, PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+		Code: "inbound_config_drift_pushed", Detail: fmt.Sprintf("node id=%d", n.ID), Fixed: true,
+	})
 }
 
 func levelName(l Level) string {

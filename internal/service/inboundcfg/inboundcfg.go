@@ -1,0 +1,178 @@
+// Package inboundcfg maps between the 3X-UI inbound representation
+// (ports.Inbound / ports.InboundSpec) and a node's locally stored config
+// snapshot. v4 makes PSP the source of truth for the inbound connection
+// config: the node service writes the snapshot on create/import/update, the
+// renderer reads it (zero live fetch), and reconcile pushes it back over
+// server-side drift. Shared here so the mapping lives in exactly one place.
+// See docs/v4-inbound-ownership.md.
+package inboundcfg
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+)
+
+// StripClients removes the clients[] array from a 3X-UI inbound settings JSON,
+// leaving the protocol-level config (SS/SS-2022 method+password, VLESS/VMess
+// decryption/fallbacks, …). The snapshot is stored client-less because clients
+// are owned by the ownership table and re-materialised at push time; carrying
+// a client list would let it go stale and risks clobbering manually-created
+// clients. Non-object or malformed input is returned verbatim — store what we
+// got rather than silently lose it.
+func StripClients(settingsJSON string) string {
+	if strings.TrimSpace(settingsJSON) == "" {
+		return settingsJSON
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settingsJSON), &m); err != nil {
+		return settingsJSON
+	}
+	if _, ok := m["clients"]; !ok {
+		return settingsJSON
+	}
+	delete(m, "clients")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return settingsJSON
+	}
+	return string(out)
+}
+
+// ApplySpec writes an admin-supplied InboundSpec into the node's local config
+// snapshot (write-through on create / update) and marks it synced.
+func ApplySpec(n *domain.Node, spec ports.InboundSpec) {
+	n.InboundListen = spec.Listen
+	n.InboundRemark = spec.Remark
+	n.InboundSettings = StripClients(spec.Settings)
+	n.StreamSettings = spec.StreamSettings
+	n.Sniffing = spec.Sniffing
+	n.Allocate = spec.Allocate
+	n.InboundExpiryTime = spec.ExpiryTime
+	if spec.Port != 0 {
+		n.Port = spec.Port
+	}
+	if p := strings.ToLower(spec.Protocol); p != "" {
+		n.Protocol = p
+	}
+	markSynced(n)
+}
+
+// Capture writes a live 3X-UI inbound into the node's local config snapshot
+// (import = take ownership; reconcile backfill / post-push convergence) and
+// marks it synced.
+func Capture(n *domain.Node, inb *ports.Inbound) {
+	n.InboundListen = inb.Listen
+	n.InboundRemark = inb.Remark
+	n.InboundSettings = StripClients(inb.Settings)
+	n.StreamSettings = inb.StreamSettings
+	n.Sniffing = inb.Sniffing
+	n.Allocate = inb.Allocate
+	n.InboundExpiryTime = inb.ExpiryTime
+	if inb.Port != 0 {
+		n.Port = inb.Port
+	}
+	if p := strings.ToLower(inb.Protocol); p != "" {
+		n.Protocol = p
+	}
+	markSynced(n)
+}
+
+// SpecFromNode builds the InboundSpec reconcile pushes to 3X-UI from the node
+// snapshot. Settings carry no clients[]; XUIClient.UpdateInbound's read-modify-
+// write re-merges whatever clients are live, preserving PSP-managed and
+// manually-created clients alike.
+func SpecFromNode(n *domain.Node) ports.InboundSpec {
+	return ports.InboundSpec{
+		Remark:         n.InboundRemark,
+		Enable:         n.Enabled,
+		Listen:         n.InboundListen,
+		Port:           n.Port,
+		Protocol:       n.Protocol,
+		Settings:       n.InboundSettings,
+		StreamSettings: n.StreamSettings,
+		Sniffing:       n.Sniffing,
+		Allocate:       n.Allocate,
+		ExpiryTime:     n.InboundExpiryTime,
+	}
+}
+
+// InboundFromNode reconstructs a ports.Inbound for the renderer from the node
+// snapshot. clients[] is intentionally absent: render derives each user's
+// credential from user.uuid and never consults the inbound client list.
+func InboundFromNode(n *domain.Node) *ports.Inbound {
+	return &ports.Inbound{
+		ID:             n.InboundID,
+		Enable:         n.Enabled,
+		ExpiryTime:     n.InboundExpiryTime,
+		Listen:         n.InboundListen,
+		Remark:         n.InboundRemark,
+		Port:           n.Port,
+		Protocol:       n.Protocol,
+		Settings:       n.InboundSettings,
+		StreamSettings: n.StreamSettings,
+		Sniffing:       n.Sniffing,
+		Allocate:       n.Allocate,
+	}
+}
+
+// InSync reports whether a live 3X-UI inbound already matches the node's stored
+// config on the fields PSP owns. clients[] is ignored (compared with clients
+// stripped) and JSON is compared semantically so key ordering / whitespace
+// don't register as drift. A false result means reconcile should push.
+//
+// It need not be perfect: reconcile re-captures the live config after pushing,
+// so a borderline mismatch (e.g. 3X-UI normalising JSON) self-corrects after a
+// single push instead of looping.
+func InSync(n *domain.Node, live *ports.Inbound) bool {
+	if n.Port != live.Port {
+		return false
+	}
+	if !strings.EqualFold(n.Protocol, live.Protocol) {
+		return false
+	}
+	if n.InboundListen != live.Listen {
+		return false
+	}
+	if n.InboundExpiryTime != live.ExpiryTime {
+		return false
+	}
+	if !jsonEqual(n.StreamSettings, live.StreamSettings) {
+		return false
+	}
+	if !jsonEqual(n.Sniffing, live.Sniffing) {
+		return false
+	}
+	if !jsonEqual(n.Allocate, live.Allocate) {
+		return false
+	}
+	return jsonEqual(StripClients(n.InboundSettings), StripClients(live.Settings))
+}
+
+func markSynced(n *domain.Node) {
+	now := time.Now()
+	n.ConfigSyncedAt = &now
+	n.ConfigSyncState = "synced"
+}
+
+// jsonEqual compares two JSON strings semantically. Blank strings are treated
+// as equal to each other. When either side isn't parseable JSON, it falls back
+// to a trimmed string comparison.
+func jsonEqual(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == b {
+		return true
+	}
+	var av, bv any
+	if err := json.Unmarshal([]byte(a), &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
+}

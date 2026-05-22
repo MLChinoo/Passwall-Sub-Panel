@@ -46,7 +46,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 			lines = append(lines, buildSeparatorURI(it.name))
 			continue
 		}
-		inb, err := s.fetchInbound(ctx, it.node)
+		inb, err := s.inboundForNodeRender(ctx, it.node)
 		if err != nil {
 			log.Warn("uri-list: skip node, fetch inbound failed",
 				"node_id", it.node.ID, "err", err)

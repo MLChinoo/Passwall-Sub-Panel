@@ -4,6 +4,24 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.1 — 2026-05-22
+
+### Changed
+- **订阅渲染不再实时回源 3X-UI:inbound 连接配置本地化,PSP 成为真相源**(详见
+  [docs/v4-inbound-ownership.md](docs/v4-inbound-ownership.md))。之前每次拉订阅,render 都在请求
+  热路径上调 3X-UI 的 `ListInbounds` 取端口 / stream / TLS / Reality 等连接参数——高频轮询把
+  压力传导到上游,且面板一挂订阅就渲染失败。现把这些配置完整存进 `nodes` 表(全保真,镜像
+  `InboundSpec`:listen / remark / settings(去 clients) / streamSettings / sniffing / allocate /
+  expiryTime),render **只读本地、零回源**,3X-UI 临时不可达也能照常发订阅。
+  - **写路径 write-through**:经面板新建 / 编辑 inbound 时,配置先存本地再下发(local-first,
+    下发失败进异步重试队列,本地已生效);导入已有 inbound = 接管,把 live 配置吸进本地一次。
+  - **reconcile 轴 A(配置层)**:无本地快照的老节点 → 从 live 回填(AutoMigrate 加列,无需迁移
+    工具);有快照但 3X-UI 被手改 → 用 PSP 版本下发覆盖(持续强制),下发走 read-modify-write
+    **保留全部 client**(PSP 管理的 + 手动建的私人 / 朋友 client 一个不动),推后再回采 live 收敛。
+  - **client 级(到期 / 流量限制 / 启用 / uuid / 派生密码)完全不变**:仍由 sync / reconcile
+    轴 B 维护,只管自己 email、绝不碰手动 client。本次只动 inbound 连接配置这一层。
+  - 过渡期:升级后到首次 reconcile 回填之间,未回填节点 render 临时回源一次,回填后消失。
+
 ## v3.4.0-beta.12 — 2026-05-22
 
 ### Changed

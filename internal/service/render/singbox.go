@@ -99,7 +99,7 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 			nodeTags = append(nodeTags, it.name)
 			continue
 		}
-		inb, err := s.fetchInbound(ctx, it.node)
+		inb, err := s.inboundForNodeRender(ctx, it.node)
 		if err != nil {
 			log.Warn("render: skip node, fetch inbound failed",
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID, "err", err)

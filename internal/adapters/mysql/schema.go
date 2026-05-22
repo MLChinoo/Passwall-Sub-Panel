@@ -221,6 +221,21 @@ type nodeRow struct {
 	HealthState           string `gorm:"size:32;default:''"`
 	HealthCheckedAt       *time.Time
 	HealthDetail          string `gorm:"size:512;default:''"`
+	// ---- Inbound config snapshot (v4) ----
+	// Faithful copy of the 3X-UI inbound's connection config (mirrors
+	// ports.InboundSpec minus clients[]) so render reads locally and reconcile
+	// can push PSP's version back. Empty on rows written before v4; backfilled
+	// by the health/traffic poll and write-through on create/update/import.
+	// See docs/v4-inbound-ownership.md.
+	InboundListen     string `gorm:"size:64;default:''"`
+	InboundRemark     string `gorm:"size:255;default:''"`
+	InboundSettings   string `gorm:"type:text"`
+	StreamSettings    string `gorm:"type:text"`
+	Sniffing          string `gorm:"type:text"`
+	Allocate          string `gorm:"type:text"`
+	InboundExpiryTime int64  `gorm:"default:0"`
+	ConfigSyncedAt    *time.Time
+	ConfigSyncState   string `gorm:"size:32;default:''"`
 	CreatedAt             time.Time
 }
 
@@ -254,6 +269,15 @@ func (r *nodeRow) toDomain() *domain.Node {
 		HealthState:           domain.NodeHealthState(r.HealthState),
 		HealthCheckedAt:       r.HealthCheckedAt,
 		HealthDetail:          r.HealthDetail,
+		InboundListen:         r.InboundListen,
+		InboundRemark:         r.InboundRemark,
+		InboundSettings:       r.InboundSettings,
+		StreamSettings:        r.StreamSettings,
+		Sniffing:              r.Sniffing,
+		Allocate:              r.Allocate,
+		InboundExpiryTime:     r.InboundExpiryTime,
+		ConfigSyncedAt:        r.ConfigSyncedAt,
+		ConfigSyncState:       r.ConfigSyncState,
 		CreatedAt:             r.CreatedAt,
 	}
 }
@@ -286,6 +310,15 @@ func nodeFromDomain(n *domain.Node) *nodeRow {
 		HealthState:           string(n.HealthState),
 		HealthCheckedAt:       n.HealthCheckedAt,
 		HealthDetail:          n.HealthDetail,
+		InboundListen:         n.InboundListen,
+		InboundRemark:         n.InboundRemark,
+		InboundSettings:       n.InboundSettings,
+		StreamSettings:        n.StreamSettings,
+		Sniffing:              n.Sniffing,
+		Allocate:              n.Allocate,
+		InboundExpiryTime:     n.InboundExpiryTime,
+		ConfigSyncedAt:        n.ConfigSyncedAt,
+		ConfigSyncState:       n.ConfigSyncState,
 		CreatedAt:             n.CreatedAt,
 	}
 }
