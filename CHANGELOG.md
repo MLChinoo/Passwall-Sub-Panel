@@ -4,6 +4,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.4.0-beta.1 — 2026-05-21
+
+v3.4.0 的首个 beta。此前未发布稳定版的 `v3.3.0-beta.1 ~ beta.9` 开发线整体提升为
+v3.4.0,逐条明细见下方各 beta.* 小节。相对上一个稳定版,本版主要内容:
+
+### 重点
+- **订阅客户端统一注册表**:检测规则 + 一键导入合并为「检测族 → 导入 App」两层注册表,
+  含黑 / 白名单过滤模式;移除面板不产出格式的 Surge 系;Quantumult X UA 修正。
+- **用户页改为标签布局,新增「服务器状态」标签**:用户可查看自己节点的可用性(脱敏:
+  名称 / 地区 / 正常·离线·未知 / 最后检查时间,不含宿主机指标与失败位置)。
+- **三个日志页(审计 / 订阅 / 邮件)模糊搜索**;**被禁客户端邮件提醒**(默认关、每日上限、
+  与自动停用互斥);**全局友好错误页**。
+- **流量耗尽 / 周期恢复邮件**(此前自动停用 / 恢复完全不发信);**SetPeriodUsage 周期口径
+  修正**;**应急访问被并发 poll 误清的竞态修复**;**同一 inbound 并发写锁**;**rollup 历史
+  小时桶随保留期回退修复**;**SS-2022 `aes-128-gcm` PSK 长度修正(16 字节)**。
+- **前端列表 / 图表请求竞态守卫**(last-wins);编辑提交部分失败后刷新;**trusted_proxies
+  安全配置建议**(推荐填反代 IP)。
+
+### 复查留档
+多轮多 agent + 人工核实:JWT / SSO / 审计(只记请求体、递归脱敏)/ 授权分组无越权或
+泄密;加密 AES-GCM 无 nonce 复用;`crewjam/saml v0.4.14` 无已知 CVE;已据官方 v3.0.2
+API 文档核实 **3X-UI v3.0.2 兼容**(client 操作仍在 `/panel/api/inbounds/*`)。
+
+详细分条记录见下方 v3.3.0-beta.1 ~ beta.9。
+
 ## v3.3.0-beta.9 — 2026-05-21
 
 ### Added
