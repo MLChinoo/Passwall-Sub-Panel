@@ -22,13 +22,15 @@ import (
 // UserMeHandler exposes the end-user self-service endpoints under
 // /api/user/me — view expiry / traffic, change password, reset sub_token.
 type UserMeHandler struct {
-	user     *user.Service
-	traffic  *traffic.Service
-	settings ports.SettingsRepo
+	user      *user.Service
+	traffic   *traffic.Service
+	settings  ports.SettingsRepo
+	nodes     ports.NodeRepo
+	ownership ports.OwnershipRepo
 }
 
-func NewUserMeHandler(userSvc *user.Service, trafficSvc *traffic.Service, settings ports.SettingsRepo) *UserMeHandler {
-	return &UserMeHandler{user: userSvc, traffic: trafficSvc, settings: settings}
+func NewUserMeHandler(userSvc *user.Service, trafficSvc *traffic.Service, settings ports.SettingsRepo, nodes ports.NodeRepo, ownership ports.OwnershipRepo) *UserMeHandler {
+	return &UserMeHandler{user: userSvc, traffic: trafficSvc, settings: settings, nodes: nodes, ownership: ownership}
 }
 
 func (h *UserMeHandler) Profile(c *gin.Context) {
@@ -110,6 +112,73 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 			"used_bytes":      emergencyStatus.UsedBytes,
 		},
 	})
+}
+
+// ServerStatus returns a sanitized, per-node availability list for the nodes
+// the caller actually has in their subscription (resolved from their ownership
+// rows). Deliberately user-safe: only display name + region + a coarse status
+// + last-checked time. It never leaks HealthDetail (internal panel/inbound
+// error strings), the panel host's CPU/mem (that's the admin /server/status),
+// panel URLs, inbound IDs, or any other group's nodes.
+func (h *UserMeHandler) ServerStatus(c *gin.Context) {
+	claims := middleware.ClaimsFrom(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "No auth"})
+		return
+	}
+	entries, err := h.ownership.ListByUser(c.Request.Context(), claims.UserID)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	type nodeStatus struct {
+		Name      string     `json:"name"`
+		Region    string     `json:"region"`
+		Status    string     `json:"status"` // "ok" | "down" | "unknown"
+		CheckedAt *time.Time `json:"checked_at,omitempty"`
+	}
+	out := make([]nodeStatus, 0, len(entries))
+	seen := make(map[int64]bool, len(entries))
+	for _, e := range entries {
+		n, err := h.nodes.GetByPanelInbound(c.Request.Context(), e.PanelID, e.InboundID)
+		if err != nil || n == nil || seen[n.ID] {
+			continue
+		}
+		seen[n.ID] = true
+		// Skip admin-disabled nodes: they're not in the rendered subscription,
+		// so surfacing them here would just confuse the user.
+		if !n.Enabled {
+			continue
+		}
+		out = append(out, nodeStatus{
+			Name:      n.DisplayName,
+			Region:    n.Region,
+			Status:    coarseNodeStatus(n.HealthState),
+			CheckedAt: n.HealthCheckedAt,
+		})
+	}
+	// Stable order: region, then name — matches how the subscription groups them.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Region != out[j].Region {
+			return out[i].Region < out[j].Region
+		}
+		return out[i].Name < out[j].Name
+	})
+	c.JSON(http.StatusOK, gin.H{"nodes": out})
+}
+
+// coarseNodeStatus collapses the internal NodeHealthState into the three
+// user-facing buckets, so the response doesn't reveal WHERE a failure is
+// (panel vs inbound) — only that the node is up, down, or not yet probed.
+func coarseNodeStatus(s domain.NodeHealthState) string {
+	switch s {
+	case domain.NodeHealthOK:
+		return "ok"
+	case domain.NodeHealthPanelUnreachable, domain.NodeHealthInboundMissing, domain.NodeHealthInboundDisabled:
+		return "down"
+	default:
+		return "unknown"
+	}
 }
 
 // enabledImportApps flattens the unified client registry into the flat list

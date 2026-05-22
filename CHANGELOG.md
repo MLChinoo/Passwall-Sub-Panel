@@ -4,6 +4,21 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.3.0-beta.9 — 2026-05-21
+
+### Added
+- **用户页「服务器状态」标签**:用户能看到自己订阅里各节点的可用性——名称 + 地区 +
+  粗状态(正常 / 离线 / 未知)+ 最后检查时间,方便自助判断「是节点挂了还是我的问题」。
+  数据来自已有的节点健康探测,通过新的用户侧端点 `GET /api/user/me/server-status`
+  下发,**严格脱敏**:只给该用户(按 ownership 解析)自己 group 的节点,且把内部
+  `HealthState` 坍缩成三档(`ok`/`down`/`unknown`)——不暴露失败位置(panel 不可达 vs
+  inbound 缺失)、不含 `HealthDetail` 错误串、不含面板宿主机 CPU/内存(那是 admin 专属)、
+  不含 panel URL / inbound ID / 其他 group 的节点。跳过管理员停用的节点。有单测锁住
+  「三种失败态都坍缩成 down」这条不变式。
+- **用户页改为标签布局**:随着用户页内容变多,引入页内 Tab(复用 `useTabParam`,`?tab=`
+  可深链,与后台风格一致)。当前分「概览」(原有全部内容)与「服务器状态」两个 tab;
+  身份头部常驻 tab 之上。后续可继续把概览拆成更细的 tab。
+
 ## v3.3.0-beta.8 — 2026-05-21
 
 前端复查后的一致性修复(后端经审查确认无授权/IDOR/审计泄密问题,无需改动)。

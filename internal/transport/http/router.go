@@ -137,7 +137,7 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	// Authenticated user self-service
-	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.Settings)
+	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.Settings, d.Repos.Node, d.Repos.Ownership)
 	userGroup := g.Group("/api/user/me",
 		middleware.RequireAuth(d.Auth, d.User),
 		middleware.RequireRole(domain.RoleUser, domain.RoleAdmin),
@@ -146,6 +146,7 @@ func NewRouter(d Deps) *gin.Engine {
 		userGroup.GET("", userMe.Profile)
 		userGroup.GET("/traffic", userMe.Traffic)
 		userGroup.GET("/traffic/history", userMe.TrafficHistory)
+		userGroup.GET("/server-status", userMe.ServerStatus)
 		userGroup.GET("/rules", userMe.GetRules)
 		userGroup.PUT("/rules", userMe.PutRules)
 		userGroup.POST("/emergency-access", userMe.EmergencyAccess)

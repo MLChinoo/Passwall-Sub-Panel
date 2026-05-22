@@ -18,6 +18,8 @@ import {
   Menu,
   Select,
   MenuItem,
+  Tab,
+  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -51,11 +53,14 @@ import {
   changeMyPassword,
   getMyProfile,
   getMyRules,
+  getMyServerStatus,
   resetMyCredentials,
   updateMyRules,
   useEmergencyAccess,
   type MeProfile,
+  type MyNodeStatus,
 } from '@/api/me'
+import { useTabParam } from '@/hooks/useTabParam'
 import type { M3Tokens } from '@/theme'
 import { useSiteStore } from '@/stores/site'
 import {
@@ -107,11 +112,81 @@ function maskUrl(url: string): string {
   }
 }
 
+// ServerStatusPanel renders the caller's own nodes' availability (the "服务器
+//状态" tab). Data is sanitized server-side — name + region + coarse status
+// only. Status dot: ok=primary, down=error, unknown=muted.
+function ServerStatusPanel({ md }: { md: M3Tokens }) {
+  const { t } = useTranslation('user')
+  const [nodes, setNodes] = useState<MyNodeStatus[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const seq = useRef(0)
+  useEffect(() => {
+    const my = ++seq.current
+    setLoading(true)
+    getMyServerStatus()
+      .then(list => { if (my === seq.current) setNodes(list) })
+      .catch(() => { if (my === seq.current) setNodes([]) })
+      .finally(() => { if (my === seq.current) setLoading(false) })
+  }, [])
+
+  const meta = (s: MyNodeStatus['status']) => {
+    switch (s) {
+      case 'ok': return { color: md.primary, label: t('status.ok', { defaultValue: '正常' }) }
+      case 'down': return { color: md.error, label: t('status.down', { defaultValue: '离线' }) }
+      default: return { color: md.onSurfaceVariant, label: t('status.unknown', { defaultValue: '未知' }) }
+    }
+  }
+
+  if (loading) {
+    return <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
+  }
+  if (!nodes || nodes.length === 0) {
+    return (
+      <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}`, textAlign: 'center', color: md.onSurfaceVariant }}>
+        <Typography variant="body2">{t('status.empty', { defaultValue: '暂无可显示的节点' })}</Typography>
+      </Card>
+    )
+  }
+  const okCount = nodes.filter(n => n.status === 'ok').length
+  const checkedAt = nodes.find(n => n.checked_at)?.checked_at
+  return (
+    <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 2, flexWrap: 'wrap' }}>
+        <Typography sx={{ fontWeight: 500 }}>{t('status.title', { defaultValue: '服务器状态' })}</Typography>
+        <Typography variant="body2" sx={{ color: okCount === nodes.length ? md.primary : md.error }}>
+          {t('status.summary', { ok: okCount, total: nodes.length, defaultValue: '{{ok}}/{{total}} 正常' })}
+        </Typography>
+      </Box>
+      <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+        {nodes.map((n, i) => {
+          const m = meta(n.status)
+          return (
+            <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 1.25, borderBottom: i < nodes.length - 1 ? `1px solid ${md.outlineVariant}` : 'none' }}>
+              <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: m.color, flexShrink: 0 }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.name}</Typography>
+                {n.region && <Typography variant="caption" sx={{ color: md.onSurfaceVariant }}>{n.region}</Typography>}
+              </Box>
+              <Typography variant="body2" sx={{ color: m.color, fontWeight: 500, flexShrink: 0 }}>{m.label}</Typography>
+            </Box>
+          )
+        })}
+      </Box>
+      {checkedAt && (
+        <Typography variant="caption" sx={{ display: 'block', mt: 2, color: md.onSurfaceVariant }}>
+          {t('status.checked_at', { time: new Date(checkedAt).toLocaleString(), defaultValue: '最后检查：{{time}}' })}
+        </Typography>
+      )}
+    </Card>
+  )
+}
+
 export default function MeView() {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation('user')
 
+  const [tab, setTab] = useTabParam<'overview' | 'status'>('tab', 'overview', ['overview', 'status'])
   const [profile, setProfile] = useState<MeProfile | null>(null)
   const [usage, setUsage] = useState<UsageReport | null>(null)
   const [loading, setLoading] = useState(true)
@@ -529,6 +604,17 @@ export default function MeView() {
         </>)}
       </Box>
 
+      {/* Section tabs — keep the page navigable as it grows. Server status is
+          its own tab so it doesn't pile onto the already-long overview. */}
+      <Tabs value={tab} onChange={(_, v) => setTab(v as 'overview' | 'status')}
+        sx={{ mb: { xs: 2, sm: 3 }, minHeight: 40 }}>
+        <Tab value="overview" label={t('tabs.overview', { defaultValue: '概览' })} sx={{ minHeight: 40 }} />
+        <Tab value="status" label={t('tabs.server_status', { defaultValue: '服务器状态' })} sx={{ minHeight: 40 }} />
+      </Tabs>
+
+      {tab === 'status' && <ServerStatusPanel md={md} />}
+
+      {tab === 'overview' && (<>
       {/* HERO — pick the client whose recommended_for covers the visitor's
           detected platform. Falls back to nothing if no client is configured
           for this OS (or detection fails entirely). */}
@@ -990,6 +1076,7 @@ export default function MeView() {
       </Box>{/* end right col */}
 
       </Box>{/* end two-col flex */}
+      </>)}
 
       {/* Global announcement popup (opt-in via admin settings) */}
       {announcementPopup && (() => {

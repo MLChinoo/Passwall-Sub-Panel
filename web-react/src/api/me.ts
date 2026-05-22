@@ -121,3 +121,18 @@ export async function resetMyCredentials() {
   )
   return data
 }
+
+/** One node's availability as shown to the end user. Sanitized server-side:
+ *  name + region + a coarse status only — no host metrics, no error detail. */
+export interface MyNodeStatus {
+  name: string
+  region: string
+  /** "ok" = up, "down" = unreachable/inbound gone, "unknown" = not yet probed. */
+  status: 'ok' | 'down' | 'unknown'
+  checked_at?: string
+}
+
+export async function getMyServerStatus() {
+  const { data } = await client.get<{ nodes: MyNodeStatus[] }>('/user/me/server-status')
+  return data.nodes
+}
