@@ -185,16 +185,20 @@ func (s *Service) panelNow(ctx context.Context) time.Time {
 // Errors per user are logged; the overall pass keeps going so one bad user
 // doesn't block the rest.
 func (s *Service) PollOnce(ctx context.Context) error {
-	// TEMP TIMING — beta.12 perf diagnosis. Remove or convert to debug-level
-	// once we've localized the wall-clock hot spot on this deployment.
+	// Per-stage timing — silent by default (Debug level), opens up when the
+	// process is started with PSP_LOG_LEVEL=debug. Kept in code so a future
+	// "Poll Now feels slow" diagnosis is a single env flip away rather than
+	// a code change + redeploy. Originally added in beta.13 to track down a
+	// 6–10s wall-clock report (turned out to be a pre-beta.12 binary still
+	// running on the server — see beta.14 changelog for the resolution).
 	pollStartedAt := time.Now()
 	stage := pollStartedAt
 	mark := func(name string) {
-		log.Info("traffic poll timing", "stage", name, "ms", time.Since(stage).Milliseconds())
+		log.Debug("traffic poll timing", "stage", name, "ms", time.Since(stage).Milliseconds())
 		stage = time.Now()
 	}
 	defer func() {
-		log.Info("traffic poll timing", "stage", "TOTAL", "ms", time.Since(pollStartedAt).Milliseconds())
+		log.Debug("traffic poll timing", "stage", "TOTAL", "ms", time.Since(pollStartedAt).Milliseconds())
 	}()
 
 	users, err := s.listAllUsers(ctx)

@@ -4,6 +4,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.14 — 2026-05-23
+
+### Changed
+- **traffic poll timing log 改为 Debug 级 + 引入 `PSP_LOG_LEVEL` 环境变量**:beta.13 临时加的 7 段 `log.Info("traffic poll timing", ...)` 现在改成 `log.Debug`,默认运行时不输出(零噪音),起进程时 `PSP_LOG_LEVEL=debug ./psp` 一键启用——下次 "Poll Now 感觉慢" 不用改代码 + 重发版,SSH 上去改启动参数重启即可看现场。`PSP_LOG_LEVEL` 接受 `debug / info / warn / error`(case-insensitive),空值或无效值保持默认 Info。
+
+### Internal(beta.13 收尾确认)
+- beta.13 timing log 实测数据:12 user / 5 panel / 9 inbound 部署下,Poll Now 总耗时 **234ms**(用户报"~10s")。各阶段分布:`listAllUsers 3ms / LatestForUsers prefetch 20ms / ownership.ListByUser×12 10ms / Phase1 parallel ListInbounds 154ms / Phase2 inbound 处理 29ms / user 循环 0ms(push 异步) / sink flush 16ms`。瓶颈是 Phase 1 跨区 ListInbounds 的网络往返(5 panel 并行,wall = 最慢那个 ≈ 150ms),已是物理下限。先前用户报的"beta.12 上了之后仍 6-10s"事后判断是 binary 没真换/进程没真重启所致(Docker 镜像未重 build,或 service 未 reload)。本轮 git pull + go build + 真正重启后,beta.9 batch flush(MySQL localhost 收益小)+ beta.12 push 异步化(主要功臣)+ Phase 1 并行(老优化)三者叠加把 wall-clock 压到了理论下限。问题闭环。
+
 ## v3.5.0-beta.13 — 2026-05-23
 
 ### Internal(临时 debug,不影响行为)

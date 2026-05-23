@@ -7,9 +7,11 @@ import (
 	"errors"
 	"flag"
 	"log"
+	stdlog "log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,10 +19,29 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/app"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
+	pkglog "github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/migrate"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/seed"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/version"
 )
+
+// applyLogLevelFromEnv honors PSP_LOG_LEVEL (debug / info / warn / error,
+// case-insensitive) and adjusts the global slog level before the panel does
+// any logging worth filtering. Unrecognized / empty values leave the default
+// Info baseline alone. Mostly used to unlock the per-stage timing in
+// PollOnce on demand (see traffic.Service.PollOnce / beta.14 changelog).
+func applyLogLevelFromEnv() {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PSP_LOG_LEVEL"))) {
+	case "debug":
+		pkglog.SetLevel(stdlog.LevelDebug)
+	case "info":
+		pkglog.SetLevel(stdlog.LevelInfo)
+	case "warn", "warning":
+		pkglog.SetLevel(stdlog.LevelWarn)
+	case "error":
+		pkglog.SetLevel(stdlog.LevelError)
+	}
+}
 
 func ensureDirs(cfg *config.Config) {
 	for _, d := range []string{cfg.ConfigDir, cfg.DataDir} {
@@ -58,6 +79,7 @@ func main() {
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	applyLogLevelFromEnv()
 
 	cfgPath := configPath()
 	cfg, err := config.LoadOrGenerate(cfgPath)
