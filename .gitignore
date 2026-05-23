@@ -66,3 +66,7 @@ private/
 .vscode/
 .claude/
 CLAUDE.md
+
+# Scratch files used by the assistant to feed multi-line commit messages
+# to `git commit -F`. Should never end up tracked.
+.git-commit-msg.tmp

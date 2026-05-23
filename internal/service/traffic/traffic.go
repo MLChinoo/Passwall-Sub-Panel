@@ -63,6 +63,16 @@ type Service struct {
 	configPusher UserConfigPusher
 	// mailer is optional/late-bound. nil = no quota/rollover emails.
 	mailer MailNotifier
+	// pushSem caps how many safety-net floor pushes can run concurrently in
+	// the background. v3.5.0-beta.12 moved the per-user push out of the
+	// PollOnce hot path (was the dominant remaining cost after beta.9's
+	// batch flush — each push is a 3X-UI UpdateClient round-trip, run
+	// sequentially per user). Cap is the same default as MaxPanelConcurrency
+	// (8) so the outer fan-out and the per-user-internal fan-out together
+	// stay within reasonable 3X-UI load. Shared across cycles: if a previous
+	// cycle's pushes are still draining when a new cycle queues more, the
+	// new ones wait on the same sem instead of doubling the load on 3X-UI.
+	pushSem chan struct{}
 }
 
 // SetMailNotifier wires the late-bound mailer used for auto-disable /
@@ -140,7 +150,18 @@ type ownershipRef struct {
 }
 
 func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.TrafficRepo, nodes ports.NodeRepo, nodeTraffic ports.NodeTrafficRepo, pool ports.XUIPool, disabler UserDisabler) *Service {
-	return &Service{users: users, ownership: ownership, traffic: traffic, nodes: nodes, nodeTraffic: nodeTraffic, pool: pool, disabler: disabler}
+	return &Service{
+		users:       users,
+		ownership:   ownership,
+		traffic:     traffic,
+		nodes:       nodes,
+		nodeTraffic: nodeTraffic,
+		pool:        pool,
+		disabler:    disabler,
+		// Service-scoped semaphore for async floor pushes — see Service.pushSem doc.
+		// Sized to the same default (8) as paneltz.ResolveMaxPanelConcurrency(0).
+		pushSem: make(chan struct{}, paneltz.ResolveMaxPanelConcurrency(0)),
+	}
 }
 
 // WithSettings attaches the settings repo so the poll can enforce the
@@ -907,11 +928,36 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 	// itself cuts the client off if the panel is offline long enough for
 	// the user to exceed their cap between polls. Best-effort: a failed
 	// push is logged but does not stop the poll cycle for other users.
-	if s.configPusher != nil {
-		if err := s.configPusher.PushClientConfig(ctx, u.ID); err != nil {
-			log.Warn("traffic floor push failed", "user_id", u.ID, "err", err)
-		}
+	//
+	// v3.5.0-beta.12: two compounding wins drag this off the hot path.
+	//   1. If this cycle's per-user delta is 0, the floor (= limit - used)
+	//      didn't change since last push, so the 3X-UI side is still
+	//      correct. Skip the push entirely. This filters out "active
+	//      panel, idle user" users (clients exist + matched in
+	//      ListInbounds but didn't move bytes this cycle).
+	//   2. The remaining pushes fan out as fire-and-forget goroutines
+	//      capped by s.pushSem so a 3X-UI panel isn't hammered. PollOnce
+	//      no longer waits on the per-user push round-trip (was the
+	//      dominant remaining wall-clock cost after beta.9's batch flush
+	//      — N active-with-limit users × ~300ms per UpdateClient ≈
+	//      several seconds, all serial under the per-user loop above).
+	//
+	// context.Background(): the calling PollOnce may return long before
+	// the push goroutine drains. Inheriting ctx would mean a poll-handler
+	// cancellation (admin closes the "Poll Now" browser tab) silently
+	// aborts the push half-way. Background keeps it independent — failures
+	// are logged and the next cycle's push retries naturally.
+	if totals.deltaTotal == 0 || s.configPusher == nil {
+		return nil
 	}
+	uid := u.ID
+	safego.Go("traffic.floor-push", func() {
+		s.pushSem <- struct{}{}
+		defer func() { <-s.pushSem }()
+		if err := s.configPusher.PushClientConfig(context.Background(), uid); err != nil {
+			log.Warn("traffic floor push failed", "user_id", uid, "err", err)
+		}
+	})
 	return nil
 }
 

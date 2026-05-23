@@ -4,6 +4,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.12 — 2026-05-23
+
+### Changed
+- **traffic poll safety-net floor push 移出热路径**:beta.9 把 SQLite per-row UPDATE 收敛成 batch flush 后,剩下的 wall-clock 大头是 `recordAndEnforceWith` 末尾每个 active-with-limit 用户串行的 `s.configPusher.PushClientConfig` ——每个 user 会做 `GetByID + ownership.ListByUser + 每个 panel 一次 ListInbounds + 每个 owned client 一次 3X-UI UpdateClient`(per-user 内部已并行,但 user 之间是串行的)。10 个 active-with-limit 用户 × ~300ms = 3+ 秒,完美对得上实测的"beta.10 后仍 6–10s"。两个互补优化叠加:
+  - **delta == 0 直接跳过推送**:本周期 user-level 增量为 0 → `floor = limit − used` 跟上次推过的一样 → 3X-UI 那边的 floor 仍然有效,这次推是冗余的。过滤掉"active panel、本周期 idle user"(client 在 ListInbounds 里被匹配到但字节数没动)。
+  - **剩下要推的全部异步 fire-and-forget**:`safego.Go("traffic.floor-push", ...)` 触发,用 `context.Background()`(防"Poll Now"handler 退出时 ctx 被取消、push 半路放弃),通过 service 级 `pushSem`(cap 8,与 `MaxPanelConcurrency` 默认对齐)节流,跨 cycle 共享——上一轮还没推完时下一轮起来,新任务排队等 sem 而不是直接打爆 3X-UI。PollOnce 不再阻塞等推送完成,管理员"Poll Now"立即返回。
+  - 失败语义不变(`log.Warn` + 下一轮自然重推);floor push 本就是 best-effort 安全网。预计"Poll Now"从 6–10s 降到 1–2s 级别。
+
 ## v3.5.0-beta.11 — 2026-05-23
 
 ### Changed
