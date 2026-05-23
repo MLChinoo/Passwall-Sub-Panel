@@ -185,10 +185,23 @@ func (s *Service) panelNow(ctx context.Context) time.Time {
 // Errors per user are logged; the overall pass keeps going so one bad user
 // doesn't block the rest.
 func (s *Service) PollOnce(ctx context.Context) error {
+	// TEMP TIMING — beta.12 perf diagnosis. Remove or convert to debug-level
+	// once we've localized the wall-clock hot spot on this deployment.
+	pollStartedAt := time.Now()
+	stage := pollStartedAt
+	mark := func(name string) {
+		log.Info("traffic poll timing", "stage", name, "ms", time.Since(stage).Milliseconds())
+		stage = time.Now()
+	}
+	defer func() {
+		log.Info("traffic poll timing", "stage", "TOTAL", "ms", time.Since(pollStartedAt).Milliseconds())
+	}()
+
 	users, err := s.listAllUsers(ctx)
 	if err != nil {
 		return err
 	}
+	mark("listAllUsers")
 
 	// Load runtime settings + the resolved panel location ONCE per poll
 	// and share them across the inner loops. Before this each user's
@@ -237,6 +250,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		latestByUser = nil
 	}
 	sink.latestByUser = latestByUser
+	mark("LatestForUsers prefetch")
 
 	byInbound := make(map[inboundKey][]ownershipRef)
 	totals := make(map[int64]trafficTotals, len(users))
@@ -253,6 +267,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 			byInbound[key] = append(byInbound[key], ownershipRef{entry: e, userID: u.ID, email: e.ClientEmail, createdAt: e.CreatedAt})
 		}
 	}
+	mark("ownership.ListByUser per-user loop")
 
 	// Group queries per panel, fetch full inbound list once (it embeds
 	// clientStats — the dedicated /getClientTrafficsById endpoint is empty
@@ -308,6 +323,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}(panelID)
 	}
 	panelWG.Wait()
+	mark("Phase 1 parallel ListInbounds")
 
 	// Phase 2 — per-panel sequential processing. ListInbounds results
 	// are already in panelData; only the per-inbound fallback (for 3X-UI
@@ -416,6 +432,8 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}
 	}
 
+	mark("Phase 2 inbound processing (sink appends)")
+
 	for _, u := range users {
 		if skipUsers[u.ID] {
 			log.Warn("traffic poll user skipped due to inbound fetch failure", "user_id", u.ID)
@@ -425,6 +443,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 			log.Warn("traffic poll user", "user_id", u.ID, "err", err)
 		}
 	}
+	mark("user loop (recordAndEnforceWith — push is async post-beta.12)")
 
 	// Drain the sink in three batched INSERTs. Order doesn't matter — the
 	// snapshots are independent — but client first so the most numerous
@@ -473,6 +492,7 @@ func (s *Service) PollOnce(ctx context.Context) error {
 			log.Warn("traffic poll flush user traffic state", "count", len(pending), "err", err)
 		}
 	}
+	mark("sink flush (5 batches)")
 	return nil
 }
 

@@ -4,6 +4,11 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.13 — 2026-05-23
+
+### Internal(临时 debug,不影响行为)
+- **traffic poll 加 5 段 timing 日志**:beta.12 把 safety-net push 异步化后,用户实测 MySQL(localhost)+ 跨区 3X-UI 部署仍 ~6–10s,理论模型对不上(预期 1–2s)。在 `PollOnce` 头/尾 + 5 个关键阶段(`listAllUsers` / `LatestForUsers prefetch` / `ownership.ListByUser per-user loop` / `Phase 1 parallel ListInbounds` / `Phase 2 inbound processing` / `user loop` / `sink flush`)插入 `log.Info("traffic poll timing", "stage", ..., "ms", ...)` 行,加上 `TOTAL`。生产部署一次,Poll Now 触发后日志能直接看出热点(很可能是跨区 ListInbounds 单次本身就 > 2s 的"网络 + 3X-UI 序列化"问题)。**纯诊断,无行为变化**。下一个 beta 根据日志结论做对症优化并清理本节的 instrumentation。
+
 ## v3.5.0-beta.12 — 2026-05-23
 
 ### Changed
