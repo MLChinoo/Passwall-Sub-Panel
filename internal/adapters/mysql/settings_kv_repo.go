@@ -319,7 +319,13 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 		out.JWTAccessTTLMinutes = 60
 	}
 	if out.JWTRefreshTTLMinutes <= 0 {
-		out.JWTRefreshTTLMinutes = 60 * 24 * 7
+		// 1 day (was 7d): an idle session that didn't touch /refresh for 24h
+		// must log in again. With sliding refresh still on (every /refresh
+		// reissues a fresh refresh token alongside the access token), active
+		// users still effectively never log out — only true abandonment hits
+		// this ceiling. Tightens the absolute compromised-refresh-token
+		// window from a week to a day at no UX cost for daily users.
+		out.JWTRefreshTTLMinutes = 60 * 24
 	}
 	if out.JWTIssuer == "" {
 		out.JWTIssuer = "passwall-sub-panel"

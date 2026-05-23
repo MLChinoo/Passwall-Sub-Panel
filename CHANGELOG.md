@@ -4,6 +4,11 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.11 — 2026-05-23
+
+### Changed
+- **`jwt_refresh_ttl_minutes` 默认 10080(7d) → 1440(1d)**:跟 beta.8 紧的 access TTL 一个思路——把"完全不活跃的会话"绝对窗口从 7 天压到 1 天。Sliding Refresh 保留不变,日常使用的用户每次 `/refresh` 都会同时拿到新 refresh token,事实上仍然永不登出;只有真的连续 24h 没动过的会话才会被这个上限干掉。effectively 把 refresh token 万一被偷的有效窗口从一周压到一天。**已有部署不受影响**——settings 表里已有的值是 UI 保存过的,默认变更只影响首次启动且字段从未被存过的部署;`app.go` 里 settings 加载失败的兜底默认同步收紧到 24h,与主默认对齐。
+
 ## v3.5.0-beta.10 — 2026-05-23
 
 ### Fixed

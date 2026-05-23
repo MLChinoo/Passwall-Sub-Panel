@@ -186,9 +186,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 			// Settings load failed (DB blip?). Fall back to the hardcoded
 			// defaults baked into settings_repo so logins keep working.
 			return jwtutil.Params{
-				// Keep in lockstep with settings_kv_repo.go defaults (60 / 7d).
+				// Keep in lockstep with settings_kv_repo.go defaults (60min / 1d).
 				AccessTTL:  60 * time.Minute,
-				RefreshTTL: 7 * 24 * time.Hour,
+				RefreshTTL: 24 * time.Hour,
 				Issuer:     "passwall-sub-panel",
 			}
 		}
