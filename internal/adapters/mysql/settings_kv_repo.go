@@ -313,7 +313,10 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 		out.CronReconcileMinutes = 15
 	}
 	if out.JWTAccessTTLMinutes <= 0 {
-		out.JWTAccessTTLMinutes = 120
+		// 60 min: halves the leak window of an access token vs the original 2h
+		// default while still cheap on /refresh frequency (one extra HTTP round-
+		// trip per hour per active session — negligible at self-use scale).
+		out.JWTAccessTTLMinutes = 60
 	}
 	if out.JWTRefreshTTLMinutes <= 0 {
 		out.JWTRefreshTTLMinutes = 60 * 24 * 7

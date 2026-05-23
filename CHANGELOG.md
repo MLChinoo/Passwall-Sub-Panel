@@ -4,6 +4,11 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.8 — 2026-05-23
+
+### Changed
+- **`jwt_access_ttl_minutes` 默认 120 → 60**:把 access token 万一泄漏的有效窗口从 2h 压到 1h(浏览器 XSS / 日志意外带出截图等场景),前端 `/refresh` 频率从每 2h 一次升到每 1h 一次——自用规模下网络成本可忽略。`jwt_refresh_ttl_minutes` 保持 10080(7d)。当前是 **Sliding Refresh** 模式:每次 `/refresh` 同时重发新 refresh 让活跃用户事实上永不登出,这是有意保留的——只把"绝对的"账号窗口压短了。**已有部署不受影响**:settings 表里已有的值是你 UI 保存过的,默认变更只影响首次启动且字段从未被存过的部署;`app.go` 里 settings 加载失败的兜底默认同步收紧到 60min,与主默认对齐。
+
 ## v3.5.0-beta.7 — 2026-05-23
 
 ### Changed
