@@ -441,12 +441,15 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}
 	}
 	if len(sink.userUpdates) > 0 {
-		users := make([]*domain.User, 0, len(sink.userUpdates))
+		// Local name `pending` avoids shadowing the outer `users` (the list
+		// loaded at the top of PollOnce). Iteration order is non-deterministic
+		// (map) but harmless: rows in the batch are independent.
+		pending := make([]*domain.User, 0, len(sink.userUpdates))
 		for _, u := range sink.userUpdates {
-			users = append(users, u)
+			pending = append(pending, u)
 		}
-		if err := s.users.BatchUpdateTrafficState(ctx, users); err != nil {
-			log.Warn("traffic poll flush user traffic state", "count", len(users), "err", err)
+		if err := s.users.BatchUpdateTrafficState(ctx, pending); err != nil {
+			log.Warn("traffic poll flush user traffic state", "count", len(pending), "err", err)
 		}
 	}
 	return nil
@@ -521,11 +524,13 @@ type pollSink struct {
 	// unique ID so no dedup is needed — the slice is one append per
 	// client that produced a non-zero delta this cycle.
 	ownershipUpdates []*domain.XUIClientEntry
-	// userUpdates buffers per-user traffic-state writes; flushed via
-	// BatchUpdateTrafficState at end-of-cycle. Keyed by user ID so the
-	// snapshot path and the rollover path (which both mutate u and would
-	// otherwise both append) collapse into ONE write per user — the latest
-	// pointer state at flush time wins.
+	// userUpdates buffers per-user traffic-state writes from the snapshot
+	// hot path; flushed via BatchUpdateTrafficState at end-of-cycle. Keyed
+	// by user ID so repeated appends for the same user collapse into ONE
+	// write — the pointer state at flush time wins. The rollover branch
+	// (persistRollover) deliberately bypasses the sink and writes
+	// synchronously, then deletes itself from this map, because the
+	// immediately-following re-enable does a stale-sensitive GetByID.
 	userUpdates map[int64]*domain.User
 	// latestByUser is the per-cycle pre-fetched latest snapshot per user,
 	// loaded ONCE via TrafficRepo.LatestForUsers at the top of PollOnce.
@@ -794,18 +799,31 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 		// the new period hands quota back), clear it explicitly under the
 		// emergency lock so we don't race a concurrent UseEmergencyAccess.
 		persistRollover := func() {
-			// UpdateTrafficState writes the SAME column set as the main-path
-			// write above (lifetime + period_baseline + traffic_period_start +
-			// lifetime_baseline_at). With sink active both code paths mutate
-			// the same *User pointer, so the map collapses them into ONE batch
-			// row — the rolled-over state (this branch ran second) wins.
+			// Rollover MUST write synchronously, even in the sink-batched poll.
+			// Reason: the immediately-following SetEnabledAndSync(true) re-enable
+			// (line ~825 below) does a GetByID + full-row Update + push of the
+			// per-client traffic floor. If our rolled-over lifetime / baseline /
+			// periodStart are still pending in sink.userUpdates, GetByID returns
+			// the OLD period state, u.PeriodUsed() computes "near the OLD limit",
+			// and the floor pushed to 3X-UI is ~0 — effectively keeping the user
+			// blocked for another poll cycle even though they were just
+			// re-enabled. The original (pre-beta.9) inline write avoided this by
+			// landing the rolled-over state in DB before the disabler ran.
 			//
-			// ClearEmergencyAccess writes a different column set and MUST stay
+			// We also delete this user from the sink so the end-of-cycle batch
+			// flush doesn't redundantly rewrite the same row a second time. If
+			// the main-path snapshot branch ran above, it appended u to the
+			// sink; that entry is superseded by this inline write (the in-memory
+			// u carries the rolled-over fields already, so the inline write is
+			// strictly newer).
+			//
+			// ClearEmergencyAccess writes a disjoint column set and MUST stay
 			// inline under the emergency lock so a concurrent UseEmergencyAccess
-			// can't race the clear (the original v3.3.0-beta.6 invariant).
+			// can't race the clear (the v3.3.0-beta.6 invariant).
 			if sink != nil {
-				sink.userUpdates[u.ID] = u
-			} else if err := s.users.UpdateTrafficState(ctx, u); err != nil {
+				delete(sink.userUpdates, u.ID)
+			}
+			if err := s.users.UpdateTrafficState(ctx, u); err != nil {
 				log.Warn("traffic period start update", "user_id", u.ID, "err", err)
 			}
 			if clearedEmergency {

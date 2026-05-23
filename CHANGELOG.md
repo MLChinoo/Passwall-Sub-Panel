@@ -4,13 +4,23 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.5.0-beta.10 — 2026-05-23
+
+### Fixed
+- **traffic poll rollover-reenable 路径在 beta.9 的 sink 化下产生 stale-read 回归(实测命中)**:beta.9 把 `recordAndEnforceWith` 主路径 + rollover 分支的两处 `UpdateTrafficState` 都改成"入 sink、末尾 batch flush"。审计发现 rollover 分支随即调用的 `SetEnabledAndSync(true)`(用户因周期复位而重新启用)会 `GetByID + 整行 Update + pushClientConfigToAll`——只要 sink 还没 flush,GetByID 读到 **OLD lifetime / OLD baseline / OLD periodStart**,`u.PeriodUsed()` 算成"OLD 周期接近用满",`floor = limit − used ≈ 0` 被推到 3X-UI,用户表面 re-enable、实际仍被 3X-UI 阻断到下一轮 poll(~5 min)才纠正。修复:`persistRollover` 改回 inline `UpdateTrafficState` + `delete(sink.userUpdates, u.ID)` 防末尾 batch 重复写;`ClearEmergencyAccess` 仍 inline 在 emergency lock 内不变。Rollover 通常每周期 0–1 用户(monthly typical),性能成本可忽略。
+  - 回归测试 `TestPollOnceRolloverWritesSynchronouslyForDisablerReread` 注入一个 `capturingDisabler`,在 `SetEnabledAndSync(true)` 调用瞬间实读 fake repo 拿 `PeriodUsed()`,断言为本轮 delta(几千字节)而非 `limit`(10 GB)。stash 验证过 pre-fix 报 `PeriodUsed = 10737418240`,完美命中 stale-read 症状。
+  - 常规 safety-net `PushClientConfig`(line ~789)仍走 `GetByID`,看到的 lifetime 比内存少 `this_cycle_delta`,floor 偏大同等数量,下一轮 poll 自纠。这是 sink 化的设计取舍——safety-net 语义是"面板长时间掉线时 3X-UI 自己兜底",5 min 级别的 floor 滞后不影响这个属性,接受并 `docs/poll-perf-optimization.md §8.5` 文档化。
+
+### Internal / 清理
+- traffic poll 末尾 flush 块原本用 `users` 作局部变量名,遮蔽 PollOnce 顶部加载的 `users` 列表,改名 `pending` 消除误读。
+
 ## v3.5.0-beta.9 — 2026-05-23
 
 ### Changed
 - **traffic poll 末尾批量 flush,手动"Poll Now"从 ~10s 降到亚秒级**:`PollOnce` 的 Phase 1(拉 3X-UI 数据)早已并行,瓶颈一直在 Phase 2 串行的 per-user / per-client 本地 DB 写——尤其 SQLite WAL 每次 commit ~5–10ms。N 用户 × M client 一轮 poll 是 `N + N×M` 次自动提交;100×8 ≈ 900 次,刚好对得上用户实测的 ~10s。本轮把热路径 3 个动作改成"循环里只入 sink,循环结束统一一次 flush":
   - 新增 `OwnershipRepo.BatchUpdateCounters` / `UserRepo.BatchUpdateTrafficState`:GORM 事务包 N 条 UPDATE,SQLite 下 N 次 commit 合并为 1 次;MySQL/PG 也省掉 N − 1 次 round-trip。列范围、emergency-column 跳过、零 ID 拒绝等约束与原单行方法逐项一致(`TestBatchUpdateTrafficState` / `TestOwnershipBatchUpdateCounters` 覆盖了空输入 no-op + zero-ID 整批回滚 + emergency 不被覆盖三条不变量)。
   - 新增 `TrafficRepo.LatestForUsers(ids)`:子查询 + IN 一次拿全部用户的最新 snapshot,替代每用户一次的 `LatestForUser` SELECT。`MAX(id)` 作 tie-breaker,与单用户路径 `Order("id DESC").Limit(1)` 语义一致(`TestLatestForUsers` 显式比对单用户结果)。
-  - `recordClientStats` / `recordAndEnforceWith` 改为 sink-aware:有 sink 入队,无 sink 走原 inline(非 poll 调用者 / 测试 / `recordAndEnforce` 回退路径不变)。rollover 分支的两次 user UPDATE 通过 sink `map[int64]*User` 去重,确保一个用户每轮只写一行;`ClearEmergencyAccess` 仍 inline 在 emergency lock 内,沿用 v3.3.0-beta.6 不让 stale 写吃掉 live grant 的约束。
+  - `recordClientStats` / `recordAndEnforceWith` 改为 sink-aware:有 sink 入队,无 sink 走原 inline(非 poll 调用者 / 测试 / `recordAndEnforce` 回退路径不变)。rollover 分支的两次 user UPDATE 通过 sink `map[int64]*User` 去重,确保一个用户每轮只写一行;`ClearEmergencyAccess` 仍 inline 在 emergency lock 内,沿用 v3.3.0-beta.6 不让 stale 写吃掉 live grant 的约束。**注:rollover 分支的 sink 化在 beta.10 被回退——见上。**
   - PollOnce 末尾在现有 3 个 `InsertBatch` 之后追加 `BatchUpdateCounters` + `BatchUpdateTrafficState` 两次调用。一轮 N × M 写场景的预期总 DB 操作:`1 LatestForUsers + 3 InsertBatch + 1 BatchUpdateCounters + 1 BatchUpdateTrafficState = 6 次`,与用户体量基本解耦。`TestPollOnceBatchesPerCycleWrites`(3 用户 × 4 client)断言这三个 batch 调用各恰好一次。
 
 ### Internal / 测试

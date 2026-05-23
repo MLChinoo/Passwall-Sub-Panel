@@ -1070,6 +1070,107 @@ func TestNodeReportForNilNodesRepoDoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestPollOnceRolloverWritesSynchronouslyForDisablerReread pins the
+// v3.5.0-beta.9 regression fix: a user crossing a period boundary AND being
+// re-enabled in the same poll cycle must see the rolled-over state (new
+// periodStart, new baseline, ~0 PeriodUsed) by the time the disabler
+// re-reads them. Before the fix, the rollover write was deferred into the
+// sink batch flush at end-of-cycle; SetEnabledAndSync's intermediate
+// GetByID then returned OLD lifetime/baseline/periodStart, pushed a near-
+// zero traffic floor to 3X-UI, and the user stayed effectively blocked for
+// one more cycle even though they were nominally re-enabled.
+//
+// We catch this by injecting a disabler that, at the moment it's called,
+// re-reads the user from the SAME fake repo PollOnce writes through and
+// captures PeriodUsed(). The fix asserts that captured value reflects the
+// new period (≤ this cycle's delta), not the old one (~ TrafficLimitBytes).
+func TestPollOnceRolloverWritesSynchronouslyForDisablerReread(t *testing.T) {
+	const gb = int64(1) << 30
+	const limit = 10 * gb
+	// Old period start: a year ago, guaranteed to trigger rollover on any
+	// monthly/quarterly/yearly schedule.
+	oldStart := time.Now().AddDate(-1, 0, 0)
+
+	users := &fakeUserRepo{users: map[int64]*domain.User{
+		1: {
+			ID:                  1,
+			Enabled:             false, // was auto-disabled
+			AutoDisabledReason:  domain.DisabledTrafficExceeded,
+			TrafficLimitBytes:   limit,
+			TrafficResetPeriod:  domain.ResetMonthly,
+			TrafficPeriodStart:  &oldStart,
+			LifetimeUpBytes:     limit, // fully used last period
+			LifetimeDownBytes:   0,
+			LifetimeTotalBytes:  limit,
+			PeriodBaselineBytes: 0, // → PeriodUsed() == limit before rollover
+		},
+	}}
+
+	// Ownership + 3X-UI so the snapshot path actually runs and pushes the
+	// user through recordAndEnforceWith's rollover branch.
+	email := "u1-c0@example.test"
+	ownership := &fakeOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{
+		1: {{ID: 1, UserID: 1, PanelID: 10, InboundID: 20, ClientEmail: email, CreatedAt: time.Now()}},
+	}}
+	pool := &fakeXUIPool{clients: map[int64]ports.XUIClient{
+		10: &fakeXUIClient{inbounds: []ports.Inbound{{ID: 20, ClientStats: []ports.ClientTraffic{
+			// Small delta this cycle.
+			{Email: email, Up: 1024, Down: 2048},
+		}}}},
+	}}
+
+	// Capturing disabler: at the moment it's called with enabled=true (the
+	// rollover re-enable), re-read user 1 from the fake repo and snapshot
+	// PeriodUsed(). PeriodUsed() reads LifetimeTotalBytes - PeriodBaselineBytes
+	// — both of which the rollover branch just rewrote. If the rollover write
+	// is still pending in the sink, this read returns the OLD values and
+	// PeriodUsed() ≈ limit; the fix asserts it's a small post-rollover value.
+	var seenPeriodUsedOnReenable int64 = -1
+	disabler := &capturingDisabler{
+		onCall: func(enabled bool) {
+			if !enabled {
+				return // we only care about the re-enable path
+			}
+			got, _ := users.GetByID(context.Background(), 1)
+			if got != nil {
+				seenPeriodUsedOnReenable = got.PeriodUsed()
+			}
+		},
+	}
+	svc := New(users, ownership, &fakeTrafficRepo{}, nil, nil, pool, disabler)
+
+	if err := svc.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	if seenPeriodUsedOnReenable < 0 {
+		t.Fatal("disabler was never called with enabled=true; rollover re-enable path didn't fire")
+	}
+	// After rollover: PeriodUsed = LifetimeTotalBytes - PeriodBaselineBytes.
+	// PeriodBaselineBytes is set to "lifetime BEFORE this poll's delta", so
+	// PeriodUsed at the moment the disabler reads should be ~this cycle's
+	// delta (1024 + 2048 = 3072 bytes). Anything anywhere near `limit`
+	// means the disabler saw stale data — the bug is back.
+	if seenPeriodUsedOnReenable > gb {
+		t.Errorf("disabler saw PeriodUsed = %d at re-enable; expected ~this-cycle-delta (3072 bytes), got near-limit. Rollover write was NOT flushed before SetEnabledAndSync — the v3.5.0-beta.9 stale-read regression is back.",
+			seenPeriodUsedOnReenable)
+	}
+}
+
+// capturingDisabler invokes onCall(enabled) inside SetEnabledAndSync so a
+// test can sample DB state at the exact moment the disabler runs. Stays
+// out of fakeDisabler so the existing call-record tests aren't disturbed.
+type capturingDisabler struct {
+	onCall func(enabled bool)
+}
+
+func (d *capturingDisabler) SetEnabledAndSync(ctx context.Context, userID int64, enabled bool, _ domain.AutoDisabledReason, _ string) error {
+	if d.onCall != nil {
+		d.onCall(enabled)
+	}
+	return nil
+}
+
 // TestPollOnceBatchesPerCycleWrites pins the v3.5.0-beta.9 perf contract:
 // regardless of user count N or per-user client count M, ONE PollOnce cycle
 // must produce ONE BatchUpdateCounters + ONE BatchUpdateTrafficState +
