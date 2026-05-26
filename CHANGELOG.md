@@ -4,6 +4,34 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.0-beta.11 — 2026-05-26
+
+### Fixed
+
+- **ServersView 升级对话框 fallback 文案残留 "PSP" + 历史事件引用**:beta.8 整理
+  i18n 时只更新了 zh-CN / en-US JSON,源码里 `t(..., { defaultValue: ... })` 的
+  fallback 字符串没改。一旦 i18n key 因为重构掉了或者 build 不齐,admin 会看到:
+  - "PSP 将先检查目标版本是否在已测试范围内,在范围内才会触发 ... 自升级。面板会
+    重启,约 60 秒后 PSP 跑 smoke probe 验证。"
+  - "目标版本 X 状态为 Y(PSP 当前测试最高 Z)。强制升级可能因 schema 变更导致
+    **PSP traffic poll 失败 —— PSP v3.5.1 修复的 v3.1.0 break 就是这类问题**。"
+  - "已发起 3X-UI 升级到 X,约 60 秒后 PSP 跑 smoke probe ..."
+
+  beta.8 commit 描述说"PSP → Passwall Panel"已经做了,但其实只做了一半。本 beta
+  把这三处源码 defaultValue 同步成 i18n JSON 里的正式版文案(全角括号 + 全称 +
+  去掉历史 reference)。
+
+### Audit (no-op)
+
+- 跑 `go vet ./...` + `go test ./...` + `tsc --noEmit` 全过
+- 静态 grep "PSP / v3.5.1 / v3.1.0 break" 用户可见路径,只剩源码注释里的 reference
+  (不会暴露给 admin)
+- 检查 dropped fields (`xui_panels.latest_xui_version` / `update_available`) 的
+  orphan 引用:无残留,DB 列照 self-use no-migration 原则保留为 dead weight
+- 检查 `LatestXUIRefreshAt` / `LatestXUIRefreshError` 是 exported 但未使用的
+  accessor,跟 `compat_remote.go` 里 `LastRefreshAt` / `LastRefreshError` 同样
+  pattern。保留作为未来 admin 状态页面的钩子,不视为 dead code 删除
+
 ## v3.6.0-beta.10 — 2026-05-26
 
 ### Fixed

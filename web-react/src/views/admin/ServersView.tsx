@@ -234,7 +234,7 @@ export default function ServersView() {
           title: t('admin:servers.confirm.upgrade_panel_title', { defaultValue: '升级 3X-UI 面板' }),
           message: t('admin:servers.confirm.upgrade_panel_message', {
             name: s.name,
-            defaultValue: 'PSP 将先检查目标版本是否在已测试范围内,在范围内才会触发 {{name}} 的自升级。面板会重启,约 60 秒后 PSP 跑 smoke probe 验证。是否继续?',
+            defaultValue: 'Passwall Panel 将先检查目标版本是否在已测试范围内，在范围内才会触发 {{name}} 的自升级。面板会重启，约 60 秒后 Passwall Panel 跑 smoke probe 验证。是否继续？',
           }),
           confirmText: t('admin:servers.action.upgrade', { defaultValue: '升级' }),
         })
@@ -244,7 +244,7 @@ export default function ServersView() {
       pushSnack(
         t('admin:servers.toast.upgrade_panel_started', {
           target: r.target_version ?? '?',
-          defaultValue: '已发起 3X-UI 升级到 {{target}},约 60 秒后 PSP 跑 smoke probe,结果写入 audit log',
+          defaultValue: '已发起 3X-UI 升级到 {{target}}，约 60 秒后 Passwall Panel 跑 smoke probe，结果写入 audit log',
         }),
         'success',
       )
@@ -271,7 +271,7 @@ export default function ServersView() {
             latest: body.latest_version ?? '?',
             max: body.psp_max_xui || t('admin:servers.compat.not_loaded', { defaultValue: '未加载' }),
             status: body.compat_status ?? 'unknown',
-            defaultValue: '目标版本 {{latest}} 状态为 {{status}}（PSP 当前测试最高 {{max}}）。强制升级可能因 schema 变更导致 PSP traffic poll 失败 —— PSP v3.5.1 修复的 v3.1.0 break 就是这类问题。确认强制升级吗?',
+            defaultValue: '即将升级到 {{latest}}。当前 Passwall Panel 已验证的最高 3X-UI 版本为 {{max}}。强制升级可能因协议或字段变更导致 traffic poll、reconcile 等关键流程失败。建议先升级 Passwall Panel 至支持该 3X-UI 版本的发行，再升级面板。是否仍要强制升级？',
           }),
           destructive: true,
           confirmText: t('admin:servers.action.force_upgrade', { defaultValue: '强制升级' }),
