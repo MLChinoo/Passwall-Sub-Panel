@@ -112,7 +112,7 @@ func TestBuildProxies_LocalConfig_ZeroFetch(t *testing.T) {
 	u := &domain.User{ID: 5, UUID: "uuid-of-user-5"}
 	items := []renderItem{{name: "US-1", node: vlessRealityNode(true)}}
 
-	out := s.buildProxies(context.Background(), u, items)
+	out := s.buildProxies(context.Background(), u, items, ports.UISettings{EmailDomain: "kazuha.org"})
 
 	if len(out) != 1 {
 		t.Fatalf("want 1 proxy block, got %d: %#v", len(out), out)
@@ -140,7 +140,7 @@ func TestResolveInbounds(t *testing.T) {
 	// Captured node → served from the local snapshot, pool never touched
 	// (panicPool would crash the test on any access).
 	s := &Service{pool: panicPool{}}
-	got := s.resolveInbounds(context.Background(), []renderItem{{name: "US-1", node: vlessRealityNode(true)}})
+	got := s.resolveInbounds(context.Background(), []renderItem{{name: "US-1", node: vlessRealityNode(true)}}, ports.UISettings{})
 	if inb := got[7]; inb == nil || inb.Protocol != "vless" {
 		t.Fatalf("captured node should resolve from local snapshot: %#v", got)
 	}
@@ -148,7 +148,7 @@ func TestResolveInbounds(t *testing.T) {
 	// Un-captured node → fallback fetch; unreachable panel → absent from map.
 	pool := &recordingPool{}
 	s2 := &Service{pool: pool}
-	got2 := s2.resolveInbounds(context.Background(), []renderItem{{name: "US-1", node: vlessRealityNode(false)}})
+	got2 := s2.resolveInbounds(context.Background(), []renderItem{{name: "US-1", node: vlessRealityNode(false)}}, ports.UISettings{})
 	if !pool.got.Load() {
 		t.Fatalf("un-captured node should trigger a fallback fetch")
 	}
@@ -170,7 +170,7 @@ func TestBuildProxies_NoLocalConfig_FallsBackToFetch(t *testing.T) {
 	u := &domain.User{ID: 5, UUID: "uuid-of-user-5"}
 	items := []renderItem{{name: "US-1", node: vlessRealityNode(false)}}
 
-	out := s.buildProxies(context.Background(), u, items)
+	out := s.buildProxies(context.Background(), u, items, ports.UISettings{EmailDomain: "kazuha.org"})
 
 	if !pool.got.Load() {
 		t.Fatalf("expected a live fetch when ConfigSyncedAt is nil, pool was never consulted")

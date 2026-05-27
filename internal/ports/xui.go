@@ -22,6 +22,13 @@ type XUIClient interface {
 	// internally so existing clients in the inbound are preserved.
 	AddClient(ctx context.Context, inboundID int, spec ClientSpec) error
 	UpdateClient(ctx context.Context, inboundID int, clientUUID string, spec ClientSpec) error
+	// UpdateClientWithInbound is UpdateClient with a pre-fetched Inbound
+	// supplied by the caller — skips the per-call GetInbound that
+	// UpdateClient runs to read the inbound's other clients. Used by
+	// the traffic poll's push phase and reconcile, where the inbound
+	// has already been fetched via ListInbounds; saves one HTTP
+	// round-trip per push. inb must NOT be nil.
+	UpdateClientWithInbound(ctx context.Context, inb *Inbound, clientUUID string, spec ClientSpec) error
 	DelClient(ctx context.Context, inboundID int, clientUUID string) error
 	DelClientByEmail(ctx context.Context, inboundID int, email string) error
 	CopyClients(ctx context.Context, srcInboundID, dstInboundID int, emails []string) error

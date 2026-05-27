@@ -2,11 +2,14 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import '@fontsource/roboto/400.css'
 import '@fontsource/roboto/500.css'
-// Chinese font that pairs with Roboto (same Google designers; matches stroke
-// weight, x-height and corner radius). @fontsource splits by unicode-range so
-// only the CJK subset is fetched for Chinese-content pages.
-import '@fontsource/noto-sans-sc/400.css'
-import '@fontsource/noto-sans-sc/500.css'
+// @fontsource/noto-sans-sc was previously imported here, but every weight
+// pulled in ~196 woff/woff2 unicode-range subsets — 392 font files total
+// shipped in dist, and a 260KB CSS file with ~400 @font-face declarations
+// parsed on every page load. The theme's font-family stack already
+// covers CJK rendering via system fonts (PingFang SC on macOS,
+// Microsoft YaHei on Windows, Hiragino Sans on iOS) which all Chinese-
+// reading platforms ship with. Re-add a custom font-subset here if a
+// future deployment specifically needs Noto Sans SC.
 import i18n, { i18nReady } from '@/i18n'
 import App from '@/App'
 

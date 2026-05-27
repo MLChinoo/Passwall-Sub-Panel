@@ -339,13 +339,19 @@ export default function UsersView() {
   // time the items list changes (any page / sort / search). loadSeq
   // pins the usageMap to the most recent successful response so a slow
   // earlier fetch can't pair stale usage with a newer page's rows.
+  //
+  // limit is capped at the current page size — pre-fix this asked for
+  // 1000 every time, which on the backend triggered a paginated walk
+  // of 1000 users plus a per-page batch report-fetch. The visible
+  // table is at most pageSize rows, so a tighter cap means the dashboard
+  // never pulls more usage rows than it shows.
   const usageSeq = useRef(0)
   useEffect(() => {
     const seq = ++usageSeq.current
-    void topTraffic(1000)
+    void topTraffic(Math.max(pageSize, 25))
       .then(rows => { if (seq === usageSeq.current) setUsageMap(new Map(rows.map(r => [r.user_id, r]))) })
       .catch(() => { /* table just won't show usage; not fatal */ })
-  }, [items])
+  }, [items, pageSize])
 
   async function loadGroups() {
     try { const res = await listGroups(); setGroups(res.items) } catch { /* toast */ }

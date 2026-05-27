@@ -30,7 +30,13 @@ func nodeHasLocalConfig(n *domain.Node) bool {
 // panel was unreachable on the fallback path) is skipped + warned by the
 // caller. All three render paths (mihomo / sing-box / URI-list) share this, so
 // the local-first + bulk-fallback policy lives in exactly one place.
-func (s *Service) resolveInbounds(ctx context.Context, items []renderItem) map[int64]*ports.Inbound {
+//
+// st carries the per-request UISettings (loaded once at the top of
+// RenderForUser) so the fallback path's MaxPanelConcurrency lookup doesn't
+// re-load. When the caller can't supply settings (test fixtures with nil
+// Settings repo), zero-value UISettings is safe — paneltz.ResolveMaxPanelConcurrency
+// falls back to its built-in default.
+func (s *Service) resolveInbounds(ctx context.Context, items []renderItem, st ports.UISettings) map[int64]*ports.Inbound {
 	out := make(map[int64]*ports.Inbound, len(items))
 	var fallback []renderItem
 	for _, it := range items {
@@ -44,7 +50,7 @@ func (s *Service) resolveInbounds(ctx context.Context, items []renderItem) map[i
 		}
 	}
 	if len(fallback) > 0 {
-		for id, inb := range s.prefetchInboundsForRender(ctx, fallback) {
+		for id, inb := range s.prefetchInboundsForRender(ctx, fallback, st) {
 			out[id] = inb
 		}
 	}

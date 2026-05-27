@@ -16,8 +16,8 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
-func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain.Template, items []renderItem, rulesCommon string, proxyGroupOrder []string) (*Output, error) {
-	outbounds := s.buildSingBoxOutbounds(ctx, u, items, proxyGroupOrder, u.PersonalRules, rulesCommon)
+func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain.Template, items []renderItem, rulesCommon string, proxyGroupOrder []string, st ports.UISettings) (*Output, error) {
+	outbounds := s.buildSingBoxOutbounds(ctx, u, items, proxyGroupOrder, st, u.PersonalRules, rulesCommon)
 	outboundsJSON, err := marshalJSONBlock(outbounds)
 	if err != nil {
 		return nil, fmt.Errorf("marshal sing-box outbounds: %w", err)
@@ -37,17 +37,16 @@ func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain
 		"outbounds":   outboundsJSON,
 		"route_rules": rulesJSON,
 	})
-	body = substituteInlinePlaceholders(body, mergePlaceholders(s.profilePlaceholders(ctx, u), map[string]string{
+	body = substituteInlinePlaceholders(body, mergePlaceholders(s.profilePlaceholders(u, st), map[string]string{
 		"final_outbound": finalJSON,
 	}))
 
 	// Build profile name for Content-Disposition header.
-	profileName := s.buildProfileName(ctx, u)
+	profileName := buildProfileName(u, st)
 	encodedName := url.PathEscape(profileName)
 
-	// Get update interval from settings.
 	updateInterval := 24
-	if st, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil && st.SubUpdateIntervalHours > 0 {
+	if st.SubUpdateIntervalHours > 0 {
 		updateInterval = st.SubUpdateIntervalHours
 	}
 
@@ -68,7 +67,7 @@ func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain
 	}, nil
 }
 
-func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, items []renderItem, preferredOrder []string, ruleParts ...string) []map[string]any {
+func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, items []renderItem, preferredOrder []string, st ports.UISettings, ruleParts ...string) []map[string]any {
 	out := []map[string]any{
 		{"type": "direct", "tag": "direct"},
 		{"type": "block", "tag": "block"},
@@ -76,12 +75,11 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 
 	// Same EmailRules resolution as mihomo's buildProxies — needed so the
 	// WireGuard dispatcher can look up the user's peer entry by email.
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
 	// Local snapshot for captured nodes, one batched ListInbounds per panel for
 	// the un-captured transition-window remainder. See resolveInbounds.
-	inboundByNode := s.resolveInbounds(ctx, items)
+	inboundByNode := s.resolveInbounds(ctx, items, st)
 
 	nodeTags := make([]string, 0, len(items))
 	for _, it := range items {

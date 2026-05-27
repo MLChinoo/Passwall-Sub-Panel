@@ -11,10 +11,20 @@ package paneltz
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
+
+// locationCache memoises time.LoadLocation results. Go's stdlib re-parses
+// the zoneinfo table on every call — at admin dashboard / sub render
+// scale that's hundreds of redundant parses per second. *time.Location
+// is immutable once obtained, so an unbounded map is safe; the key set
+// is bounded by the IANA tz database size (~600 entries max). Empty
+// string and unparseable values resolve to time.Local and are cached
+// under their literal key so the negative path is also fast.
+var locationCache sync.Map // map[string]*time.Location
 
 // Location resolves the configured panel timezone. Falls back to
 // time.Local when the settings repo is nil, the load errors out, the
@@ -36,13 +46,19 @@ func Location(ctx context.Context, settings ports.SettingsRepo) *time.Location {
 // already hold the settings value (e.g. inside a DTO mapper that just
 // loaded settings) to avoid a second repo round-trip.
 func LocationOf(tz string) *time.Location {
-	if strings.TrimSpace(tz) == "" {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
 		return time.Local
 	}
-	if l, err := time.LoadLocation(strings.TrimSpace(tz)); err == nil {
-		return l
+	if cached, ok := locationCache.Load(tz); ok {
+		return cached.(*time.Location)
 	}
-	return time.Local
+	loc := time.Local
+	if l, err := time.LoadLocation(tz); err == nil {
+		loc = l
+	}
+	locationCache.Store(tz, loc)
+	return loc
 }
 
 // EndOfDay parses a "2006-01-02" calendar date and returns the instant at

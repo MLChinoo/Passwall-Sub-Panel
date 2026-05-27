@@ -225,6 +225,16 @@ func (r *memoryUserRepo) Update(ctx context.Context, u *domain.User) error {
 	return nil
 }
 
+func (r *memoryUserRepo) UpdateBlockViolation(ctx context.Context, userID int64, count int, lastAt time.Time, detail string) error {
+	if cur, ok := r.byID[userID]; ok {
+		cur.BlockViolationCount = count
+		la := lastAt
+		cur.LastBlockViolationAt = &la
+		cur.DisableDetail = detail
+	}
+	return nil
+}
+
 func (r *memoryUserRepo) UpdateTrafficState(ctx context.Context, u *domain.User) error {
 	cur, ok := r.byID[u.ID]
 	if !ok {

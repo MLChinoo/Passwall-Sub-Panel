@@ -92,3 +92,31 @@ func (r *groupRepo) CountMembers(ctx context.Context, id int64) (int64, error) {
 	err := r.db.WithContext(ctx).Model(&userRow{}).Where("group_id = ?", id).Count(&n).Error
 	return n, err
 }
+
+// CountMembersByGroups runs a single GROUP BY to fetch counts for every
+// group in ids. Used by the admin /groups list endpoint to avoid the
+// N+1 Count(*) it previously did one-per-row.
+func (r *groupRepo) CountMembersByGroups(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	type row struct {
+		GroupID int64 `gorm:"column:group_id"`
+		N       int64 `gorm:"column:n"`
+	}
+	var rows []row
+	err := r.db.WithContext(ctx).
+		Model(&userRow{}).
+		Select("group_id, COUNT(*) AS n").
+		Where("group_id IN ?", ids).
+		Group("group_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.GroupID] = r.N
+	}
+	return out, nil
+}

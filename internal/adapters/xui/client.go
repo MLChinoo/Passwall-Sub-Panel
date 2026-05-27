@@ -319,6 +319,21 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 	if err != nil {
 		return err
 	}
+	return c.updateClientWithInboundLocked(ctx, inb, clientUUID, spec)
+}
+
+// UpdateClientWithInbound is UpdateClient with a pre-fetched inbound —
+// saves the GetInbound round-trip when the caller already has the
+// inbound in hand (e.g. traffic-poll push phase, reconcile drift fix).
+func (c *Client) UpdateClientWithInbound(ctx context.Context, inb *ports.Inbound, clientUUID string, spec ports.ClientSpec) error {
+	if inb == nil {
+		return fmt.Errorf("UpdateClientWithInbound: inb is nil")
+	}
+	defer c.lockInbound(inb.ID)()
+	return c.updateClientWithInboundLocked(ctx, inb, clientUUID, spec)
+}
+
+func (c *Client) updateClientWithInboundLocked(ctx context.Context, inb *ports.Inbound, clientUUID string, spec ports.ClientSpec) error {
 	settings, err := updateClientInSettings(inb.Settings, clientUUID, spec)
 	if err != nil {
 		return err
@@ -335,8 +350,8 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		Allocate:       inb.Allocate,
 		ExpiryTime:     inb.ExpiryTime,
 	}
-	body := specToRaw(&inboundSpec, inboundID)
-	return c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/update/"+strconv.Itoa(inboundID), body, nil)
+	body := specToRaw(&inboundSpec, inb.ID)
+	return c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/update/"+strconv.Itoa(inb.ID), body, nil)
 }
 
 func (c *Client) DelClient(ctx context.Context, inboundID int, clientUUID string) error {

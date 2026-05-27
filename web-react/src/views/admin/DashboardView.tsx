@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import {
   Box,
   Card,
@@ -24,11 +24,8 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import ScheduleIcon from '@mui/icons-material/Schedule'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
-import { listUsers } from '@/api/users'
-import { listNodes } from '@/api/nodes'
-import { listGroups } from '@/api/groups'
+import { dashboardSummary, type DashboardSummary } from '@/api/dashboard'
 import { topTraffic, trafficHistory, type TrafficHistoryItem, type TrafficRow } from '@/api/traffic'
-import type { Node, User } from '@/api/types'
 import type { M3Tokens } from '@/theme'
 
 const TrafficChart = lazy(() => import('@/components/TrafficChart'))
@@ -101,18 +98,13 @@ function MetricCard({ labelKey, value, subtitle, Icon, tone, loading }: MetricCa
   )
 }
 
-const EXPIRING_WINDOW_DAYS = 7
-
 export default function DashboardView() {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation('admin')
 
   const [loading, setLoading] = useState(true)
-  const [users, setUsers] = useState<User[]>([])
-  const [userTotal, setUserTotal] = useState(0)
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [groupCount, setGroupCount] = useState(0)
+  const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [topUsers, setTopUsers] = useState<TrafficRow[]>([])
   const [trend, setTrend] = useState<TrafficHistoryItem[]>([])
   const [trendLoading, setTrendLoading] = useState(true)
@@ -121,20 +113,18 @@ export default function DashboardView() {
     let cancelled = false
     async function load() {
       try {
-        // Fetch a big enough page for client-side aggregation. Typical
-        // self-host scale fits in one page; if you grow past 500 users
-        // we should add a dedicated /dashboard summary endpoint.
-        const [u, n, g, top] = await Promise.all([
-          listUsers({ page: 1, page_size: 500 }),
-          listNodes({ page: 1, page_size: 500 }),
-          listGroups(),
+        // The dashboard summary endpoint returns pre-aggregated counts
+        // + the small "expiring" and "node alerts" lists the page
+        // renders. Pre-fix this hook fetched listUsers({page_size:500})
+        // + listNodes({page_size:500}) + listGroups() purely to compute
+        // four counters and two five-row lists — the entire user and
+        // node lists were downloaded on every dashboard open.
+        const [s, top] = await Promise.all([
+          dashboardSummary(),
           topTraffic(5).catch(() => []),
         ])
         if (cancelled) return
-        setUsers(u.items)
-        setUserTotal(u.total)
-        setNodes(n.items)
-        setGroupCount(g.items.length)
+        setSummary(s)
         setTopUsers(top)
       } finally {
         if (!cancelled) setLoading(false)
@@ -158,43 +148,20 @@ export default function DashboardView() {
     return () => { cancelled = true }
   }, [])
 
-  // Derived aggregates — memoized so a re-render doesn't recompute the
-  // same filters/counts over the (potentially 500-entry) user list.
-  const stats = useMemo(() => {
-    const now = Date.now()
-    let enabled = 0
-    let disabled = 0
-    let emergency = 0
-    const expiring: User[] = []
-    const windowMs = EXPIRING_WINDOW_DAYS * 86400000
-    for (const u of users) {
-      if (u.enabled) enabled++; else disabled++
-      if (u.emergency_until && new Date(u.emergency_until).getTime() > now) emergency++
-      if (u.expire_at) {
-        const exp = new Date(u.expire_at).getTime()
-        const diff = exp - now
-        if (diff >= 0 && diff <= windowMs) expiring.push(u)
-      }
-    }
-    expiring.sort((a, b) => {
-      // Soonest first — that's the order an admin scanning the list cares about.
-      return new Date(a.expire_at!).getTime() - new Date(b.expire_at!).getTime()
-    })
-    return { enabled, disabled, emergency, expiring: expiring.slice(0, 5) }
-  }, [users])
-
-  const nodeAlerts = useMemo(() => {
-    // Only enabled nodes are probed; surface anything that isn't ok so
-    // the admin sees actual issues, not a wall of green dots.
-    return nodes
-      .filter(n => n.enabled && n.health_state && n.health_state !== 'ok')
-      .slice(0, 5)
-  }, [nodes])
-
-  const healthyCount = useMemo(() => {
-    return nodes.filter(n => n.enabled && n.health_state === 'ok').length
-  }, [nodes])
-  const enabledNodeCount = nodes.filter(n => n.enabled).length
+  // Aggregates now come pre-computed from /admin/dashboard/summary,
+  // so the page no longer downloads + walks the full user / node lists
+  // to render four counters.
+  const stats = {
+    enabled: summary?.user_enabled ?? 0,
+    disabled: summary?.user_disabled ?? 0,
+    emergency: summary?.user_emergency ?? 0,
+    expiring: summary?.expiring_users ?? [],
+  }
+  const nodeAlerts = summary?.node_alerts ?? []
+  const healthyCount = summary?.node_healthy ?? 0
+  const enabledNodeCount = summary?.node_enabled ?? 0
+  const userTotal = summary?.user_total ?? 0
+  const groupCount = summary?.group_count ?? 0
 
   return (
     <Box sx={{ p: { xs: 2, sm: 3 } }}>

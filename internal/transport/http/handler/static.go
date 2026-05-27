@@ -6,11 +6,58 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/web"
 )
+
+// staticAsset holds a pre-loaded embedded SPA file. Pre-fix StaticSPA
+// called fs.ReadFile + mime.TypeByExtension on every request — fine in
+// theory because go:embed reads are memory-backed, but at polling-
+// dashboard rate this still showed up. Loading once at init eliminates
+// the syscall-shaped overhead and the per-request mime lookup.
+type staticAsset struct {
+	body        []byte
+	contentType string
+}
+
+var (
+	staticAssetsOnce sync.Once
+	staticAssets     map[string]staticAsset
+)
+
+// loadStaticAssets walks the embedded dist tree once and builds a
+// path → asset map. Pre-computes Content-Type so the request path
+// never has to compute it.
+func loadStaticAssets() map[string]staticAsset {
+	staticAssetsOnce.Do(func() {
+		out := map[string]staticAsset{}
+		sub, err := fs.Sub(web.DistFS, "dist")
+		if err != nil {
+			staticAssets = out
+			return
+		}
+		_ = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			b, rerr := fs.ReadFile(sub, path)
+			if rerr != nil {
+				return nil
+			}
+			ct := mime.TypeByExtension(filepath.Ext(path))
+			if ct == "" {
+				ct = "application/octet-stream"
+			}
+			out[path] = staticAsset{body: b, contentType: ct}
+			return nil
+		})
+		staticAssets = out
+	})
+	return staticAssets
+}
 
 // StaticSPA serves the embedded SPA bundle and falls back to index.html for
 // any non-asset path (so React Router's history mode works).
@@ -26,8 +73,8 @@ import (
 //     on every build, which is what triggers the browser to pick up the new
 //     bundle.
 func StaticSPA(c *gin.Context) {
-	sub, err := fs.Sub(web.DistFS, "dist")
-	if err != nil {
+	assets := loadStaticAssets()
+	if len(assets) == 0 {
 		c.String(http.StatusInternalServerError, "frontend bundle not embedded")
 		return
 	}
@@ -37,14 +84,9 @@ func StaticSPA(c *gin.Context) {
 		requested = "index.html"
 	}
 
-	// Try the literal asset first.
-	if b, err := fs.ReadFile(sub, requested); err == nil {
-		ct := mime.TypeByExtension(filepath.Ext(requested))
-		if ct == "" {
-			ct = "application/octet-stream"
-		}
+	if a, ok := assets[requested]; ok {
 		setCacheHeaders(c, requested)
-		c.Data(http.StatusOK, ct, b)
+		c.Data(http.StatusOK, a.contentType, a.body)
 		return
 	}
 
@@ -55,9 +97,9 @@ func StaticSPA(c *gin.Context) {
 	}
 
 	// SPA fallback to index.html.
-	if b, err := fs.ReadFile(sub, "index.html"); err == nil {
+	if a, ok := assets["index.html"]; ok {
 		setCacheHeaders(c, "index.html")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", b)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", a.body)
 		return
 	}
 

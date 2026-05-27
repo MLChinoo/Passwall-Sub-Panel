@@ -30,13 +30,12 @@ import (
 //
 // The whole document is then standard-base64 encoded (no line breaks) so it
 // matches what these clients fetch with their built-in subscription updater.
-func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []renderItem) (*Output, error) {
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
+func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []renderItem, st ports.UISettings) (*Output, error) {
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
 	// Local snapshot for captured nodes, one batched ListInbounds per panel for
 	// the un-captured transition-window remainder. See resolveInbounds.
-	inboundByNode := s.resolveInbounds(ctx, items)
+	inboundByNode := s.resolveInbounds(ctx, items, st)
 
 	lines := make([]string, 0, len(items))
 	for _, it := range items {
@@ -72,11 +71,11 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 	plain := strings.Join(lines, "\n")
 	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
 
-	profileName := s.buildProfileName(ctx, u)
+	profileName := buildProfileName(u, st)
 	encodedName := url.PathEscape(profileName)
 
 	updateInterval := 24
-	if st, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil && st.SubUpdateIntervalHours > 0 {
+	if st.SubUpdateIntervalHours > 0 {
 		updateInterval = st.SubUpdateIntervalHours
 	}
 

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,6 +16,12 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
 )
 
+// AsyncDispatch is the minimal subset of httptransport.AsyncDispatcher
+// this middleware uses to defer the audit INSERT off the request thread.
+// Stripped to a single method to avoid importing the transport package
+// (which would create a cycle).
+type AsyncDispatch func(name string, fn func(ctx context.Context))
+
 // AuditWrites records every write request (POST/PUT/PATCH/DELETE) that lands
 // on an audited path. Attached at the engine level so it covers admin
 // endpoints AND user-side self-service AND the local login endpoint —
@@ -22,7 +29,15 @@ import (
 //
 // Path filter runs BEFORE the request body is read, so static asset / sub
 // fetch / health probe traffic doesn't pay the io.ReadAll cost.
-func AuditWrites(auditSvc *audit.Service) gin.HandlerFunc {
+//
+// The audit INSERT is dispatched through async (best-effort fire-and-forget,
+// shielded + WaitGroup-tracked) so the request thread doesn't block on
+// the fsync. Pre-fix every admin write blocked on a synchronous INSERT
+// before flushing the response — ~5-50ms per write on SQLite, worse under
+// contention. dispatch=nil keeps the legacy synchronous path (test harness
+// + any wiring path that doesn't have an AsyncDispatcher) so tests stay
+// deterministic.
+func AuditWrites(auditSvc *audit.Service, dispatch AsyncDispatch) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if auditSvc == nil || !shouldAuditPath(c.Request.URL.Path, c.Request.Method) {
 			c.Next()
@@ -56,6 +71,9 @@ func AuditWrites(auditSvc *audit.Service) gin.HandlerFunc {
 		if len(c.Errors) > 0 {
 			after["errors"] = c.Errors.String()
 		}
+		// Capture the IP from the request thread (c.ClientIP is gin-context
+		// bound — touching it from the dispatched goroutine after the
+		// request returns is unsafe).
 		entry := &domain.AuditEntry{
 			Actor:      actor,
 			Action:     actionName(c.Request.Method, path),
@@ -64,6 +82,14 @@ func AuditWrites(auditSvc *audit.Service) gin.HandlerFunc {
 			AfterJSON:  auditJSON(after),
 			IP:         c.ClientIP(),
 			At:         time.Now(),
+		}
+		if dispatch != nil {
+			dispatch("audit.insert", func(ctx context.Context) {
+				if err := auditSvc.Insert(ctx, entry); err != nil {
+					log.Warn("audit middleware insert failed", "err", err)
+				}
+			})
+			return
 		}
 		if err := auditSvc.Insert(c.Request.Context(), entry); err != nil {
 			log.Warn("audit middleware insert failed", "err", err)

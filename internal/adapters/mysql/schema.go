@@ -32,7 +32,12 @@ type userRow struct {
 	// AutoMigrate; first-time SSO login backfills sso_subject on demand.
 	SSOProvider        string `gorm:"size:64;not null;default:local;index:idx_user_sso,priority:1"`
 	SSOSubject         string `gorm:"size:255;not null;default:'';index:idx_user_sso,priority:2"`
-	Email              string `gorm:"size:255;index"`
+	// Email previously carried `;index` but no callsite ever issued
+	// `WHERE email = ?` — every search is `LOWER(email) LIKE ?` which
+	// can't use a B-tree index. The index was pure write amplification
+	// on the busy users table. cleanupLegacyState drops the existing
+	// auto-named idx_users_email so upgraded installs reclaim it.
+	Email              string `gorm:"size:255"`
 	PasswordHash       string `gorm:"size:255"`
 	Role               string `gorm:"size:16;not null;default:user"`
 	SubToken           string `gorm:"size:64;uniqueIndex;not null"`
@@ -594,10 +599,15 @@ type syncTaskRow struct {
 	Payload    string `gorm:"type:text"`
 	LastError  string `gorm:"type:text"`
 	Attempts   int
-	NextRunAt  time.Time `gorm:"index:idx_task_due,priority:3"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	FinishedAt *time.Time
+	NextRunAt time.Time `gorm:"index:idx_task_due,priority:3"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// idx_task_finished covers the hourly cleanup paths
+	// (DeleteSucceededBefore + DeleteFinished) which filter on
+	// finished_at. Neither idx_task_due (type, status, next_run_at)
+	// nor idx_task_target (target_type, target_id) helps; without
+	// this index the prune scans the whole table.
+	FinishedAt *time.Time `gorm:"index:idx_task_finished"`
 }
 
 func (syncTaskRow) TableName() string { return "sync_tasks" }
@@ -743,7 +753,11 @@ type mailSentRow struct {
 	Kind      string `gorm:"size:32;not null;uniqueIndex:uk_mail_once,priority:2"`
 	WindowKey string `gorm:"size:128;not null;uniqueIndex:uk_mail_once,priority:3"`
 	ToEmail   string `gorm:"size:255;not null"`
-	SentAt    time.Time
+	// idx_mail_sent_at covers the hourly retention DELETE
+	// (WHERE sent_at < cutoff). uk_mail_once can't serve it — user_id
+	// leads — so without the dedicated index the prune degenerates to
+	// a full table scan as mail_sent grows.
+	SentAt time.Time `gorm:"index:idx_mail_sent_at"`
 }
 
 func (mailSentRow) TableName() string { return "mail_sent" }
@@ -1115,6 +1129,17 @@ func cleanupLegacyState(db *gorm.DB) error {
 		fmt.Println("[cleanupLegacyState] dropping legacy single-column index sub_logs.idx_sub_logs_accessed_at (superseded by dedicated idx_sub_accessed)")
 		if err := db.Migrator().DropIndex(&subLogRow{}, "idx_sub_logs_accessed_at"); err != nil {
 			fmt.Printf("[cleanupLegacyState] WARN: drop legacy idx_sub_logs_accessed_at failed: %v (continuing — redundant index is harmless)\n", err)
+		}
+	}
+
+	// v3.6.1-beta.6: users.email's auto-named idx_users_email is dead
+	// weight — no callsite issues `WHERE email = ?` (all searches go
+	// through `LOWER(email) LIKE ?`, which can't use a B-tree index).
+	// Pure write amplification on user upserts; drop it. Best-effort.
+	if db.Migrator().HasIndex(&userRow{}, "idx_users_email") {
+		fmt.Println("[cleanupLegacyState] dropping unused index users.idx_users_email (no callsite uses an equality predicate)")
+		if err := db.Migrator().DropIndex(&userRow{}, "idx_users_email"); err != nil {
+			fmt.Printf("[cleanupLegacyState] WARN: drop unused idx_users_email failed: %v (continuing — index is harmless beyond the wasted writes)\n", err)
 		}
 	}
 

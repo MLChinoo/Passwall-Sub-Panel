@@ -41,8 +41,18 @@ type UserLookup interface {
 // Authenticated requests also re-check the live user through a short in-memory
 // LRU so deletes/disables/role changes take effect quickly without hitting the
 // DB on every request.
+//
+// TTL = 60s. Pre-v3.6.1-beta.6 this was 5s, which meant any authenticated
+// client polling faster than 5s (admin dashboards, /traffic/top, the user
+// portal's auto-refresh) bypassed the cache on every request — at active-
+// session scale that was ~one DB user-lookup per request per logged-in
+// admin. Bumping to 60s caps the worst-case "revoked JWT still works"
+// window to 60s; the trade-off is acceptable for a small self-use panel
+// where admin demote/disable are rare events. Per-user.Service-write
+// invalidation would tighten this further but requires plumbing through
+// every mutator path — out of scope for this batch.
 func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
-	userCache := newAuthUserLRU(4096, 5*time.Second)
+	userCache := newAuthUserLRU(4096, 60*time.Second)
 	return func(c *gin.Context) {
 		raw := bearerToken(c.GetHeader("Authorization"))
 		if raw == "" {
@@ -80,8 +90,8 @@ func RequireAuth(svc *auth.Service, users UserLookup) gin.HandlerFunc {
 		// TokenVersion gate: a JWT whose tv claim is older than the live
 		// row's value has been revoked (admin disable / role demote /
 		// password change all bump the version). The cache TTL caps how
-		// long a stale token can survive past the bump — same 5 s window
-		// as the role-demote story above.
+		// long a stale token can survive past the bump (see TTL note on
+		// newAuthUserLRU above).
 		if u.TokenVersion != claims.TokenVersion {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Session revoked, please sign in again"})
 			return

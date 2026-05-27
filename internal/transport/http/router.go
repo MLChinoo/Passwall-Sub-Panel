@@ -110,7 +110,14 @@ func NewRouter(d Deps) *gin.Engine {
 	// endpoints AND the login attempt AND user self-service writes. The
 	// path/method filter inside the middleware short-circuits cheaply for
 	// everything else (static assets, sub fetches, health probes).
-	g.Use(middleware.AuditWrites(d.Audit))
+	// Dispatch the audit INSERT off the request thread when we have an
+	// async dispatcher wired (production). Test paths that build a
+	// router without one fall through to the synchronous legacy path.
+	var auditDispatch middleware.AsyncDispatch
+	if d.Async != nil {
+		auditDispatch = d.Async.Go
+	}
+	g.Use(middleware.AuditWrites(d.Audit, auditDispatch))
 
 	// Public endpoints
 	g.GET("/health", handler.Health)
@@ -260,6 +267,9 @@ func NewRouter(d Deps) *gin.Engine {
 		// wipe history.
 		staffGroup.GET("/audit", auditH.List)
 		adminGroup.DELETE("/audit", auditH.Clear)
+
+		dashboard := handler.NewAdminDashboardHandler(d.Repos.User, d.Repos.Node, d.Repos.Group, d.Repos.XUIPanel)
+		staffGroup.GET("/dashboard/summary", dashboard.Summary)
 
 		trafficH := handler.NewAdminTrafficHandler(d.Repos.User, d.Repos.Node, d.Repos.XUIPanel, d.Traffic, d.Repos.Settings)
 		staffGroup.GET("/traffic/top", trafficH.Top)

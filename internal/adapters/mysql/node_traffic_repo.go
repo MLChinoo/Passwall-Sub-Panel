@@ -62,6 +62,63 @@ func (r *nodeTrafficRepo) LatestForNode(ctx context.Context, nodeID int64) (*dom
 	return row.toDomain(), nil
 }
 
+// LatestForNodes mirrors trafficRepo.LatestForUsers — single SQL query
+// returning the latest snapshot row for every node in one shot. Used by
+// the admin /traffic/nodes/top dashboard to avoid N+1 LatestForNode
+// round-trips.
+func (r *nodeTrafficRepo) LatestForNodes(ctx context.Context, nodeIDs []int64) (map[int64]*domain.NodeTrafficSnapshot, error) {
+	if len(nodeIDs) == 0 {
+		return map[int64]*domain.NodeTrafficSnapshot{}, nil
+	}
+	var rows []nodeTrafficRow
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT t.* FROM node_traffic_snapshots t
+		INNER JOIN (
+			SELECT node_id, MAX(id) AS mid
+			FROM node_traffic_snapshots
+			WHERE node_id IN ?
+			GROUP BY node_id
+		) m ON t.id = m.mid
+	`, nodeIDs).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]*domain.NodeTrafficSnapshot, len(rows))
+	for i := range rows {
+		d := rows[i].toDomain()
+		out[d.NodeID] = d
+	}
+	return out, nil
+}
+
+// LastBeforeForNodes mirrors trafficRepo.LastBeforeForUsers. Returns
+// the most recent snapshot strictly before `before` for every node;
+// nodes with no prior snapshot are absent from the result map.
+func (r *nodeTrafficRepo) LastBeforeForNodes(ctx context.Context, nodeIDs []int64, before time.Time) (map[int64]*domain.NodeTrafficSnapshot, error) {
+	if len(nodeIDs) == 0 {
+		return map[int64]*domain.NodeTrafficSnapshot{}, nil
+	}
+	var rows []nodeTrafficRow
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT t.* FROM node_traffic_snapshots t
+		INNER JOIN (
+			SELECT node_id, MAX(id) AS mid
+			FROM node_traffic_snapshots
+			WHERE node_id IN ? AND captured_at < ?
+			GROUP BY node_id
+		) m ON t.id = m.mid
+	`, nodeIDs, before).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]*domain.NodeTrafficSnapshot, len(rows))
+	for i := range rows {
+		d := rows[i].toDomain()
+		out[d.NodeID] = d
+	}
+	return out, nil
+}
+
 func (r *nodeTrafficRepo) LastBefore(ctx context.Context, nodeID int64, before time.Time) (*domain.NodeTrafficSnapshot, error) {
 	var row nodeTrafficRow
 	tx := r.db.WithContext(ctx).

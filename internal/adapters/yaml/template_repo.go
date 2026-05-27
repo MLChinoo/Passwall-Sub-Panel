@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -15,9 +16,22 @@ import (
 
 // TemplateRepo implements ports.TemplateRepo. Each template is one YAML file
 // under config/templates/.
+//
+// mtime cache: List/Get are on the /sub render hot path. Pre-cache the
+// every render did ReadDir + ReadFile + yaml.Unmarshal for every template
+// file — a polling fleet at hundreds of req/min was dominated by this
+// I/O + parse work. The cache stores the parsed *domain.Template keyed
+// by file mtime; an admin edit (via Save) increments mtime so the next
+// read picks up the new content without us tracking writes ourselves.
 type TemplateRepo struct {
-	dir string
-	mu  sync.RWMutex
+	dir   string
+	mu    sync.RWMutex
+	cache sync.Map // map[string]templateCacheEntry — key = absolute file path
+}
+
+type templateCacheEntry struct {
+	mtime time.Time
+	value *domain.Template
 }
 
 func NewTemplateRepo(configDir string) (*TemplateRepo, error) {
@@ -142,7 +156,11 @@ func (r *TemplateRepo) Save(ctx context.Context, t *domain.Template) error {
 		ProxyGroupOrder: t.ProxyGroupOrder,
 		Content:         t.Content,
 	}
-	return writeYAML(p, doc)
+	if err := writeYAML(p, doc); err != nil {
+		return err
+	}
+	r.cache.Delete(p)
+	return nil
 }
 
 func (r *TemplateRepo) Delete(ctx context.Context, slug string) error {
@@ -152,6 +170,7 @@ func (r *TemplateRepo) Delete(ctx context.Context, slug string) error {
 	if err != nil {
 		return err
 	}
+	r.cache.Delete(p)
 	return os.Remove(p)
 }
 
@@ -160,6 +179,39 @@ func (r *TemplateRepo) pathOf(slug string) (string, error) {
 }
 
 func (r *TemplateRepo) readFile(path string) (*domain.Template, error) {
+	// mtime cache: skip ReadFile+Unmarshal when the file on disk matches
+	// the cached mtime. Stat is one syscall; the saved work is the
+	// ReadFile + the YAML parse, both of which dominate at /sub render
+	// rate. A failed Stat falls through to the legacy slow path so we
+	// surface whatever the real error is (rather than masking it with a
+	// cache-bypass).
+	if st, err := os.Stat(path); err == nil {
+		if v, ok := r.cache.Load(path); ok {
+			entry := v.(templateCacheEntry)
+			if entry.mtime.Equal(st.ModTime()) {
+				return entry.value, nil
+			}
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var doc templateFile
+		if err := yaml.Unmarshal(b, &doc); err != nil {
+			return nil, err
+		}
+		t := &domain.Template{
+			Slug:            doc.Slug,
+			Name:            doc.Name,
+			ClientType:      domain.ClientType(doc.ClientType),
+			IsDefault:       doc.IsDefault,
+			RuleSets:        doc.RuleSets,
+			ProxyGroupOrder: doc.ProxyGroupOrder,
+			Content:         doc.Content,
+		}
+		r.cache.Store(path, templateCacheEntry{mtime: st.ModTime(), value: t})
+		return t, nil
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

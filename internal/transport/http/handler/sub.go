@@ -139,9 +139,11 @@ func (h *SubHandler) Get(c *gin.Context) {
 			detail := fmt.Sprintf("auto-disabled after %d violations, last client: %s", u.BlockViolationCount, detected.ClientName)
 			u.DisableDetail = detail
 
-			// Persist the violation count before SetEnabledAndSync reloads
-			// the user and propagates the disabled state to 3X-UI.
-			if err := h.users.Update(c.Request.Context(), u); err != nil {
+			// Persist via the column-scoped UpdateBlockViolation — pre-fix
+			// this was h.users.Update (full-row Save) which rewrote ~30
+			// columns + every secondary index, on the highest-RPS write
+			// path the public sub endpoint owns.
+			if err := h.users.UpdateBlockViolation(c.Request.Context(), u.ID, u.BlockViolationCount, now, detail); err != nil {
 				log.Warn("failed to update blocked-client violation count", "user_id", u.ID, "err", err)
 			}
 			if err := h.user.SetEnabledAndSync(c.Request.Context(), u.ID, false, domain.DisabledBlockedClient, detail); err != nil {
@@ -170,9 +172,10 @@ func (h *SubHandler) Get(c *gin.Context) {
 			return
 		}
 
-		// Save updated violation count (only when we actually advanced it).
+		// Save updated violation count (only when we actually advanced
+		// it). Column-scoped UpdateBlockViolation — see comment above.
 		if countViolation {
-			if err := h.users.Update(c.Request.Context(), u); err != nil {
+			if err := h.users.UpdateBlockViolation(c.Request.Context(), u.ID, u.BlockViolationCount, now, u.DisableDetail); err != nil {
 				log.Warn("failed to update violation count", "user_id", u.ID, "err", err)
 			}
 		}

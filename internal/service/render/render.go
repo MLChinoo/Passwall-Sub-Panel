@@ -45,6 +45,24 @@ type Output struct {
 	Headers     map[string]string
 }
 
+// loadRenderSettings loads UISettings once for the whole /sub request,
+// with the union of every caller's fallback defaults applied. Pre-perf
+// audit each render did 6-10 separate Settings.Load calls (region flag,
+// update interval, profile placeholders, email domain, max-concurrency,
+// profile-name template — singbox + urilist add their own); the cache
+// decorator removed the DB cost but each call still acquired the
+// RWMutex + copied the UISettings struct + ran applyUISettingsDefaults.
+// One Load + threading the value through helpers eliminates that work
+// for the polling-fleet case, which is the only case that matters here.
+func (s *Service) loadRenderSettings(ctx context.Context) ports.UISettings {
+	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{
+		SiteTitle:   "Kazuha Hub Passwall",
+		LogoURL:     "/images/logo+title-circle.png",
+		LogoURLDark: "/images/logo+title-circle-darkmode.png",
+	})
+	return st
+}
+
 // RenderForUser produces the subscription document for u.
 //
 //	┌── 1. load default template for ct
@@ -58,6 +76,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if ct == "" {
 		ct = domain.ClientMihomo
 	}
+	st := s.loadRenderSettings(ctx)
 	g, err := s.repos.Group.GetByID(ctx, u.GroupID)
 	if err != nil {
 		return nil, fmt.Errorf("load group: %w", err)
@@ -83,10 +102,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	}
 
 	items := applyLayout(nodes, separators, g.Layout)
-	// Region-flag prefix is a render-time knob from UISettings. We load the
-	// settings once here for the flag toggle; downstream callers do their
-	// own Load when they need other fields.
-	if st, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil && st.SubRegionFlagPrefix {
+	if st.SubRegionFlagPrefix {
 		applyRegionFlagPrefix(items)
 	}
 
@@ -97,14 +113,14 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	// doesn't propagate ErrNotFound up to the sub handler and produce
 	// a misleading 404 to UAs that match a uri-list rule.
 	if ct == domain.ClientURIList {
-		return s.renderURIList(ctx, u, items)
+		return s.renderURIList(ctx, u, items, st)
 	}
 
 	tpl, err := s.repos.Template.GetDefault(ctx, ct)
 	if err != nil {
 		return nil, fmt.Errorf("load template: %w", err)
 	}
-	proxies := s.buildProxies(ctx, u, items)
+	proxies := s.buildProxies(ctx, u, items, st)
 
 	proxiesYAML, err := yaml.Marshal(proxies)
 	if err != nil {
@@ -119,7 +135,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		proxyGroupOrder = tpl.ProxyGroupOrder
 	}
 	if ct == domain.ClientSingBox {
-		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder)
+		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder, st)
 	}
 	proxyGroupsYAML, err := buildProxyGroupsYAML(strings.Join([]string{u.PersonalRules, rulesCommon}, "\n"), proxyGroupOrder)
 	if err != nil {
@@ -132,16 +148,15 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		"rules_common":   strings.TrimRight(rulesCommon, "\n"),
 		"rules_personal": strings.TrimRight(u.PersonalRules, "\n"),
 	})
-	body = substituteInlinePlaceholders(body, s.profilePlaceholders(ctx, u))
+	body = substituteInlinePlaceholders(body, s.profilePlaceholders(u, st))
 	body = expandNodeRefs(body, items)
 
 	// Build profile name for Content-Disposition header.
-	profileName := s.buildProfileName(ctx, u)
+	profileName := buildProfileName(u, st)
 	encodedName := url.PathEscape(profileName)
 
-	// Get update interval from settings.
 	updateInterval := 24
-	if st, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil && st.SubUpdateIntervalHours > 0 {
+	if st.SubUpdateIntervalHours > 0 {
 		updateInterval = st.SubUpdateIntervalHours
 	}
 
@@ -188,12 +203,7 @@ func (s *Service) resolveSeparators(ctx context.Context, groupNodeIDs []int64) (
 	return out, nil
 }
 
-func (s *Service) profilePlaceholders(ctx context.Context, u *domain.User) map[string]string {
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{
-		SiteTitle:   "Kazuha Hub Passwall",
-		LogoURL:     "/images/logo+title-circle.png",
-		LogoURLDark: "/images/logo+title-circle-darkmode.png",
-	})
+func (s *Service) profilePlaceholders(u *domain.User, st ports.UISettings) map[string]string {
 	if st.SiteTitle == "" {
 		st.SiteTitle = "Kazuha Hub Passwall"
 	}
@@ -238,17 +248,16 @@ func absoluteURL(base, raw string) string {
 	return base + "/" + raw
 }
 
-func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []renderItem) []map[string]any {
+func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []renderItem, st ports.UISettings) []map[string]any {
 	// Pre-resolve EmailRules once per render. ClientEmail is per-(user,
 	// node), so the rules can be reused across the loop.
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{})
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
 
 	// Captured nodes render from the local snapshot (zero 3X-UI calls), so a
 	// subscription still renders while 3X-UI is unreachable; un-captured nodes
 	// (transition window) batch into one ListInbounds per panel. See
 	// resolveInbounds.
-	inboundByNode := s.resolveInbounds(ctx, items)
+	inboundByNode := s.resolveInbounds(ctx, items, st)
 
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
@@ -303,7 +312,7 @@ func (s *Service) fetchInbound(ctx context.Context, n *domain.Node) (*ports.Inbo
 // (panel unreachable, inbound deleted server-side) leave the affected
 // entries absent from the map; the caller logs and skips them, matching
 // the prior fall-through behaviour.
-func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderItem) map[int64]*ports.Inbound {
+func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderItem, st ports.UISettings) map[int64]*ports.Inbound {
 	// Bucket node IDs by their owning panel so each panel is touched once.
 	panelInboundIDs := map[int64]map[int]struct{}{}
 	for _, it := range items {
@@ -331,29 +340,26 @@ func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderI
 		err         error
 	}
 	// Bound the per-render fan-out with the same semaphore size every
-	// other panel-touching loop uses. Reads the admin-configured
-	// MaxPanelConcurrency through the (now cached) settings repo so
-	// raising the knob in Settings affects render the same way it
-	// affects traffic.PollOnce / reconcile.RunOnce. Falls back to the
-	// builtin default (8) if settings.Load fails — never panic on a
-	// transient DB hiccup, just degrade to the safe ceiling. /sub is
-	// the only public endpoint, so a coordinated polling fleet could
-	// otherwise pile up N concurrent ListInbounds against 3X-UI per
-	// render; the cap matches the background loops' established load
-	// ceiling.
-	configuredConcurrency := 0
-	if s.repos.Settings != nil {
-		if cfg, err := s.repos.Settings.Load(ctx, ports.UISettings{}); err == nil {
-			configuredConcurrency = cfg.MaxPanelConcurrency
-		}
-	}
-	maxConcurrency := paneltz.ResolveMaxPanelConcurrency(configuredConcurrency)
+	// other panel-touching loop uses. MaxPanelConcurrency is read from
+	// the per-request UISettings handed in by RenderForUser (loaded
+	// once at the top of the request — see loadRenderSettings). /sub
+	// is the only public endpoint, so a coordinated polling fleet
+	// could otherwise pile up N concurrent ListInbounds against 3X-UI
+	// per render; the cap matches the background loops' established
+	// load ceiling.
+	maxConcurrency := paneltz.ResolveMaxPanelConcurrency(st.MaxPanelConcurrency)
 	sem := make(chan struct{}, maxConcurrency)
 	resultsCh := make(chan panelResult, len(panelInboundIDs))
 	for pid := range panelInboundIDs {
+		// Acquire the semaphore BEFORE launching the goroutine so the
+		// goroutine count itself is bounded — pre-fix the loop would
+		// spawn all N goroutines (one per panel), each then blocking on
+		// `sem <- struct{}{}` inside. With many panels that wastes
+		// goroutine allocations + channel-send wakeups before any work
+		// can actually run.
+		sem <- struct{}{}
 		go func(p int64) {
 			defer safego.Recover("render.prefetchInbounds")
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			c, err := s.pool.Get(p)
 			if err != nil {
@@ -503,10 +509,12 @@ func RenderProfileName(settings ports.UISettings, u *domain.User) string {
 	return name
 }
 
-// buildProfileName is the render-layer convenience wrapper that loads
-// settings via the repo before delegating to RenderProfileName.
-func (s *Service) buildProfileName(ctx context.Context, u *domain.User) string {
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{SiteTitle: "Kazuha Hub Passwall"})
+// buildProfileName is the render-layer convenience wrapper that delegates
+// to RenderProfileName. Takes the per-request UISettings to avoid a
+// repeat Settings.Load — the value was already loaded once at the top
+// of RenderForUser. RenderProfileName itself fills the SiteTitle / AppTitle
+// defaults when st has them blank, so the empty struct path works the same.
+func buildProfileName(u *domain.User, st ports.UISettings) string {
 	return RenderProfileName(st, u)
 }
 

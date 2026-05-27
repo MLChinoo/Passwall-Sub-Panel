@@ -27,5 +27,23 @@ export default defineConfig({
         // the latest assets without a copy step.
         outDir: '../internal/web/dist',
         emptyOutDir: true,
+        rollupOptions: {
+            output: {
+                // Split heavy vendor deps into stable named chunks instead of
+                // bundling everything into one ~700KB main bundle. Each chunk
+                // is cached independently — a small app-code change no longer
+                // invalidates the React/MUI/echarts caches, and the chunks
+                // download in parallel rather than blocking on the megabundle.
+                // Keep the chunk count low (no granular per-package) — a long
+                // chunk list also hurts because HTTP/2 multiplex still pays
+                // per-request overhead.
+                manualChunks: {
+                    'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+                    'vendor-mui': ['@mui/material', '@mui/icons-material', '@emotion/react', '@emotion/styled'],
+                    'vendor-echarts': ['echarts'],
+                    'vendor-i18n': ['i18next', 'react-i18next'],
+                },
+            },
+        },
     },
 });

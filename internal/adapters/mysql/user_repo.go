@@ -47,6 +47,25 @@ func (r *userRepo) Update(ctx context.Context, u *domain.User) error {
 	return r.db.WithContext(ctx).Omit(pollOwnedColumns...).Save(userFromDomain(u)).Error
 }
 
+// UpdateBlockViolation writes only the blocked-client tracking columns
+// in one targeted UPDATE. The /sub endpoint hits this on every violation;
+// pre-fix this path ran the full-row Update which rewrote ~30 columns and
+// touched every secondary index on each call — significant write
+// amplification on the highest-RPS public write path.
+func (r *userRepo) UpdateBlockViolation(ctx context.Context, userID int64, count int, lastAt time.Time, detail string) error {
+	if userID == 0 {
+		return fmt.Errorf("UpdateBlockViolation requires a non-zero user ID")
+	}
+	return r.db.WithContext(ctx).
+		Model(&userRow{}).
+		Where("id = ?", userID).
+		Updates(map[string]any{
+			"block_violation_count":   count,
+			"last_block_violation_at": lastAt,
+			"disable_detail":          detail,
+		}).Error
+}
+
 // UpdateTrafficState writes only the columns the traffic poll owns, via a
 // map so zero-values (e.g. resetting period_baseline_bytes to 0) are persisted.
 // Keeps a slow poll cycle from clobbering concurrent admin / self-service edits

@@ -31,6 +31,16 @@ func (r *fakeUserRepo) Update(ctx context.Context, u *domain.User) error {
 // UpdateTrafficState mirrors the production narrow write: only the
 // traffic-owned columns are persisted onto the stored row, so the test
 // also exercises that the poll touches nothing else.
+func (r *fakeUserRepo) UpdateBlockViolation(ctx context.Context, userID int64, count int, lastAt time.Time, detail string) error {
+	if cur, ok := r.users[userID]; ok {
+		cur.BlockViolationCount = count
+		la := lastAt
+		cur.LastBlockViolationAt = &la
+		cur.DisableDetail = detail
+	}
+	return nil
+}
+
 func (r *fakeUserRepo) UpdateTrafficState(ctx context.Context, u *domain.User) error {
 	cur, ok := r.users[u.ID]
 	if !ok {
@@ -162,6 +172,21 @@ func (r *fakeTrafficRepo) LatestForUsers(ctx context.Context, userIDs []int64) (
 		s, err := r.LatestForUser(ctx, id)
 		if err != nil {
 			// ErrNotFound — omit from the map (caller treats absence as "no prev").
+			continue
+		}
+		out[id] = s
+	}
+	return out, nil
+}
+
+// LastBeforeForUsers mirrors LatestForUsers — the batched form used by
+// the admin /traffic/top dashboard. Reuses the single-user logic so the
+// per-user semantics stay aligned.
+func (r *fakeTrafficRepo) LastBeforeForUsers(ctx context.Context, userIDs []int64, before time.Time) (map[int64]*domain.TrafficSnapshot, error) {
+	out := make(map[int64]*domain.TrafficSnapshot, len(userIDs))
+	for _, id := range userIDs {
+		s, err := r.LastBefore(ctx, id, before)
+		if err != nil {
 			continue
 		}
 		out[id] = s
@@ -691,6 +716,30 @@ func (r *fakeNodeTrafficRepo) LastBefore(ctx context.Context, nodeID int64, befo
 	}
 	return latest, nil
 }
+func (r *fakeNodeTrafficRepo) LatestForNodes(ctx context.Context, nodeIDs []int64) (map[int64]*domain.NodeTrafficSnapshot, error) {
+	out := make(map[int64]*domain.NodeTrafficSnapshot, len(nodeIDs))
+	for _, id := range nodeIDs {
+		s, err := r.LatestForNode(ctx, id)
+		if err != nil {
+			continue
+		}
+		out[id] = s
+	}
+	return out, nil
+}
+
+func (r *fakeNodeTrafficRepo) LastBeforeForNodes(ctx context.Context, nodeIDs []int64, before time.Time) (map[int64]*domain.NodeTrafficSnapshot, error) {
+	out := make(map[int64]*domain.NodeTrafficSnapshot, len(nodeIDs))
+	for _, id := range nodeIDs {
+		s, err := r.LastBefore(ctx, id, before)
+		if err != nil {
+			continue
+		}
+		out[id] = s
+	}
+	return out, nil
+}
+
 func (r *fakeNodeTrafficRepo) ListByNode(ctx context.Context, nodeID int64, since, until time.Time) ([]*domain.NodeTrafficSnapshot, error) {
 	out := []*domain.NodeTrafficSnapshot{}
 	for _, s := range r.snapshots {
@@ -916,6 +965,9 @@ func (c *fakeXUIClient) AddClient(ctx context.Context, inboundID int, spec ports
 	return nil
 }
 func (c *fakeXUIClient) UpdateClient(ctx context.Context, inboundID int, clientUUID string, spec ports.ClientSpec) error {
+	return nil
+}
+func (c *fakeXUIClient) UpdateClientWithInbound(ctx context.Context, inb *ports.Inbound, clientUUID string, spec ports.ClientSpec) error {
 	return nil
 }
 func (c *fakeXUIClient) DelClient(ctx context.Context, inboundID int, clientUUID string) error {

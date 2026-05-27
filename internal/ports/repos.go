@@ -97,6 +97,14 @@ type UserRepo interface {
 	// clears). Writing them here from the poll's stale snapshot would silently
 	// revoke an emergency window granted concurrently mid-cycle.
 	UpdateTrafficState(ctx context.Context, u *domain.User) error
+	// UpdateBlockViolation persists ONLY the blocked-client tracking
+	// columns. /sub is the hottest write path on the public endpoint —
+	// pre-fix every violation triggered a full-row Update that rewrote
+	// ~30 columns plus their secondary indexes (upn / sub_token / sso
+	// composite / group_id). The same write-amplification concern as
+	// UpdateTrafficState / UpdateHealth: narrow the touched columns so
+	// concurrent admin edits aren't clobbered and writes stay cheap.
+	UpdateBlockViolation(ctx context.Context, userID int64, count int, lastAt time.Time, detail string) error
 	// BatchUpdateTrafficState runs N UpdateTrafficState writes in one
 	// transaction. The traffic poll calls it ONCE at end-of-cycle instead
 	// of issuing N inline UPDATEs while it walks the user list. On SQLite
@@ -149,6 +157,11 @@ type GroupRepo interface {
 	// else falls back to "id".
 	ListPaged(ctx context.Context, p Pagination) (items []*domain.Group, total int64, err error)
 	CountMembers(ctx context.Context, id int64) (int64, error)
+	// CountMembersByGroups returns counts for many groups in one query.
+	// Eliminates the per-row Count round-trip the admin /groups list
+	// would otherwise issue on every render. Missing IDs in the result
+	// map mean zero (no rows reference that group_id).
+	CountMembersByGroups(ctx context.Context, ids []int64) (map[int64]int64, error)
 }
 
 type NodeRepo interface {
@@ -265,6 +278,12 @@ type TrafficRepo interface {
 	// statement; relies on the (user_id, captured_at) composite index.
 	LatestForUsers(ctx context.Context, userIDs []int64) (map[int64]*domain.TrafficSnapshot, error)
 	LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error)
+	// LastBeforeForUsers is the batched form of LastBefore. The admin
+	// /traffic/top dashboard previously issued one LastBefore per user
+	// (for the today-baseline lookup) on top of one LatestForUser per
+	// user — at page_size=100 that was 200+ round-trips per /top click.
+	// Single SQL query with the same MAX(id) pattern LatestForUsers uses.
+	LastBeforeForUsers(ctx context.Context, userIDs []int64, before time.Time) (map[int64]*domain.TrafficSnapshot, error)
 	ListByUser(ctx context.Context, userID int64, since, until time.Time) ([]*domain.TrafficSnapshot, error)
 	InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error
 	// InsertBatch / InsertClientBatch consolidate per-poll snapshot writes
@@ -289,7 +308,12 @@ type TrafficRepo interface {
 type NodeTrafficRepo interface {
 	Insert(ctx context.Context, s *domain.NodeTrafficSnapshot) error
 	LatestForNode(ctx context.Context, nodeID int64) (*domain.NodeTrafficSnapshot, error)
+	// LatestForNodes / LastBeforeForNodes mirror TrafficRepo's batched
+	// user-side forms; the admin /traffic/nodes/top dashboard uses them
+	// to avoid the per-node N+1 the loop did pre-fix.
+	LatestForNodes(ctx context.Context, nodeIDs []int64) (map[int64]*domain.NodeTrafficSnapshot, error)
 	LastBefore(ctx context.Context, nodeID int64, before time.Time) (*domain.NodeTrafficSnapshot, error)
+	LastBeforeForNodes(ctx context.Context, nodeIDs []int64, before time.Time) (map[int64]*domain.NodeTrafficSnapshot, error)
 	ListByNode(ctx context.Context, nodeID int64, since, until time.Time) ([]*domain.NodeTrafficSnapshot, error)
 	// InsertBatch consolidates per-poll node snapshot writes; mirrors the
 	// TrafficRepo equivalent.

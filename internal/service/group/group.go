@@ -41,6 +41,12 @@ func (s *Service) CountMembers(ctx context.Context, id int64) (int64, error) {
 	return s.groups.CountMembers(ctx, id)
 }
 
+// CountMembersByGroups is the batch form used by the /admin/groups list
+// to avoid the per-row Count(*) N+1.
+func (s *Service) CountMembersByGroups(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	return s.groups.CountMembersByGroups(ctx, ids)
+}
+
 func (s *Service) Create(ctx context.Context, g *domain.Group) error {
 	if g.Slug == "" || g.Name == "" {
 		return fmt.Errorf("%w: slug and name required", domain.ErrValidation)

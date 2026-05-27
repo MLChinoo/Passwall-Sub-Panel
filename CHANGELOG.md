@@ -4,6 +4,171 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.1-beta.6 — 2026-05-26
+
+第二轮全栈性能审计 —— 4 个并行 audit agent 覆盖 HTTP / DB / workers /
+frontend,合并去重后 ~30 项。本批次按动手成本 vs 收益筛掉 ~6 项后实现剩
+下的 ~24 项。两条 high 项主动 defer:rollup 增量化(需重设计避开 SQLite
+TZ 坑)、/sub cheap-ETag 短路(需统一的 UpdatedAt change-tracking 跨
+user/group/nodes/settings/template,跨度太大)。
+
+### Performance — backend hot path
+
+- **`paneltz.LocationOf` 加 `sync.Map` 缓存** ── `time.LoadLocation` Go
+  stdlib 每次都重新解析 zoneinfo 表,没有内部缓存。每次 DTO mapping /
+  history query 都付一次解析成本。`*time.Location` 一旦得到就不可变,直接
+  用 `sync.Map[string]*time.Location` memoize。负路径(blank / 无法解析)
+  也按字面 key 缓存,fast path 兼顾。
+- **YAML template / ruleset repo 加 mtime cache** ── pre-fix 每次 `/sub`
+  render 都对 `config/templates/*.yaml` + `config/rulesets/*.yaml` 全部
+  `ReadDir + ReadFile + yaml.Unmarshal`(典型 5 templates + 3-5 rulesets
+  ≈ 10 次 disk I/O + 10 次 YAML 解析)。改成 mtime-keyed `sync.Map`:Stat
+  一次(syscall),如果文件 mtime 没变就直接返回缓存的 `*domain.Template`。
+  Save / Delete 各自 Delete cache entry。Admin 手动改 YAML 文件后下次读
+  自动失效(mtime 变了)。
+- **render 服务 `Settings.Load` 一次性加载** ── 一次 mihomo render 调
+  `Settings.Load` **6 次**,singbox / urilist 各再 2-3 次。即使 beta.4 加
+  了 cache 装饰器,每次调用仍要 RWMutex.RLock + UISettings 结构体拷贝 +
+  `applyUISettingsDefaults`。引入 `loadRenderSettings(ctx)` 在
+  `RenderForUser` / `renderSingBox` / `renderURIList` 顶层 load 一次,
+  穿透给所有 helper(profilePlaceholders / buildProxies / buildProfileName /
+  resolveInbounds / prefetchInboundsForRender)。后续每次 render 只 Load
+  一次 settings。
+- **`prefetchInboundsForRender` 信号量先获取再起 goroutine** ── 原代码
+  对每个 panel 无条件 `go func` 然后 goroutine 内部才 `sem <- struct{}{}`
+  阻塞,大 fleet 下会一次性分配 N 个 goroutine,大部分立即阻塞在 channel
+  send。改成 acquire 后再 spawn,goroutine 数量也跟着 cap。
+
+### Performance — admin handler N+1
+
+- **`/admin/dashboard/summary` 新增聚合端点(F6)** ── pre-fix dashboard
+  开打 fetch `listUsers({page_size:500}) + listNodes({page_size:500}) +
+  listGroups()` 只为算 4 个 counter tile + 5 行 expiring + 5 行 node
+  alerts。新增 `AdminDashboardHandler.Summary` 在服务端聚合,
+  return 只含 counters + 两个 5-row 列表的小 payload。前端 DashboardView
+  改用 `dashboardSummary()`,不再下载全量 user / node 行。
+- **`admin_user.List` 解一次,toDTO 用一次** ── pre-fix List 里每行调
+  `h.toDTO` →`h.settings.Load`(EmergencyQuotaGB + Timezone)+
+  `h.subURLFor` → 再 2 次 settings.Load(SubBaseURL + SubPath)。
+  page_size=25 = 75 次 Load + 25 次 tz 解析。拆出 `toDTOWith(u, st, loc,
+  subBase)` 纯映射版本,List 在循环外解析一次共享值。
+- **`admin_group.List` 改一次 GROUP BY 取 member 数** ── 原来 List 拿到
+  N 个 group 后,每个 group 单独 `CountMembers` (SELECT COUNT 1)。
+  page_size=25 = 26 个 SELECT。新加
+  `groupRepo.CountMembersByGroups([]int64) → map[int64]int64`,一次
+  `GROUP BY group_id` 取全部。
+- **`user_me.ServerStatus` 改 List 一次再 in-memory 索引** ── pre-fix
+  按 ownership 每条 `nodes.GetByPanelInbound`,大组用户每次刷新一打
+  SELECT。改成 `nodes.List(ctx)` 一次然后 `map[[2]int64]*Node` 索引。
+  几百节点规模带宽成本远低于消掉的 round-trip。
+- **`admin_traffic.Top` / `NodesTop` 批量化(B1 部分)** ── 加
+  `TrafficRepo.LastBeforeForUsers` + `NodeTrafficRepo.LatestForNodes /
+  LastBeforeForNodes`(MAX(id) GROUP BY 复用)+ `traffic.Service`
+  上的 `ReportForUsers` / `NodeReportForNodes`。dashboard 一次 100 个
+  user 从 200+ round-trip 收缩到 2(LatestForUsers + LastBeforeForUsers)。
+  History 端点暂未批量化(需 ListByUser 批量版本,留待后续)。
+
+### Performance — middleware + static
+
+- **审计中间件改异步写入** ── 每个 admin write(POST/PUT/PATCH/DELETE)+
+  每次 local-login + 每次 /api/user/me 写都阻塞在同步 `audit.Insert`
+  fsync 上(SQLite ~5-50ms / 次)。引入 `middleware.AsyncDispatch` 函数
+  类型,通过 router 把 `d.Async.Go` 注入。审计 INSERT 在请求线程外丢给
+  panel-wide bgWG 跟踪的 goroutine,响应不再等 fsync。
+- **静态资源 init 时预读 + 预算 Content-Type** ── 原 `StaticSPA` 每个请
+  求 `fs.Sub + fs.ReadFile + mime.TypeByExtension + filepath.Ext`。SPA
+  bundle 是 go:embed 不可变;改用 `sync.Once` 在第一次请求时
+  WalkDir 全部读入 `map[string]staticAsset{body, contentType}`,后续
+  请求纯 map 查。
+- **auth user cache TTL 5s → 60s** ── pre-fix 任何 polling client >
+  1 req/5s 都打穿 cache → 每请求一次 DB user lookup。bump 到 60s。
+  TokenVersion 撤销的"撤销-到-生效"窗口同步扩到 60s 上限,自用面板可
+  接受(admin disable / role-demote 都是罕见事件)。
+
+### Performance — background workers
+
+- **`pushClientConfigToAll` Phase 1 优先走本地快照(D1)** ── traffic
+  poll 把每个 user-with-delta 都 push 配置,每次 push 都 `ListInbounds`
+  per panel。pre-fix N=100 active users × 2 panels = 200 次冗余
+  ListInbounds / 5 分钟 cycle。改成:有 inbound 本地快照(v3.5 captured)
+  的 ownership 直接走 `inboundcfg.InboundFromNode(n)`(零 HTTP);只对
+  未 capture 的 ownership 走 ListInbounds,且只对真有未 capture entry
+  的 panel 发请求。常态(全部 captured)零 HTTP。
+- **`UpdateClientWithInbound` 新增(D2)** ── pre-fix 每次 xui
+  `UpdateClient` 内部都 `GetInbound`(read-modify-write 需要老 settings),
+  即使 caller 刚 ListInbounds 完。新加 `ports.XUIClient.UpdateClientWithInbound`
+  接受 caller 已经在手的 inbound,以及 sync.Service 的
+  `SetOwnedClientEnableWithInbound` 变体。`pushClientConfigToAll` Phase 2
+  push 用预取的 inbound,UpdateClient 内部不再 GetInbound。
+- **mailer `maybeSend` 改用 `ReserveSentSlot`(D4)** ── pre-fix 是
+  HasSent(Count) + send + RecordSent(Insert)两步并有 TOCTOU race
+  (两个并发 cycle 都看到 HasSent=false → 双发)。`ReserveSentSlot` 已经
+  存在(SendBlockedClientWarning 在用),是单 INSERT ... ON CONFLICT
+  DO NOTHING 的原子操作。语义改成 at-most-once(SMTP 失败 = 这个 window
+  不重试),跟 blocked-client warning 的策略一致。
+
+### Performance — sub.go
+
+- **blocked-client 计数改窄列写入(A5)** ── `/sub` 是公开端点最高 RPS
+  写路径。pre-fix 每次违规计数都 `h.users.Update(u)` 全行 Save 重写 30+
+  列 + 全部二级索引(upn / sub_token / sso / group_id)。新加
+  `UserRepo.UpdateBlockViolation(ctx, id, count, lastAt, detail)` 只写
+  3 列。
+
+### Performance — frontend
+
+- **vite `manualChunks` 拆 vendor**(F1) ── 主 bundle 从 ~700KB 降到
+  165KB(gzip 48KB)。`vendor-react` 226KB / `vendor-mui` 348KB /
+  `vendor-echarts` 507KB / `vendor-i18n` 58KB 各自独立缓存,小改动不会
+  invalidate 所有 vendor 包。
+- **i18n 改 lazy 加载**(F2) ── pre-fix 7 namespace × 2 语言全部静态
+  `import` 进主 bundle(`admin.json` 一边 ~57KB,两语言双倍)。重写成
+  `import.meta.glob` + 启动时只 load 当前语言 + namespace,语言切换时
+  按需 fetch。
+- **删 `@fontsource/noto-sans-sc` 静态 import**(F3) ── pre-fix 每个
+  weight 拉 196 woff/woff2 unicode-range subset,total 392 字体文件 +
+  260KB CSS(~400 个 @font-face 声明)。theme 的 font-family stack 已经
+  覆盖 system CJK(PingFang SC / Microsoft YaHei / Hiragino Sans),
+  Chinese-reading 平台都自带这些。可选自定义 subset 留待生产化部署。
+- **UsersView topTraffic limit 按 pageSize cap**(F4) ── pre-fix 每次
+  items 变化就 `topTraffic(1000)`,完全无视实际显示的行数。改成
+  `Math.max(pageSize, 25)`,跟显示行数对齐。
+- **AdminLayout zustand store per-field 订阅**(F5) ── pre-fix
+  `useAuthStore()` / `useSiteStore()` / `useAppearanceStore()` 不带
+  selector,任何字段变化都触发整 AdminLayout(含 nav drawer + AppBar)
+  重渲。改成每个字段 `useStore(s => s.x)`,实际依赖收紧。site.load 的
+  effect deps 也从 `[site]`(每次更新都是新引用)改成 `[siteLoad]`(action
+  ref 稳定)。
+
+### Schema (AutoMigrate)
+
+- `mail_sent.sent_at` 加索引 `idx_mail_sent_at`:hourly retention
+  DELETE WHERE sent_at < ? 不再全表扫(uk_mail_once user_id 在前不能用)。
+- `sync_tasks.finished_at` 加索引 `idx_task_finished`:同上,
+  DeleteSucceededBefore / DeleteFinished 由表扫降为 index scan。
+- `users.email` 上的自动 `idx_users_email` 索引删除:实际 query 全部
+  走 `LOWER(email) LIKE ?`,B-tree index 没法用。`cleanupLegacyState`
+  里 DropIndex 老 install 跟着清。
+
+### Deferred (intentional)
+
+- **rollup 增量化(D3)** ── 当前每小时 `SELECT * FROM client_traffic_snapshots`
+  无 WHERE 拉全表再 Go 端 filter cutoff。代码注释里已说明 SQLite zoneinfo-
+  string 存储的 lexicographic vs semantic order 问题让 SQL 端
+  `WHERE captured_at < ?` 在跨 TZ 数据上不可靠。增量化(watermark + 重叠
+  buffer)需要独立设计 + 跨 dialect 测试,留待后续。
+- **/sub cheap-ETag 短路(A4)** ── 需要 user / group / 各 node /
+  settings / template 的统一 change-tracking signal(类似 max(UpdatedAt))。
+  现有 schema 缺这层抽象。A1+A3 已经把 per-render 成本砍到很低,
+  ETag 现状(body hash)的痛点已经不那么尖锐。
+
+### Test fakes
+
+- `fakeUserRepo` / `memoryUserRepo` 加 `UpdateBlockViolation`。
+- `fakeTrafficRepo` 加 `LastBeforeForUsers`;`fakeNodeTrafficRepo` 加
+  `LatestForNodes` / `LastBeforeForNodes`。
+- `fakeXUIClient` 加 `UpdateClientWithInbound`。
+
 ## v3.6.1-beta.5 — 2026-05-26
 
 beta.1-4 改动后的回归 audit 找到 8 项 —— 真 bug 4、行为不一致 4。全部一起修。

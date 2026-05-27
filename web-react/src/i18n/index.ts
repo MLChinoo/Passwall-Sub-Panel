@@ -2,24 +2,18 @@ import i18n from 'i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
-import zhCommon from '@/locales/zh-CN/common.json'
-import zhAppearance from '@/locales/zh-CN/appearance.json'
-import zhLanguage from '@/locales/zh-CN/language.json'
-import zhAuth from '@/locales/zh-CN/auth.json'
-import zhNav from '@/locales/zh-CN/nav.json'
-import zhAdmin from '@/locales/zh-CN/admin.json'
-import zhUser from '@/locales/zh-CN/user.json'
-import enCommon from '@/locales/en-US/common.json'
-import enAppearance from '@/locales/en-US/appearance.json'
-import enLanguage from '@/locales/en-US/language.json'
-import enAuth from '@/locales/en-US/auth.json'
-import enNav from '@/locales/en-US/nav.json'
-import enAdmin from '@/locales/en-US/admin.json'
-import enUser from '@/locales/en-US/user.json'
-
 import type { AppLanguage } from '@/theme'
 
 export const SUPPORTED_LANGUAGES: AppLanguage[] = ['zh-CN', 'en-US']
+
+// Locale namespaces. Each (lang, ns) bundle is loaded via dynamic import
+// — Vite splits them into per-namespace chunks so a user only downloads
+// the languages and namespaces they actually need. Pre-fix this module
+// statically imported all 7 namespaces × 2 languages (14 JSON modules,
+// ~120KB of which admin.json was 57KB per language) into the main
+// bundle; admins on en-US pulled the zh-CN strings for free, and users
+// who never visit admin pages still shipped the admin namespace.
+const NAMESPACES = ['common', 'appearance', 'language', 'auth', 'nav', 'admin', 'user'] as const
 
 // Flatten { a: { b: { c: 'x' } } } → { 'a.b.c': 'x' }.
 // We do this at init time + run i18n with keySeparator:false so a call like
@@ -37,65 +31,106 @@ function flatten(obj: Nested, prefix = ''): Record<string, string> {
   return out
 }
 
-const resources = {
-  'zh-CN': {
-    common: flatten(zhCommon as Nested),
-    appearance: flatten(zhAppearance as Nested),
-    language: flatten(zhLanguage as Nested),
-    auth: flatten(zhAuth as Nested),
-    nav: flatten(zhNav as Nested),
-    admin: flatten(zhAdmin as Nested),
-    user: flatten(zhUser as Nested),
-  },
-  'en-US': {
-    common: flatten(enCommon as Nested),
-    appearance: flatten(enAppearance as Nested),
-    language: flatten(enLanguage as Nested),
-    auth: flatten(enAuth as Nested),
-    nav: flatten(enNav as Nested),
-    admin: flatten(enAdmin as Nested),
-    user: flatten(enUser as Nested),
-  },
-} as const
+// Vite's import.meta.glob gives us per-(lang, ns) lazy chunks. The
+// `import()`-style returns a Promise<{ default: Nested }> — wrapped in
+// flatten() at register time so the runtime cost is paid once per
+// namespace-language, not per t() call.
+const localeLoaders = import.meta.glob<{ default: Nested }>('@/locales/*/*.json')
 
-export const i18nReady = i18n
-  .use(LanguageDetector)
-  .use(initReactI18next)
-  .init({
-    resources,
-    // Map generic browser language tags (en/zh) onto the exact bundles we ship.
-    // Keep zh-CN as the final fallback so missing translations never surface
-    // raw keys in normal use.
-    fallbackLng: {
-      en: ['en-US', 'zh-CN'],
-      zh: ['zh-CN'],
-      default: ['zh-CN'],
-    },
-    supportedLngs: SUPPORTED_LANGUAGES,
-    load: 'currentOnly',
-    preload: SUPPORTED_LANGUAGES,
-    ns: ['common', 'appearance', 'language', 'auth', 'nav', 'admin', 'user'],
-    defaultNS: 'common',
-    fallbackNS: 'common',
-    // Resources are pre-flattened to dotted keys, so the runtime no longer
-    // needs to walk a nested object — keySeparator:false makes t() treat the
-    // whole 'servers.title' string as one flat lookup.
-    keySeparator: false,
-    nsSeparator: ':',
-    interpolation: { escapeValue: false },
-    detection: {
-      order: ['querystring', 'localStorage', 'navigator'],
-      lookupQuerystring: 'lang',
-      lookupLocalStorage: 'psp-lang',
-      caches: ['localStorage'],
-    },
-    react: {
-      useSuspense: false,
-    },
-  })
+async function loadNamespace(lang: AppLanguage, ns: string): Promise<Record<string, string> | null> {
+  const key = `/src/locales/${lang}/${ns}.json`
+  const loader = localeLoaders[key]
+  if (!loader) return null
+  const mod = await loader()
+  return flatten(mod.default)
+}
 
-export function setLanguage(lang: AppLanguage) {
-  void i18n.changeLanguage(lang)
+// resolveInitialLanguage picks the language to bundle into the first paint.
+// Mirrors i18next's detection order (querystring → localStorage → navigator)
+// but runs synchronously here so we can preload only that one language's
+// namespaces. i18next then takes over for runtime detection/switching.
+function resolveInitialLanguage(): AppLanguage {
+  if (typeof window !== 'undefined') {
+    const url = new URL(window.location.href)
+    const q = url.searchParams.get('lang')
+    if (q && SUPPORTED_LANGUAGES.includes(q as AppLanguage)) return q as AppLanguage
+    try {
+      const stored = localStorage.getItem('psp-lang')
+      if (stored && SUPPORTED_LANGUAGES.includes(stored as AppLanguage)) return stored as AppLanguage
+    } catch { /* localStorage disabled — fall through */ }
+    const nav = (window.navigator?.language || '').toLowerCase()
+    if (nav.startsWith('zh')) return 'zh-CN'
+    if (nav.startsWith('en')) return 'en-US'
+  }
+  return 'zh-CN'
+}
+
+const initialLang = resolveInitialLanguage()
+
+// Pre-load every namespace for the initial language, in parallel. Other
+// languages stream in on demand when the user toggles the language picker.
+async function loadLanguageResources(lang: AppLanguage): Promise<Record<string, Record<string, string>>> {
+  const entries = await Promise.all(
+    NAMESPACES.map(async ns => {
+      const flat = await loadNamespace(lang, ns)
+      return [ns, flat ?? {}] as const
+    }),
+  )
+  return Object.fromEntries(entries)
+}
+
+export const i18nReady = (async () => {
+  const initialResources = await loadLanguageResources(initialLang)
+  await i18n
+    .use(LanguageDetector)
+    .use(initReactI18next)
+    .init({
+      resources: { [initialLang]: initialResources },
+      lng: initialLang,
+      // Map generic browser language tags (en/zh) onto the exact bundles we ship.
+      // Keep zh-CN as the final fallback so missing translations never surface
+      // raw keys in normal use.
+      fallbackLng: {
+        en: ['en-US', 'zh-CN'],
+        zh: ['zh-CN'],
+        default: ['zh-CN'],
+      },
+      supportedLngs: SUPPORTED_LANGUAGES,
+      load: 'currentOnly',
+      // No preload — we explicitly loaded the initial language above and
+      // stream the rest lazily via setLanguage() below.
+      ns: NAMESPACES as unknown as string[],
+      defaultNS: 'common',
+      fallbackNS: 'common',
+      // Resources are pre-flattened to dotted keys, so the runtime no longer
+      // needs to walk a nested object — keySeparator:false makes t() treat the
+      // whole 'servers.title' string as one flat lookup.
+      keySeparator: false,
+      nsSeparator: ':',
+      interpolation: { escapeValue: false },
+      detection: {
+        order: ['querystring', 'localStorage', 'navigator'],
+        lookupQuerystring: 'lang',
+        lookupLocalStorage: 'psp-lang',
+        caches: ['localStorage'],
+      },
+      react: {
+        useSuspense: false,
+      },
+    })
+  return i18n
+})()
+
+export async function setLanguage(lang: AppLanguage) {
+  // Lazy-load on first switch — subsequent toggles hit i18next's in-memory
+  // cache (hasResourceBundle) so they're free.
+  if (!i18n.hasResourceBundle(lang, 'common')) {
+    const resources = await loadLanguageResources(lang)
+    for (const [ns, bundle] of Object.entries(resources)) {
+      i18n.addResourceBundle(lang, ns, bundle, true, true)
+    }
+  }
+  await i18n.changeLanguage(lang)
 }
 
 export function currentLanguage(): AppLanguage {

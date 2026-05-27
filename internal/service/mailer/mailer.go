@@ -875,8 +875,18 @@ func (s *Service) maybeSend(ctx context.Context, settings domain.MailSettings, t
 	if tpl == nil || !tpl.Enabled {
 		return nil
 	}
-	sent, err := s.repo.HasSent(ctx, u.ID, kind, windowKey)
-	if err != nil || sent {
+	// ReserveSentSlot atomically claims the (user, kind, windowKey) row
+	// in a single INSERT … OnConflict DoNothing. Pre-fix this path did
+	// HasSent (Count(*)) + RecordSent (Insert) — two round-trips per
+	// (user, kind) per cycle, AND racy: two concurrent reminder runs
+	// could both observe HasSent=false and double-send. The same
+	// blocked-client warning path already uses this primitive (see
+	// SendBlockedClientWarning) — the trade-off is identical: a
+	// transient SMTP failure leaves the slot taken so this window is
+	// not retried (at-most-once delivery; better than at-least-once
+	// spam if SMTP starts working between cycles).
+	won, err := s.repo.ReserveSentSlot(ctx, u.ID, kind, windowKey, to)
+	if err != nil || !won {
 		return err
 	}
 	subject, err := renderTemplate("subject", tpl.Subject, data)
@@ -887,10 +897,7 @@ func (s *Service) maybeSend(ctx context.Context, settings domain.MailSettings, t
 	if err != nil {
 		return err
 	}
-	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
-		return err
-	}
-	return s.repo.RecordSent(ctx, u.ID, kind, windowKey, to)
+	return sendSMTP(ctx, settings, to, subject, body)
 }
 
 // templateData builds the merge variables for one user's reminder mail. The

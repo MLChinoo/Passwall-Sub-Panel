@@ -247,6 +247,31 @@ func (s *Service) SetOwnedClientEnable(ctx context.Context, panelID int64, inbou
 	return c.UpdateClient(ctx, inboundID, userUUID, spec)
 }
 
+// SetOwnedClientEnableWithInbound is SetOwnedClientEnable with a
+// pre-fetched inbound supplied by the caller. The traffic poll's push
+// phase batches ListInbounds once per panel up-front and already has
+// the inbound in hand; calling SetOwnedClientEnable (which then calls
+// UpdateClient which then calls GetInbound) duplicated that work. With
+// this variant the entire write phase is one HTTP roundtrip per push
+// instead of two.
+func (s *Service) SetOwnedClientEnableWithInbound(ctx context.Context, panelID int64, inb *ports.Inbound,
+	email string, protocol domain.Protocol, ssMethod, userUUID, flow string, enable bool, expireTime, totalGB int64) error {
+
+	if inb == nil {
+		return fmt.Errorf("SetOwnedClientEnableWithInbound: inb is nil")
+	}
+	if err := s.ensureClientOwned(ctx, panelID, inb.ID, email); err != nil {
+		return err
+	}
+	c, err := s.pool.Get(panelID)
+	if err != nil {
+		return err
+	}
+	spec := buildClientSpec(protocol, ssMethod, userUUID, email, flow, expireTime, totalGB)
+	spec.Enable = enable
+	return c.UpdateClientWithInbound(ctx, inb, userUUID, spec)
+}
+
 // DelAllOwnedForUser removes every 3X-UI client recorded under userID.
 // Returns the first per-client error so the caller (admin user-delete)
 // can surface it rather than orphaning 3X-UI clients. Successful deletes

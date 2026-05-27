@@ -133,6 +133,37 @@ func (r *trafficRepo) LatestForUser(ctx context.Context, userID int64) (*domain.
 	return row.toDomain(), nil
 }
 
+// LastBeforeForUsers is the batched form of LastBefore — one SQL query
+// returns the latest snapshot row strictly before `before` for every
+// userID in one shot. Same MAX(id) trick as LatestForUsers, with the
+// added `captured_at < before` predicate. Users with no prior row are
+// absent from the result map (callers treat absence as "no baseline,
+// use latest.TotalBytes as today's delta").
+func (r *trafficRepo) LastBeforeForUsers(ctx context.Context, userIDs []int64, before time.Time) (map[int64]*domain.TrafficSnapshot, error) {
+	if len(userIDs) == 0 {
+		return map[int64]*domain.TrafficSnapshot{}, nil
+	}
+	var rows []trafficRow
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT t.* FROM traffic_snapshots t
+		INNER JOIN (
+			SELECT user_id, MAX(id) AS mid
+			FROM traffic_snapshots
+			WHERE user_id IN ? AND captured_at < ?
+			GROUP BY user_id
+		) m ON t.id = m.mid
+	`, userIDs, before).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]*domain.TrafficSnapshot, len(rows))
+	for i := range rows {
+		d := rows[i].toDomain()
+		out[d.UserID] = d
+	}
+	return out, nil
+}
+
 func (r *trafficRepo) LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error) {
 	var row trafficRow
 	tx := r.db.WithContext(ctx).

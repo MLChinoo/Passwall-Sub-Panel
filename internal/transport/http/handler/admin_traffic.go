@@ -77,8 +77,9 @@ func (h *AdminTrafficHandler) Top(c *gin.Context) {
 		n = 20
 	}
 
-	// Walk every user, build per-user report. This is O(users * traffic
-	// queries). Acceptable at friend-circle scale; revisit if it grows.
+	// Walk every user in pages, but batch the per-page report fetch
+	// through traffic.ReportForUsers — one LatestForUsers +
+	// one LastBeforeForUsers per page instead of 2 SELECTs per user.
 	rows := []trafficRow{}
 	page := 1
 	const pageSize = 100
@@ -90,9 +91,10 @@ func (h *AdminTrafficHandler) Top(c *gin.Context) {
 			respondError(c, err)
 			return
 		}
+		reports := h.traffic.ReportForUsers(c.Request.Context(), users)
 		for _, u := range users {
-			report, err := h.traffic.ReportFor(c.Request.Context(), u.ID)
-			if err != nil || report == nil {
+			report := reports[u.ID]
+			if report == nil {
 				continue
 			}
 			rows = append(rows, trafficRow{
@@ -412,13 +414,19 @@ func (h *AdminTrafficHandler) NodesTop(c *gin.Context) {
 		return
 	}
 	panelNames := h.loadPanelNames(c.Request.Context())
-	rows := make([]nodeTrafficRow, 0, len(nodes))
-	for _, node := range nodes {
-		if node.IsSeparator() {
-			continue // layout-only rows have no traffic
+	// Filter out separators first so the batch report fetch only spans
+	// real traffic-bearing nodes.
+	realNodes := make([]*domain.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if !n.IsSeparator() {
+			realNodes = append(realNodes, n)
 		}
-		report, rerr := h.traffic.NodeReportFor(c.Request.Context(), node.ID)
-		if rerr != nil || report == nil {
+	}
+	reports := h.traffic.NodeReportForNodes(c.Request.Context(), realNodes)
+	rows := make([]nodeTrafficRow, 0, len(realNodes))
+	for _, node := range realNodes {
+		report := reports[node.ID]
+		if report == nil {
 			continue
 		}
 		rows = append(rows, nodeTrafficRow{

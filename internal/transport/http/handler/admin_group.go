@@ -74,12 +74,18 @@ func (h *AdminGroupHandler) List(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
+	// Batch the member-count fetch — pre-fix the loop issued one
+	// SELECT COUNT(*) per row. page_size=25 → 26 queries per /groups
+	// load; CountMembersByGroups collapses to one GROUP BY.
+	ids := make([]int64, len(groups))
+	for i, g := range groups {
+		ids[i] = g.ID
+	}
+	counts, _ := h.group.CountMembersByGroups(c.Request.Context(), ids)
 	out := make([]groupDTO, len(groups))
 	for i, g := range groups {
 		out[i] = toGroupDTO(g)
-		if cnt, err := h.group.CountMembers(c.Request.Context(), g.ID); err == nil {
-			out[i].Members = cnt
-		}
+		out[i].Members = counts[g.ID]
 	}
 	c.JSON(http.StatusOK, pagedEnvelope(out, total, p))
 }

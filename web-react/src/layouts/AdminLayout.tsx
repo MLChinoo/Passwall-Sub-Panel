@@ -97,10 +97,26 @@ export default function AdminLayout() {
   const navigate = useNavigate()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
 
-  const auth = useAuthStore()
-  const label = selectLabel(auth)
-  const site = useSiteStore()
-  const appearance = useAppearanceStore()
+  // Subscribe per-field rather than to the whole store. The pre-fix
+  // `useAuthStore()` (no selector) re-rendered AdminLayout (with its
+  // big nav drawer + AppBar JSX) whenever ANY unrelated field on any of
+  // these stores changed — e.g. toggling appearance.density on another
+  // page would re-render the entire admin chrome.
+  const role = useAuthStore(s => s.role)
+  const label = useAuthStore(selectLabel)
+  const logout = useAuthStore(s => s.logout)
+  const siteLoaded = useSiteStore(s => s.loaded)
+  const siteAppTitle = useSiteStore(s => s.appTitle)
+  const siteTitle = useSiteStore(s => s.siteTitle)
+  const siteThemeColor = useSiteStore(s => s.themeColor)
+  const siteIcon = useSiteStore(selectIcon)
+  const siteLoad = useSiteStore(s => s.load)
+  const density = useAppearanceStore(s => s.density)
+  const appearanceMode = useAppearanceStore(s => s.mode)
+  const appearanceSystemColor = useAppearanceStore(s => s.systemColor)
+  const appearanceUserColor = useAppearanceStore(s => s.userColor)
+  const setUserColor = useAppearanceStore(s => s.setUserColor)
+  const setAppearanceMode = useAppearanceStore(s => s.setMode)
 
   const [mobileOpen, setMobileOpen] = useState(false)
   const [userAnchor, setUserAnchor] = useState<HTMLElement | null>(null)
@@ -122,12 +138,14 @@ export default function AdminLayout() {
   const railCollapsed = collapsed && !isMobile
   // Density-aware expanded width — see constants above for why only the
   // expanded variant tightens.
-  const drawerWidthExpanded = appearance.density === 'compact'
+  const drawerWidthExpanded = density === 'compact'
     ? DRAWER_WIDTH_EXPANDED_COMPACT
     : DRAWER_WIDTH_EXPANDED_COMFORTABLE
 
-  // Load site branding once on mount.
-  useEffect(() => { void site.load() }, [site])
+  // Load site branding once on mount. Depend on the action ref only —
+  // pre-fix this used `[site]` which was a new object on every store
+  // update and re-fired the load on every render path.
+  useEffect(() => { void siteLoad() }, [siteLoad])
 
   // Fetch build identity once on mount. Endpoint is public and the
   // sidebar badge silently no-ops if the call fails (no point toasting
@@ -148,10 +166,10 @@ export default function AdminLayout() {
   // whole store in the dep array creates an infinite loop (set → new store
   // reference → effect re-fires → set → ...).
   useEffect(() => {
-    if (site.loaded) {
-      useAppearanceStore.getState().setSystemColor(site.themeColor || DEFAULT_PRESET_HEX)
+    if (siteLoaded) {
+      useAppearanceStore.getState().setSystemColor(siteThemeColor || DEFAULT_PRESET_HEX)
     }
-  }, [site.loaded, site.themeColor])
+  }, [siteLoaded, siteThemeColor])
 
   function handleNav(to: string) {
     navigate(to)
@@ -160,11 +178,11 @@ export default function AdminLayout() {
 
   function handleLogout() {
     setUserAnchor(null)
-    auth.logout()
+    logout()
   }
 
   function handleLanguageChange(lng: AppLanguage) {
-    setLanguage(lng)
+    void setLanguage(lng)
   }
 
   const drawerContent = (
@@ -180,7 +198,7 @@ export default function AdminLayout() {
           // where there's room for it next to the title text.
           <Box
             component="img"
-            src={selectIcon(site)}
+            src={siteIcon}
             alt=""
             sx={{ width: 36, height: 36, borderRadius: 1, objectFit: 'contain', display: 'block' }}
           />
@@ -188,13 +206,13 @@ export default function AdminLayout() {
           <>
             <BrandLogo height={36} />
             <Typography sx={{ fontWeight: 500, fontSize: 16, color: md.onSurface, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {site.appTitle || site.siteTitle}
+              {siteAppTitle || siteTitle}
             </Typography>
           </>
         )}
       </Box>
       <List sx={{ flex: 1, px: railCollapsed ? 0.75 : 1.5, pt: 1 }}>
-        {ADMIN_NAV.filter(item => !item.adminOnly || auth.role === 'admin').map(item => {
+        {ADMIN_NAV.filter(item => !item.adminOnly || role === 'admin').map(item => {
           const active = location.pathname === item.to || location.pathname.startsWith(item.to + '/')
           const button = (
             <ListItemButton
@@ -335,16 +353,16 @@ export default function AdminLayout() {
               </IconButton>
             )}
             <Typography variant="h6" sx={{ ml: isMobile ? 1 : 0, fontWeight: 500, fontSize: 17 }}>
-              {site.siteTitle}
+              {siteTitle}
             </Typography>
             <Box sx={{ flex: 1 }} />
             <LanguageMenu value={currentLanguage()} onChange={handleLanguageChange} />
             <DensityToggle />
             <AppearanceMenu
-              state={{ systemColor: appearance.systemColor, userColor: appearance.userColor, mode: appearance.mode }}
+              state={{ systemColor: appearanceSystemColor, userColor: appearanceUserColor, mode: appearanceMode }}
               onChange={(patch) => {
-                if ('userColor' in patch) appearance.setUserColor(patch.userColor ?? null)
-                if (patch.mode) appearance.setMode(patch.mode)
+                if ('userColor' in patch) setUserColor(patch.userColor ?? null)
+                if (patch.mode) setAppearanceMode(patch.mode)
               }}
             />
             <Tooltip title={label}>
@@ -366,7 +384,7 @@ export default function AdminLayout() {
                 <Box>
                   <Typography sx={{ fontSize: 14, fontWeight: 500, color: md.onSurface }}>{label}</Typography>
                   <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                    {auth.role === 'admin' ? 'Administrator' : auth.role === 'operator' ? 'Operator' : 'User'}
+                    {role === 'admin' ? 'Administrator' : role === 'operator' ? 'Operator' : 'User'}
                   </Typography>
                 </Box>
               </MenuItem>

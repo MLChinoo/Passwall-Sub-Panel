@@ -178,11 +178,32 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
+	// Resolve the per-request shared state once instead of in toDTO per
+	// row: settings (for emergency quota + panel tz), the *time.Location,
+	// and the sub URL base+path. Pre-fix each toDTO call did 3 settings
+	// loads + 1 tz parse + recomputed the sub base per user — at
+	// page_size=25 that's 75 Settings.Load round-trips through the cache
+	// + N path-rebuilds for one list response.
+	settings := h.loadSettingsForRequest(c.Request)
+	loc := paneltz.LocationOf(settings.Timezone)
+	subBase := strings.TrimRight(resolveSubBaseForRequest(c.Request.Context(), h.settings, c.Request), "/")
 	out := make([]userDTO, len(items))
 	for i, u := range items {
-		out[i] = h.toDTO(c.Request, u)
+		out[i] = h.toDTOWith(u, settings, loc, subBase)
 	}
 	c.JSON(http.StatusOK, pagedEnvelope(out, total, p))
+}
+
+// loadSettingsForRequest is a thin wrapper around the (cached)
+// SettingsRepo.Load that swallows errors back to zero-value defaults —
+// per-row DTO code can't usefully propagate a settings load failure
+// (the rest of the response is still serviceable).
+func (h *AdminUserHandler) loadSettingsForRequest(r *http.Request) ports.UISettings {
+	if h.settings == nil {
+		return ports.UISettings{}
+	}
+	st, _ := h.settings.Load(r.Context(), ports.UISettings{})
+	return st
 }
 
 func (h *AdminUserHandler) Get(c *gin.Context) {
@@ -629,7 +650,21 @@ func (h *AdminUserHandler) panelDateToInstant(ctx context.Context, dateStr strin
 	return &t, nil
 }
 
+// toDTO is the single-row path (Get / Create / Update). It loads
+// settings + resolves the sub base once per call, then delegates the
+// pure mapping to toDTOWith. List-style callers should bypass this and
+// call toDTOWith directly with shared state to avoid per-row Load /
+// per-row sub-base recompute (see List).
 func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
+	st := h.loadSettingsForRequest(r)
+	loc := paneltz.LocationOf(st.Timezone)
+	subBase := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
+	return h.toDTOWith(u, st, loc, subBase)
+}
+
+// toDTOWith is the pure mapping — no I/O, no Load — so list endpoints
+// can call it inside a tight loop with caller-supplied shared state.
+func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *time.Location, subBase string) userDTO {
 	// Only fill EmergencyUsedBytes when a window is actually active — a stale
 	// baseline from a closed window is meaningless and would mislead the UI.
 	var usedBytes int64
@@ -639,18 +674,10 @@ func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 			usedBytes = 0
 		}
 	}
-	// Read quota from current settings; cheap because Load is cached in the
-	// repo layer. Falls back to 0 (= unlimited) if settings unreadable. The
-	// same load resolves the panel timezone used to render expire_date, so
-	// there's no extra round-trip.
-	var quotaBytes int64
-	loc := time.Local
-	if h.settings != nil {
-		if st, err := h.settings.Load(r.Context(), ports.UISettings{}); err == nil {
-			quotaBytes = int64(st.EmergencyAccessQuotaGB * 1024 * 1024 * 1024)
-			loc = paneltz.LocationOf(st.Timezone)
-		}
+	if loc == nil {
+		loc = time.Local
 	}
+	quotaBytes := int64(st.EmergencyAccessQuotaGB * 1024 * 1024 * 1024)
 	var expireDate string
 	if u.ExpireAt != nil {
 		expireDate = paneltz.DateString(*u.ExpireAt, loc)
@@ -665,7 +692,7 @@ func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 		Role:                u.Role,
 		GroupID:             u.GroupID,
 		UUID:                u.UUID,
-		SubURL:              h.subURLFor(r, u.SubToken),
+		SubURL:              joinSubURL(subBase, resolveSubPathFromSettings(st, u.SubToken)),
 		ExpireAt:            u.ExpireAt,
 		ExpireDate:          expireDate,
 		TrafficLimitBytes:   u.TrafficLimitBytes,
@@ -685,11 +712,15 @@ func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
 	}
 }
 
-func (h *AdminUserHandler) subURLFor(r *http.Request, token string) string {
-	base := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
-	path := resolveSubPath(r.Context(), h.settings, token)
+func joinSubURL(base, path string) string {
 	if base == "" {
 		return path
 	}
 	return base + path
+}
+
+func (h *AdminUserHandler) subURLFor(r *http.Request, token string) string {
+	base := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
+	path := resolveSubPath(r.Context(), h.settings, token)
+	return joinSubURL(base, path)
 }

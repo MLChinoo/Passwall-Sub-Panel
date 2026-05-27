@@ -1155,6 +1155,56 @@ type NodeReport struct {
 	TodayUsedBytes      int64
 }
 
+// NodeReportForNodes is the batched form of NodeReportFor for the
+// admin /traffic/nodes/top dashboard. Caller passes already-loaded
+// node rows; this does ONE LatestForNodes + TWO LastBeforeForNodes
+// (today + month) regardless of how many nodes are in the slice.
+// Pre-fix the dashboard ran 3 SELECTs per node serially.
+func (s *Service) NodeReportForNodes(ctx context.Context, nodes []*domain.Node) map[int64]*NodeReport {
+	out := make(map[int64]*NodeReport, len(nodes))
+	if len(nodes) == 0 || s.nodeTraffic == nil {
+		// Still seed with lifetime so callers can populate the
+		// "no snapshots yet" cells from the node row.
+		for _, n := range nodes {
+			out[n.ID] = &NodeReport{NodeID: n.ID, PermanentTotalBytes: n.LifetimeTotalBytes}
+		}
+		return out
+	}
+	ids := make([]int64, len(nodes))
+	for i, n := range nodes {
+		ids[i] = n.ID
+	}
+	latest, _ := s.nodeTraffic.LatestForNodes(ctx, ids)
+	now := s.panelNow(ctx)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	todayBase, _ := s.nodeTraffic.LastBeforeForNodes(ctx, ids, todayStart)
+	monthBase, _ := s.nodeTraffic.LastBeforeForNodes(ctx, ids, monthStart)
+	for _, n := range nodes {
+		report := &NodeReport{NodeID: n.ID, PermanentTotalBytes: n.LifetimeTotalBytes}
+		l := latest[n.ID]
+		if l == nil {
+			out[n.ID] = report
+			continue
+		}
+		if report.PermanentTotalBytes == 0 {
+			report.PermanentTotalBytes = l.TotalBytes
+		}
+		if base := todayBase[n.ID]; base != nil {
+			report.TodayUsedBytes = monotonicDelta(l.TotalBytes, base.TotalBytes)
+		} else {
+			report.TodayUsedBytes = l.TotalBytes
+		}
+		if base := monthBase[n.ID]; base != nil {
+			report.PeriodUsedBytes = monotonicDelta(l.TotalBytes, base.TotalBytes)
+		} else {
+			report.PeriodUsedBytes = l.TotalBytes
+		}
+		out[n.ID] = report
+	}
+	return out
+}
+
 // NodeReportFor returns the lifetime / current-period / today usage for one
 // node. Lifetime comes from the monotonic node counter; today / period are
 // computed as deltas with reset-clamping.
@@ -1363,6 +1413,57 @@ type HistoryReport struct {
 // Today / period are computed as deltas against earlier snapshots and are
 // clamped to non-negative; if the cumulative counter dropped (counter reset)
 // the current cumulative value IS the bytes-since-reset, so we report that.
+// ReportForUsers is the batched form of ReportFor used by admin
+// dashboard endpoints (top-N, history aggregations) that pre-fix would
+// loop ReportFor over every user — at 100 users that meant 200+
+// round-trips for one /traffic/top click. Caller passes already-loaded
+// user rows; this method does ONE LatestForUsers + ONE LastBeforeForUsers
+// regardless of how many users are in the slice, then derives the
+// report in memory.
+func (s *Service) ReportForUsers(ctx context.Context, users []*domain.User) map[int64]*UsageReport {
+	out := make(map[int64]*UsageReport, len(users))
+	if len(users) == 0 {
+		return out
+	}
+	ids := make([]int64, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	latest, _ := s.traffic.LatestForUsers(ctx, ids)
+	now := s.panelNow(ctx)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	lastBefore, _ := s.traffic.LastBeforeForUsers(ctx, ids, todayStart)
+	for _, u := range users {
+		report := &UsageReport{
+			UserID:              u.ID,
+			PermanentTotalBytes: u.LifetimeTotalBytes,
+		}
+		l := latest[u.ID]
+		if l == nil {
+			out[u.ID] = report
+			continue
+		}
+		// Pre-migration fallback (matches the single-user form's logic).
+		if report.PermanentTotalBytes == 0 {
+			report.PermanentTotalBytes = l.TotalBytes
+		}
+		if base := lastBefore[u.ID]; base != nil {
+			report.TodayUsedBytes = monotonicDelta(l.TotalBytes, base.TotalBytes)
+		} else {
+			report.TodayUsedBytes = l.TotalBytes
+		}
+		// v3: PeriodUsed is O(1) lifetime - baseline. Same fallback as
+		// the single-user form for legacy rows without a seeded baseline.
+		if u.TrafficPeriodStart != nil && u.PeriodBaselineBytes > 0 {
+			report.PeriodUsedBytes = u.PeriodUsed()
+		} else {
+			report.PeriodUsedBytes = l.TotalBytes
+		}
+		out[u.ID] = report
+	}
+	return out
+}
+
 func (s *Service) ReportFor(ctx context.Context, userID int64) (*UsageReport, error) {
 	report := &UsageReport{UserID: userID}
 	u, uerr := s.users.GetByID(ctx, userID)

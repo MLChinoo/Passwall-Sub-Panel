@@ -137,11 +137,27 @@ func (h *UserMeHandler) ServerStatus(c *gin.Context) {
 		Status    string     `json:"status"` // "ok" | "down" | "unknown"
 		CheckedAt *time.Time `json:"checked_at,omitempty"`
 	}
+	// Pre-fix the loop ran one nodes.GetByPanelInbound per ownership
+	// entry — a user in a populous group might issue 20+ separate SELECTs
+	// per /user/me/server-status call, which the browser auto-refreshes.
+	// One List(ctx) + in-memory index collapses this to a single query
+	// no matter how many ownerships the user holds; at the panel's typical
+	// deployment size (~hundreds of nodes max) the extra bandwidth is
+	// strictly cheaper than the eliminated round-trips.
+	allNodes, err := h.nodes.List(c.Request.Context())
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	nodeByKey := make(map[[2]int64]*domain.Node, len(allNodes))
+	for _, n := range allNodes {
+		nodeByKey[[2]int64{n.PanelID, int64(n.InboundID)}] = n
+	}
 	out := make([]nodeStatus, 0, len(entries))
 	seen := make(map[int64]bool, len(entries))
 	for _, e := range entries {
-		n, err := h.nodes.GetByPanelInbound(c.Request.Context(), e.PanelID, e.InboundID)
-		if err != nil || n == nil || seen[n.ID] {
+		n := nodeByKey[[2]int64{e.PanelID, int64(e.InboundID)}]
+		if n == nil || seen[n.ID] {
 			continue
 		}
 		seen[n.ID] = true
@@ -512,6 +528,18 @@ func resolveSubPath(ctx context.Context, s ports.SettingsRepo, token string) str
 			subPath = strings.Trim(strings.TrimSpace(st.SubPath), "/")
 		}
 	}
+	if subPath == "" {
+		subPath = "sub"
+	}
+	return "/" + subPath + "/" + token
+}
+
+// resolveSubPathFromSettings is the pre-loaded variant of resolveSubPath
+// for callers that already hold a UISettings value — list handlers loop
+// over rows and shouldn't re-load per row just to build the same /sub
+// path prefix.
+func resolveSubPathFromSettings(st ports.UISettings, token string) string {
+	subPath := strings.Trim(strings.TrimSpace(st.SubPath), "/")
 	if subPath == "" {
 		subPath = "sub"
 	}

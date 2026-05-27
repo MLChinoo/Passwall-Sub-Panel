@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,9 +17,19 @@ import (
 
 // RuleSetRepo implements ports.RuleSetRepo. Each shared rule set is one YAML
 // file under config/rulesets/.
+//
+// mtime cache: same rationale as TemplateRepo — /sub render walks every
+// referenced ruleset, re-parsing YAML on each request was a measurable
+// dominant cost at polling-fleet scale.
 type RuleSetRepo struct {
-	dir string
-	mu  sync.RWMutex
+	dir   string
+	mu    sync.RWMutex
+	cache sync.Map // map[string]ruleSetCacheEntry — key = absolute file path
+}
+
+type ruleSetCacheEntry struct {
+	mtime time.Time
+	value *domain.RuleSet
 }
 
 func NewRuleSetRepo(configDir string) (*RuleSetRepo, error) {
@@ -123,7 +134,11 @@ func (r *RuleSetRepo) Save(ctx context.Context, rs *domain.RuleSet) error {
 		ProxyGroupOrder: rs.ProxyGroupOrder,
 		Content:         rs.Content,
 	}
-	return writeYAML(p, doc)
+	if err := writeYAML(p, doc); err != nil {
+		return err
+	}
+	r.cache.Delete(p)
+	return nil
 }
 
 func (r *RuleSetRepo) Delete(ctx context.Context, slug string) error {
@@ -133,6 +148,7 @@ func (r *RuleSetRepo) Delete(ctx context.Context, slug string) error {
 	if err != nil {
 		return err
 	}
+	r.cache.Delete(p)
 	return os.Remove(p)
 }
 
@@ -172,6 +188,32 @@ func (r *RuleSetRepo) pathForSlug(slug string) (string, error) {
 }
 
 func (r *RuleSetRepo) readFile(path string) (*domain.RuleSet, error) {
+	if st, err := os.Stat(path); err == nil {
+		if v, ok := r.cache.Load(path); ok {
+			entry := v.(ruleSetCacheEntry)
+			if entry.mtime.Equal(st.ModTime()) {
+				return entry.value, nil
+			}
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var doc ruleSetFile
+		if err := yaml.Unmarshal(b, &doc); err != nil {
+			return nil, err
+		}
+		rs := &domain.RuleSet{
+			Slug:            doc.Slug,
+			Name:            doc.Name,
+			Sort:            doc.Sort,
+			Enabled:         doc.Enabled,
+			ProxyGroupOrder: doc.ProxyGroupOrder,
+			Content:         doc.Content,
+		}
+		r.cache.Store(path, ruleSetCacheEntry{mtime: st.ModTime(), value: rs})
+		return rs, nil
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
