@@ -49,10 +49,16 @@ export function createAppTheme({ mode, sourceColor, language, density = 'comfort
     },
     shape: { borderRadius: 12 },
     typography: {
-      // Roboto first (covers Latin), then Noto Sans SC (covers CJK), then
-      // system fallbacks. The two Google fonts are designed together so
-      // CJK / Latin mixes don't look mismatched.
-      fontFamily: '"Roboto","Noto Sans SC","PingFang SC","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif',
+      // Roboto first (covers Latin via @fontsource/roboto bundled in
+      // main.tsx), then system CJK fonts. Pre-v3.6.1-beta.6 we shipped
+      // @fontsource/noto-sans-sc here too (392 woff files + 260KB CSS),
+      // but dropped it for the perf batch — the system fallbacks cover
+      // PingFang SC (macOS/iOS) + Microsoft YaHei (Windows) + Hiragino
+      // Sans, which is every desktop platform that ships Chinese-reading
+      // out of the box. Linux desktops without a CJK font package
+      // installed will see tofu boxes for Chinese; acceptable for an
+      // admin tool, document it if it ever becomes an issue.
+      fontFamily: '"Roboto","PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,"Segoe UI",sans-serif',
       // Compact knocks h4 down from page-poster size to something that
       // sits closer to the table beneath it — admin pages have a lot
       // of vertical content competing for attention, the title doesn't

@@ -4,6 +4,75 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.1-beta.7 — 2026-05-26
+
+beta.6 perf 批之后的回归 audit —— 2 个并行 review agent(后端 + 前端)找到
+3 个 high + 2 个 med + 2 个 low。3 个 high 都是 perf 批引入的真 bug,必修。
+
+### Fixed (real bugs from beta.6)
+
+- **pushClientConfigToAll D1 路径完全不工作** ── beta.6 加的"本地快照
+  fast path"撞上一个隐含契约:`inboundcfg.InboundFromNode(n)` 用的
+  Settings JSON 是 `StripClients` 过的(v3.5 设计:本地快照只服务 render,
+  client UUID 用 user.UUID 即时算出来不需要存)。当 push 路径把这个被
+  剥的 inbound 喂给 `UpdateClient`/`UpdateClientWithInbound`,下游的
+  `updateClientInSettings` 走 clients[] 找匹配 client → 数组是空的 →
+  返回 `"client not found in inbound settings: email=… id=…"`。
+  **每一个 captured node 的 push 全失败**:traffic poll 的 floor 下发、
+  admin SetEnabled 的 3X-UI 通知、UpdateProfile 的 expire 改动全部断了,
+  sync 任务还会 retry 到 100 次上限。彻底撤回 D1,回到 ListInbounds-per-
+  panel 路径(D2 的 `UpdateClientWithInbound` 优化保留 —— ListInbounds
+  返回的 inbound 是带 clients[] 的,从那里走的就没事)。
+- **Dashboard "即将到期" 7/14 天不一致** ── beta.6 的
+  `expiringWindowDays = 14` 跟前端硬编码的卡片标题 "即将到期(7 天内)"
+  不对齐 —— 10 天后到期的用户会出现在 "7 天内" 的列表里,空状态文案
+  "7 天内无到期用户" 也撒谎。后端改成 7 跟 UI 对齐。
+- **theme font-family 还引用 "Noto Sans SC" 但 @font-face 删了** ── beta.6
+  把 `@fontsource/noto-sans-sc/{400,500}.css` 删了(F3 字体优化),但
+  [web-react/src/theme/index.ts](web-react/src/theme/index.ts) 的
+  `fontFamily` 里那个名字还在。浏览器静默跳过这个找不到的 family,
+  fallthrough 到下一个。Mac/Windows 有 PingFang SC / Microsoft YaHei 兜底
+  没事,Linux 无系统 CJK 字体的桌面会渲成 tofu 框。把 "Noto Sans SC" 从
+  font-family 去掉,顺手把注释更新成系统字体策略。
+
+### Fixed (lower severity)
+
+- **render.prefetchInbounds goroutine panic 会让 /sub 死锁(MED)** ──
+  接收方是 counter-based(等 `len(panelInboundIDs)` 次 send),如果 goroutine
+  内部某次 `pool.Get` 或 `ListInbounds` panic(罕见但不是不可能,比如
+  xui_panel 配置导致 nil-deref),safego.Recover 吞掉 panic 但 resultsCh
+  少一次 send → 接收方永远卡住 → /sub 整个请求 hang。改成 defer 里发结果,
+  recover 也会把 result 设成 err 然后 send,保证每条 goroutine 一定有一次
+  send。
+- **UsersView usage map 在 pageSize 变化时双发请求(MED)** ── beta.6 把
+  effect deps 写成 `[items, pageSize]`,但 usePaged 内部已经会在 pageSize
+  变时刷 items,所以双 dep = 一次 pageSize 改动两次 fetch。`usageSeq`
+  guard 保证显示对,但浪费一次 HTTP。去掉 dep 数组里的 pageSize,
+  pageSize 在 effect fire 时直接读最新值。
+- **mailer maybeSend ReserveSentSlot 在 render 之前(LOW)** ── beta.6
+  把 HasSent+RecordSent 换成 ReserveSentSlot 之后,顺序变成
+  reserve → render → send。SMTP 失败被 at-most-once 吃掉是设计意图,
+  但模板**解析失败**(admin 把模板写坏了)同样被吃掉就不对 —— slot 已
+  占,下个 cycle HasSent 仍是 true,这个 window 永远不发。换成
+  render-first / reserve-second,跟 SendBlockedClientWarning 的顺序一致。
+- **static.go WalkDir 错误静默(LOW)** ── `sync.Once` 把瞬态 ReadFile
+  失败固化成进程生命周期的 404。加 log.Warn 给 admin 留 trail,顺手补
+  "index.html 缺失" 的硬警告(SPA 没它就全 404)。
+
+### Skipped (intentional)
+
+- **i18n LanguageDetector 跟 explicit lng 并存**:harmless 冗余,
+  resolveInitialLanguage 实际是 querystring → localStorage → navigator
+  顺序对的复制,LanguageDetector 在 init 时被 lng 覆盖,只有 caches:
+  ['localStorage'] 还在生效(语言切换会写 localStorage)。
+- **setLanguage 不 await**:首次语言切换有 200ms flash(picker 已经更新
+  但 t() 还是旧值),加 loading indicator 收益不值复杂度。
+- **DropIndex idx_users_email 在 Postgres 上的命名差异**:已经注释 best-
+  effort + WARN-only,该索引"留下也无害,只是浪费写"。
+- **vendor 拆 axios/zustand/qrcode.react**:total ~50KB,主包已经从 700KB
+  砍到 165KB,边际收益太小。
+- **DashboardView t() 多写 admin: 前缀**:style,t() 行为不受影响。
+
 ## v3.6.1-beta.6 — 2026-05-26
 
 第二轮全栈性能审计 —— 4 个并行 audit agent 覆盖 HTTP / DB / workers /

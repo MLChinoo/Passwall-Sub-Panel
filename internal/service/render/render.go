@@ -17,7 +17,6 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
-	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
@@ -359,23 +358,34 @@ func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderI
 		// can actually run.
 		sem <- struct{}{}
 		go func(p int64) {
-			defer safego.Recover("render.prefetchInbounds")
-			defer func() { <-sem }()
+			// The receiver below is counter-based (waits for exactly
+			// len(panelInboundIDs) sends), so EVERY exit path of this
+			// goroutine must send exactly one panelResult — otherwise
+			// /sub deadlocks. defer the send so even a recovered panic
+			// inside pool.Get / ListInbounds still produces a result.
+			result := panelResult{panelID: p, err: fmt.Errorf("render: prefetch goroutine exited unexpectedly")}
+			defer func() {
+				if r := recover(); r != nil {
+					result = panelResult{panelID: p, err: fmt.Errorf("render: prefetch panic: %v", r)}
+				}
+				<-sem
+				resultsCh <- result
+			}()
 			c, err := s.pool.Get(p)
 			if err != nil {
-				resultsCh <- panelResult{panelID: p, err: err}
+				result = panelResult{panelID: p, err: err}
 				return
 			}
 			list, lerr := c.ListInbounds(ctx)
 			if lerr != nil {
-				resultsCh <- panelResult{panelID: p, err: lerr}
+				result = panelResult{panelID: p, err: lerr}
 				return
 			}
 			idx := make(map[int]*ports.Inbound, len(list))
 			for i := range list {
 				idx[list[i].ID] = &list[i]
 			}
-			resultsCh <- panelResult{panelID: p, byInboundID: idx}
+			result = panelResult{panelID: p, byInboundID: idx}
 		}(pid)
 	}
 

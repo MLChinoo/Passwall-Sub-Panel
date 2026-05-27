@@ -336,22 +336,29 @@ export default function UsersView() {
   // checked shouldn't carry the action forward.
   useEffect(() => { setSelected(new Set()) }, [items])
   // Best-effort fetch of per-user current-period usage. Re-fires each
-  // time the items list changes (any page / sort / search). loadSeq
-  // pins the usageMap to the most recent successful response so a slow
-  // earlier fetch can't pair stale usage with a newer page's rows.
+  // time the items list changes (any page / sort / search / page-size
+  // change — usePaged refetches items on pageSize change too, so we
+  // only need items in the dep array to catch every case without
+  // double-firing). loadSeq pins the usageMap to the most recent
+  // successful response so a slow earlier fetch can't pair stale usage
+  // with a newer page's rows.
   //
   // limit is capped at the current page size — pre-fix this asked for
   // 1000 every time, which on the backend triggered a paginated walk
   // of 1000 users plus a per-page batch report-fetch. The visible
   // table is at most pageSize rows, so a tighter cap means the dashboard
-  // never pulls more usage rows than it shows.
+  // never pulls more usage rows than it shows. pageSize is read via a
+  // ref-like access (just reading the latest hook value at effect-fire
+  // time) so it's not in the dep array — items already encodes the
+  // last-fetched page size.
   const usageSeq = useRef(0)
   useEffect(() => {
     const seq = ++usageSeq.current
     void topTraffic(Math.max(pageSize, 25))
       .then(rows => { if (seq === usageSeq.current) setUsageMap(new Map(rows.map(r => [r.user_id, r]))) })
       .catch(() => { /* table just won't show usage; not fatal */ })
-  }, [items, pageSize])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items])
 
   async function loadGroups() {
     try { const res = await listGroups(); setGroups(res.items) } catch { /* toast */ }

@@ -24,7 +24,6 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
-	"github.com/KazuhaHub/passwall-sub-panel/internal/service/inboundcfg"
 )
 
 // NodeSelector resolves a group's tag_filter into a concrete node list.
@@ -72,13 +71,7 @@ type Service struct {
 	selector  NodeSelector
 	syncer    ClientSyncer
 	pool      ports.XUIPool
-	settings  ports.SettingsRepo
-	// nodes is optional. When wired, pushClientConfigToAll can read
-	// the inbound config from the local v3.5 snapshot for captured
-	// nodes and skip the per-panel ListInbounds — the common case
-	// once a node has gone through one capture cycle. Falls back to
-	// ListInbounds for un-captured (transition-window) nodes.
-	nodes ports.NodeRepo
+	settings ports.SettingsRepo
 	// trafficUsage is set lazily via SetTrafficUsage after traffic.Service
 	// is constructed (traffic depends on user, so user must exist first).
 	// May be nil during early-start; trafficFloor degrades to 0 in that case.
@@ -101,15 +94,6 @@ func New(users ports.UserRepo, groups ports.GroupRepo, ownership ports.Ownership
 		pool:      pool,
 		settings:  settings,
 	}
-}
-
-// WithNodes wires the node repo so pushClientConfigToAll can read the
-// local inbound config snapshot for captured nodes (skips the panel-
-// hitting ListInbounds in the common case). nil-safe omission keeps
-// the pre-wiring fallback path working.
-func (s *Service) WithNodes(nodes ports.NodeRepo) *Service {
-	s.nodes = nodes
-	return s
 }
 
 // SetTrafficUsage wires the late-bound traffic-usage reader. traffic.Service
@@ -1477,94 +1461,59 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	cfg, _ := s.settings.Load(ctx, ports.UISettings{})
 	concurrency := paneltz.ResolveMaxPanelConcurrency(cfg.MaxPanelConcurrency)
 
-	// Phase 1 — resolve the inbound for every ownership entry. Two paths:
+	// Phase 1 — prefetch ListInbounds for every panel referenced by the
+	// user's ownership rows in parallel. Each ListInbounds returns the
+	// inbound's full settings JSON including the live clients[] array,
+	// which the per-push RMW (UpdateClient → updateClientInSettings)
+	// requires to find the existing client entry by uuid before patching
+	// it.
 	//
-	//  Local snapshot (zero HTTP): when s.nodes is wired AND the node
-	//    is captured (HasLocalConfig), we read from the v3.5 snapshot.
-	//    This is the common case once a node has been through one
-	//    capture cycle — the traffic-poll PushClientConfig flow then
-	//    runs without any ListInbounds at all.
-	//  ListInbounds fallback (one per panel): only panels that have at
-	//    least one un-captured entry. Pre-fix this fired unconditionally
-	//    for every panel-with-entries on every PushClientConfig call,
-	//    even though the same data was already on disk locally.
+	// A previous attempt (v3.6.1-beta.6 D1) tried to short-circuit this
+	// to inboundcfg.InboundFromNode(n) for captured nodes — that broke
+	// every captured-node push because the v3.5 snapshot strips clients[]
+	// (it's a render-only contract, see inboundcfg.StripClients), so the
+	// downstream updateClientInSettings would find an empty clients[] and
+	// return "client not found". Until ListInbounds can be skipped
+	// safely (would require either re-merging live clients[] into the
+	// snapshot, or threading the traffic-poll's already-fetched inbound
+	// map all the way down through PushClientConfig), the prefetch stays.
+	uniquePanels := make(map[int64]struct{})
+	for _, e := range entries {
+		uniquePanels[e.PanelID] = struct{}{}
+	}
 	type panelData struct {
 		byInbound map[int]*ports.Inbound
 		err       error
 	}
-	panelMap := make(map[int64]panelData, 4)
-	for _, e := range entries {
-		pd, ok := panelMap[e.PanelID]
-		if !ok {
-			pd = panelData{byInbound: map[int]*ports.Inbound{}}
-			panelMap[e.PanelID] = pd
-		}
-	}
-	// First pass: try the local snapshot for every entry.
-	var fallback []*domain.XUIClientEntry
-	if s.nodes != nil {
-		for _, e := range entries {
-			n, err := s.nodes.GetByPanelInbound(ctx, e.PanelID, e.InboundID)
-			if err == nil && n != nil && inboundcfg.HasLocalConfig(n) {
-				inb := inboundcfg.InboundFromNode(n)
-				panelMap[e.PanelID].byInbound[e.InboundID] = inb
-				continue
-			}
-			fallback = append(fallback, e)
-		}
-	} else {
-		fallback = entries
-	}
-	// Second pass: ListInbounds only for panels with at least one
-	// un-captured entry. Bucket fallback entries by panel first so we
-	// know which panels actually need the HTTP call.
-	fallbackPanels := make(map[int64]struct{})
-	for _, e := range fallback {
-		fallbackPanels[e.PanelID] = struct{}{}
-	}
-	if len(fallbackPanels) > 0 {
-		var prefetchMu sync.Mutex
-		var prefetchWG sync.WaitGroup
-		prefetchSem := make(chan struct{}, concurrency)
-		for pid := range fallbackPanels {
-			prefetchWG.Add(1)
-			go func(p int64) {
-				defer safego.Recover("user.pushClientConfigToAll.prefetch")
-				defer prefetchWG.Done()
-				prefetchSem <- struct{}{}
-				defer func() { <-prefetchSem }()
-				c, err := s.pool.Get(p)
-				if err != nil {
-					prefetchMu.Lock()
-					panelMap[p] = panelData{err: err}
-					prefetchMu.Unlock()
-					return
-				}
-				list, lerr := c.ListInbounds(ctx)
+	panelMap := make(map[int64]panelData, len(uniquePanels))
+	var prefetchMu sync.Mutex
+	var prefetchWG sync.WaitGroup
+	prefetchSem := make(chan struct{}, concurrency)
+	for pid := range uniquePanels {
+		prefetchWG.Add(1)
+		go func(p int64) {
+			defer safego.Recover("user.pushClientConfigToAll.prefetch")
+			defer prefetchWG.Done()
+			prefetchSem <- struct{}{}
+			defer func() { <-prefetchSem }()
+			c, err := s.pool.Get(p)
+			if err != nil {
 				prefetchMu.Lock()
-				if lerr != nil {
-					// Preserve any locally-captured inbounds we may have
-					// already populated for this panel — only mark the
-					// panel-level error so un-captured entries surface as
-					// "panel down" while captured entries still push.
-					existing := panelMap[p]
-					existing.err = lerr
-					panelMap[p] = existing
-				} else {
-					idx := panelMap[p].byInbound
-					if idx == nil {
-						idx = map[int]*ports.Inbound{}
-					}
-					for i := range list {
-						idx[list[i].ID] = &list[i]
-					}
-					panelMap[p] = panelData{byInbound: idx}
-				}
+				panelMap[p] = panelData{err: err}
 				prefetchMu.Unlock()
-			}(pid)
-		}
-		prefetchWG.Wait()
+				return
+			}
+			list, lerr := c.ListInbounds(ctx)
+			idx := make(map[int]*ports.Inbound, len(list))
+			for i := range list {
+				idx[list[i].ID] = &list[i]
+			}
+			prefetchMu.Lock()
+			panelMap[p] = panelData{byInbound: idx, err: lerr}
+			prefetchMu.Unlock()
+		}(pid)
 	}
+	prefetchWG.Wait()
 
 	// Phase 2 — concurrent SetOwnedClientEnable across entries, capped
 	// by the same sema. Ownership-table writes (stale cleanup) and
@@ -1581,24 +1530,16 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	pushSem := make(chan struct{}, concurrency)
 	for _, e := range entries {
 		pd, ok := panelMap[e.PanelID]
-		// The local-snapshot fast path may have populated byInbound for
-		// this entry even when the panel-level fetch failed (un-captured
-		// siblings hit the broken panel; captured ones don't need it).
-		// So: only fail panel-down when the entry's inbound is genuinely
-		// missing AND we have a panel-level error to attribute it to.
-		var inb *ports.Inbound
-		if ok && pd.byInbound != nil {
-			inb = pd.byInbound[e.InboundID]
-		}
-		if inb == nil {
+		if !ok || pd.err != nil {
+			perr := fmt.Errorf("panel %d not reachable", e.PanelID)
 			if ok && pd.err != nil {
-				outcomes <- pushOutcome{entry: e, panelErr: pd.err}
-				continue
+				perr = pd.err
 			}
-			if !ok {
-				outcomes <- pushOutcome{entry: e, panelErr: fmt.Errorf("panel %d not reachable", e.PanelID)}
-				continue
-			}
+			outcomes <- pushOutcome{entry: e, panelErr: perr}
+			continue
+		}
+		inb, found := pd.byInbound[e.InboundID]
+		if !found {
 			// ListInbounds returned the panel's inbound set, but our
 			// row points to an ID that's no longer there. Same
 			// semantics as the old isInboundNotFoundErr branch: the

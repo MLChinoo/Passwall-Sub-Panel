@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/web"
 )
 
@@ -36,15 +37,25 @@ func loadStaticAssets() map[string]staticAsset {
 		out := map[string]staticAsset{}
 		sub, err := fs.Sub(web.DistFS, "dist")
 		if err != nil {
+			log.Warn("static: fs.Sub on embedded dist failed", "err", err)
 			staticAssets = out
 			return
 		}
 		_ = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				// Surface the walk error — sync.Once makes the assets
+				// map permanent for the process lifetime, so a silent
+				// drop here becomes a permanent 404 for the affected
+				// file with no diagnostic trail.
+				log.Warn("static: walk error in embedded dist", "path", path, "err", err)
+				return nil
+			}
+			if d.IsDir() {
 				return nil
 			}
 			b, rerr := fs.ReadFile(sub, path)
 			if rerr != nil {
+				log.Warn("static: read failed for embedded asset", "path", path, "err", rerr)
 				return nil
 			}
 			ct := mime.TypeByExtension(filepath.Ext(path))
@@ -54,6 +65,12 @@ func loadStaticAssets() map[string]staticAsset {
 			out[path] = staticAsset{body: b, contentType: ct}
 			return nil
 		})
+		if _, ok := out["index.html"]; !ok {
+			// Hard to recover from later — every SPA route depends on
+			// the fallback to index.html. Loud warning so the operator
+			// sees the misconfigured / unbuilt frontend in logs.
+			log.Warn("static: embedded dist has no index.html; SPA routes will 404")
+		}
 		staticAssets = out
 	})
 	return staticAssets

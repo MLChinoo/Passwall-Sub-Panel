@@ -875,26 +875,31 @@ func (s *Service) maybeSend(ctx context.Context, settings domain.MailSettings, t
 	if tpl == nil || !tpl.Enabled {
 		return nil
 	}
-	// ReserveSentSlot atomically claims the (user, kind, windowKey) row
-	// in a single INSERT … OnConflict DoNothing. Pre-fix this path did
-	// HasSent (Count(*)) + RecordSent (Insert) — two round-trips per
-	// (user, kind) per cycle, AND racy: two concurrent reminder runs
-	// could both observe HasSent=false and double-send. The same
-	// blocked-client warning path already uses this primitive (see
-	// SendBlockedClientWarning) — the trade-off is identical: a
-	// transient SMTP failure leaves the slot taken so this window is
-	// not retried (at-most-once delivery; better than at-least-once
-	// spam if SMTP starts working between cycles).
-	won, err := s.repo.ReserveSentSlot(ctx, u.ID, kind, windowKey, to)
-	if err != nil || !won {
-		return err
-	}
+	// Render BEFORE reserving the slot. ReserveSentSlot's at-most-once
+	// contract is deliberate for SMTP-failure-vs-spam (better to lose
+	// one reminder than spam if SMTP recovers between cycles), but a
+	// template-parse error is a permanent admin-fixable fault — if we
+	// reserve first, a broken template silently consumes the window
+	// forever (HasSent on the next cycle sees the row and skips).
+	// Render-first surfaces parse errors immediately and only commits
+	// the slot once we know the message can actually be built. Mirrors
+	// the ordering SendBlockedClientWarning already uses.
 	subject, err := renderTemplate("subject", tpl.Subject, data)
 	if err != nil {
 		return err
 	}
 	body, err := renderTemplate("body", tpl.Body, data)
 	if err != nil {
+		return err
+	}
+	// ReserveSentSlot atomically claims the (user, kind, windowKey) row
+	// in a single INSERT … OnConflict DoNothing. Pre-fix this path did
+	// HasSent (Count(*)) + RecordSent (Insert) — two round-trips per
+	// (user, kind) per cycle, AND racy: two concurrent reminder runs
+	// could both observe HasSent=false and double-send. Switching to
+	// the reserve primitive collapses both to one atomic operation.
+	won, err := s.repo.ReserveSentSlot(ctx, u.ID, kind, windowKey, to)
+	if err != nil || !won {
 		return err
 	}
 	return sendSMTP(ctx, settings, to, subject, body)

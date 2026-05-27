@@ -32,8 +32,11 @@ func NewAdminDashboardHandler(users ports.UserRepo, nodes ports.NodeRepo, groups
 
 // expiringWindowDays mirrors the frontend's EXPIRING_WINDOW_DAYS so the
 // rendered list and the server-computed list always agree on which
-// users are surfaced.
-const expiringWindowDays = 14
+// users are surfaced. The UI card title ("即将到期(7 天内)") hard-codes
+// "7 days", so this MUST match. v3.6.1-beta.6 shipped with 14 here
+// while the UI said 7 — a user 10 days out would appear under a card
+// promising 7. Both ends now agree on 7.
+const expiringWindowDays = 7
 
 // dashboardExpiringRow is the minimum shape the dashboard's "expiring
 // soon" list needs. Trimmed from the full user DTO to keep the response
