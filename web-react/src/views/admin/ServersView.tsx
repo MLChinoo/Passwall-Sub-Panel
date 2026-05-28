@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import SystemUpdateIcon from '@mui/icons-material/SystemUpdateAlt'
+import UpgradeIcon from '@mui/icons-material/Upgrade'
 
 import {
   createServer,
@@ -103,7 +104,7 @@ export default function ServersView() {
   const [search, setSearch] = useState('')
   const [probeStates, setProbeStates] = useState<Record<number, ProbeState>>({})
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [batchBusy, setBatchBusy] = useState<'test' | 'delete' | 'upgrade_xray' | ''>('')
+  const [batchBusy, setBatchBusy] = useState<'test' | 'delete' | 'upgrade_xray' | 'upgrade_panel' | ''>('')
   const [singleTesting, setSingleTesting] = useState<number | null>(null)
   // Upgrade action state. menuAnchor + menuTarget power the kebab-menu
   // overlay (one global menu re-anchored per row). upgrading marks a panel
@@ -522,6 +523,64 @@ export default function ServersView() {
     }
   }
 
+  // batchUpgradePanel fires UpdatePanel("latest") across the selected panels.
+  // UNLIKE batchUpgradeXray, a 3X-UI panel upgrade restarts the whole panel
+  // process — every user on that panel drops for ~30-60s — and a new 3X-UI
+  // release can schema-break the management API (docs/3xui-compat.md warns
+  // against blind batch panel upgrades). So this batch path deliberately does
+  // NOT force: PSP's compat gate still blocks any panel whose target version
+  // is outside the tested range, and those are reported as "blocked" rather
+  // than overridden. Forcing an out-of-range upgrade stays a per-panel
+  // decision in the ⋮ menu (runUpgradePanel's two-step confirm), where the
+  // friction is appropriate. The clean rollout: deploy a PSP build whose
+  // max_tested_xui covers the target, then the gate passes for every panel
+  // and this one click upgrades the whole fleet.
+  async function batchUpgradePanel() {
+    const rows = items.filter(s => selected.has(s.id))
+    if (!rows.length) return
+    const ok = await confirm({
+      title: t('admin:servers.confirm.batch_upgrade_panel_title', { defaultValue: '批量升级 3X-UI 面板' }),
+      message: t('admin:servers.confirm.batch_upgrade_panel_message', {
+        count: rows.length,
+        defaultValue: '将对 {{count}} 台面板触发 3X-UI 自升级到最新版。每台面板会重启，其上所有用户断连约 30–60 秒；约 60 秒后各自跑 smoke probe，结果写入 audit log。目标版本超出 Passwall Panel 已测试范围的面板会被拦截（不强制）——如需强制，请用单台 ⋮ 菜单逐台确认。是否继续？',
+      }),
+      confirmText: t('admin:servers.action.upgrade', { defaultValue: '升级' }),
+    })
+    if (!ok) return
+    setBatchBusy('upgrade_panel')
+    try {
+      const results = await Promise.allSettled(rows.map(r => upgradePanel(r.id)))
+      let initiated = 0
+      let blocked = 0
+      let failed = 0
+      results.forEach(res => {
+        if (res.status === 'fulfilled') { initiated++; return }
+        const resp = (res.reason as { response?: { status?: number; data?: { reason?: string } } }).response
+        if (resp?.status === 409 && resp.data?.reason === 'untested_target') blocked++
+        else failed++
+      })
+      if (blocked === 0 && failed === 0) {
+        pushSnack(
+          t('admin:servers.toast.batch_upgrade_panel_ok', {
+            count: initiated,
+            defaultValue: '已发起 {{count}} 台 3X-UI 升级，约 60 秒后各自跑 smoke probe（结果见 audit log）',
+          }),
+          'success',
+        )
+      } else {
+        pushSnack(
+          t('admin:servers.toast.batch_upgrade_panel_partial', {
+            ok: initiated, blocked, fail: failed,
+            defaultValue: '已发起 {{ok}} 台；{{blocked}} 台目标超出已测范围被拦截（可逐台强制）；{{fail}} 台失败',
+          }),
+          'warning',
+        )
+      }
+    } finally {
+      setBatchBusy('')
+    }
+  }
+
   async function batchDeleteServers() {
     const rows = items.filter(s => selected.has(s.id))
     if (!rows.length) return
@@ -816,6 +875,15 @@ export default function ServersView() {
             sx={{ color: 'inherit' }}
           >
             {t('admin:servers.batch_upgrade_xray', { defaultValue: '批量升级 Xray' })}
+          </Button>
+          <Button
+            size="small" variant="text"
+            startIcon={batchBusy === 'upgrade_panel' ? <CircularProgress size={14} /> : <UpgradeIcon />}
+            disabled={batchBusy !== ''}
+            onClick={batchUpgradePanel}
+            sx={{ color: 'inherit' }}
+          >
+            {t('admin:servers.batch_upgrade_panel', { defaultValue: '批量升级 3X-UI' })}
           </Button>
           <Button
             size="small" variant="text" color="error"

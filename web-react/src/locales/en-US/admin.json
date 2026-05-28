@@ -1164,6 +1164,7 @@
     "batch_test": "Test selected",
     "batch_delete": "Delete selected",
     "batch_upgrade_xray": "Upgrade Xray on selected",
+    "batch_upgrade_panel": "Upgrade 3X-UI on selected",
     "field": {
       "name": "Server name",
       "url": "URL",
@@ -1242,7 +1243,9 @@
       "upgrade_panel_blocked": "Upgrade refused: target {{latest}} is outside Passwall Panel's tested range (highest {{max}}). Upgrade Passwall Panel first.",
       "upgrade_xray_ok": "Xray upgraded to {{version}}",
       "batch_upgrade_xray_ok": "Upgraded Xray on {{count}} server(s) to latest",
-      "batch_upgrade_xray_partial": "Upgraded Xray on {{ok}} server(s); {{fail}} failed"
+      "batch_upgrade_xray_partial": "Upgraded Xray on {{ok}} server(s); {{fail}} failed",
+      "batch_upgrade_panel_ok": "Initiated 3X-UI upgrade on {{count}} server(s); each runs a smoke probe in ~60s (results in the audit log)",
+      "batch_upgrade_panel_partial": "Initiated {{ok}}; {{blocked}} blocked (target outside tested range — force per-panel); {{fail}} failed"
     },
     "confirm": {
       "delete_title": "Delete server",
@@ -1251,6 +1254,8 @@
       "batch_delete_message": "Delete {{names}}{{suffix}}? These servers must have no nodes referencing them.",
       "batch_upgrade_xray_title": "Upgrade Xray on selected servers",
       "batch_upgrade_xray_message": "Install the latest xray-core on {{count}} server(s) in parallel. Each 3X-UI resolves its own latest tag, so versions may differ by a patch. The panel itself stays up; only the xray child process restarts. Continue?",
+      "batch_upgrade_panel_title": "Upgrade 3X-UI on selected servers",
+      "batch_upgrade_panel_message": "Fire a 3X-UI self-upgrade to latest on {{count}} panel(s). Each panel restarts — every user on it drops for ~30–60s — and each runs a smoke probe ~60s later (results in the audit log). Panels whose target version is outside Passwall Panel's tested range are blocked (not forced) — to force, use the per-panel ⋮ menu. Continue?",
       "upgrade_panel_title": "Upgrade 3X-UI panel",
       "upgrade_panel_message": "Passwall Panel will check the target version first and only fire the upgrade on {{name}} if it's within the tested range. The panel will restart; Passwall Panel runs a smoke probe ~60s later. Continue?",
       "upgrade_force_title": "Target version not verified by Passwall Panel",
