@@ -219,7 +219,20 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		return fmt.Errorf("%s %s: parse: %w (raw: %s)", method, path, err, snippet(trimmed, 200))
 	}
 	if !r.Success {
-		return fmt.Errorf("%s %s: %s", method, path, r.Msg)
+		base := fmt.Errorf("%s %s: %s", method, path, r.Msg)
+		// 3X-UI signals permanent client-level rejections as HTTP 200 +
+		// {success:false} (duplicate email on /clients/add, "client not found"
+		// on update/del) rather than a 4xx — so the generic 4xx→ErrValidation
+		// wrapping above never fires for them. Without this, the sync-task
+		// runners classify a duplicate-add as transient and burn the full
+		// ~100-attempt retry budget hammering the panel for an unsatisfiable
+		// op. Wrap the known-permanent shapes in ErrValidation so they fail
+		// fast — mirroring node.go's "port already exists" handling for the
+		// inbound case.
+		if isPermanentPanelMsg(r.Msg) {
+			return fmt.Errorf("%w: %s", domain.ErrValidation, base.Error())
+		}
+		return base
 	}
 	if out != nil && len(r.Obj) > 0 {
 		if err := json.Unmarshal(r.Obj, out); err != nil {
@@ -227,6 +240,20 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		}
 	}
 	return nil
+}
+
+// isPermanentPanelMsg reports whether a 3X-UI {success:false} message
+// describes a permanent (non-retryable) condition — a duplicate/conflicting
+// create or a missing target — rather than a transient panel/network blip.
+// These are returned with HTTP 200, so they bypass the 4xx→ErrValidation
+// path; callers wrap them in domain.ErrValidation so task runners fail fast
+// instead of retrying to the attempt cap.
+func isPermanentPanelMsg(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "duplicate") ||
+		strings.Contains(m, "already exist") ||
+		strings.Contains(m, "client not found") ||
+		strings.Contains(m, "not found in inbound")
 }
 
 // snippet truncates s to n chars with an ellipsis, suitable for embedding

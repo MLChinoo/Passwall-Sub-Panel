@@ -203,3 +203,15 @@ func TestUpdateClientSurfacesPanelError(t *testing.T) {
 		t.Fatalf("want error containing panel msg, got %v", err)
 	}
 }
+
+// A permanent client-level rejection (duplicate email on add, returned as
+// HTTP 200 + success:false) must be wrapped in ErrValidation so the sync-task
+// runner fails fast instead of burning the full ~100-attempt retry budget.
+func TestAddClientDuplicateIsErrValidation(t *testing.T) {
+	var got capturedReq
+	c := captureReq(t, `{"success":false,"msg":"Duplicate email: u3-n9@psp.local"}`, &got)
+	err := c.AddClient(context.Background(), 7, ports.ClientSpec{ID: "u", Email: "u3-n9@psp.local"})
+	if err == nil || !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("duplicate add must wrap ErrValidation (fail-fast), got %v", err)
+	}
+}

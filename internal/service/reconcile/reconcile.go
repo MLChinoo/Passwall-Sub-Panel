@@ -59,6 +59,18 @@ type Service struct {
 	audit     ports.AuditRepo
 	pool      ports.XUIPool
 	syncer    ClientSyncer
+
+	// axisAReversePush gates the v3.5 "PSP pushes its config back over 3X-UI
+	// drift" behavior in reconcileInboundConfig. Disabled (false) on the 3.2.0
+	// hard-cut: the push uses XUIClient.UpdateInbound, whose read-modify-write
+	// re-injects the live settings.clients[] array, and that write's effect on
+	// 3.2.0's first-class client model (clients table authoritative,
+	// settings.clients a derived projection) is unverified — it could
+	// orphan/duplicate PSP-managed clients. See
+	// docs/3xui-3.2-clients-migration.md §4.3 (P2/P3). While false, drift is
+	// ADOPTED (live config captured into the snapshot, nothing written to the
+	// inbound). Flip true once §4.3 is live-verified to restore reverse-push.
+	axisAReversePush bool
 }
 
 func New(users ports.UserRepo, ownership ports.OwnershipRepo, nodes ports.NodeRepo,
@@ -352,7 +364,12 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 			expireTime = u.ExpireAt.UnixMilli()
 		}
 
-		// find if it already exists in 3x-ui to avoid blind overwrite (though AddClient handles duplicates in xui wrapper)
+		// AddClientToInbound recreates a missing client (best-effort drift
+		// recovery). It does NOT dedup/adopt an already-present client: if the
+		// client still exists upstream (e.g. a stale prefetch snapshot saw it
+		// missing), /clients/add returns a duplicate error wrapped as
+		// ErrValidation and this pass logs the failure; the next pass's
+		// UUID/enable healers below converge it.
 		flow := n.Flow
 
 		// Pass totalGB=0 (= 3X-UI unlimited). The next traffic-poll cycle
@@ -740,9 +757,29 @@ func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, li
 		return
 	}
 
-	// Captured but drifted (the early in-sync check above already ruled out the
-	// no-op case, and the stamp guard confirmed `n` is fresh) → push PSP's
-	// config back over the server-side drift.
+	// Captured but drifted. AXIS-A REVERSE-PUSH GATE: while disabled (the 3.2.0
+	// default — see the axisAReversePush field), DEGRADE to adopting 3X-UI's
+	// drifted connection config into the snapshot instead of pushing PSP's over
+	// it. This writes NOTHING to the inbound (avoiding the unverified
+	// settings.clients re-injection on 3.2.0) while keeping render correct —
+	// subscriptions follow the live config. The trade-off: an operator's direct
+	// edit to a managed inbound is followed, not reverted. `live` is the same
+	// snapshot InSync just compared against, so capturing it converges to
+	// in-sync with no extra fetch.
+	if !s.axisAReversePush {
+		inboundcfg.Capture(n, live)
+		if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
+			s.markConfigSyncStatePending(ctx, n)
+			s.recordInboundConfigEvent(ctx, report, n, "inbound_config_drift_adopt_failed", err.Error(), false)
+			return
+		}
+		s.recordInboundConfigEvent(ctx, report, n, "inbound_config_drift_adopted",
+			fmt.Sprintf("node id=%d — axis-A reverse-push disabled pending 3X-UI 3.2.0 verification", n.ID), true)
+		return
+	}
+
+	// Reverse-push enabled (verified): push PSP's config back over the
+	// server-side drift, then re-capture whatever 3X-UI persisted.
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return

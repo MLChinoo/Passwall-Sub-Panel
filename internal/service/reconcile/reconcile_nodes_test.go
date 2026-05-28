@@ -142,7 +142,7 @@ func TestCheckNodes_BackfillsMissingConfig(t *testing.T) {
 	}}
 	client := &recClient{inbounds: live}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
-	svc := &Service{nodes: repo, pool: recPool{c: client}}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
 	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, live))
@@ -189,7 +189,7 @@ func TestCheckNodes_DriftPushed(t *testing.T) {
 	}
 	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
-	svc := &Service{nodes: repo, pool: recPool{c: client}}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
 	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
@@ -204,6 +204,54 @@ func TestCheckNodes_DriftPushed(t *testing.T) {
 	// PSP's stale stored one, so a direct-in-3X-UI rename survives the push.
 	if client.updated[0].Remark != "operator-renamed" {
 		t.Fatalf("drift push must preserve the operator's live remark, got %q", client.updated[0].Remark)
+	}
+	if report.Fixed != 1 {
+		t.Fatalf("want report.Fixed=1, got %d", report.Fixed)
+	}
+}
+
+// With axis-A reverse-push DISABLED (the 3.2.0 default, pending §4.3
+// verification), a drifted captured inbound is ADOPTED: PSP captures the live
+// config into the snapshot and writes NOTHING to the 3X-UI inbound. Note the
+// svc deliberately omits axisAReversePush (defaults false) — the inverse of
+// the *_DriftPushed tests above.
+func TestCheckNodes_DriftAdoptedWhenReversePushDisabled(t *testing.T) {
+	now := time.Now()
+	node := &domain.Node{
+		ID: 1, PanelID: 1, InboundID: 3, Enabled: true,
+		Protocol: "vless", Port: 443,
+		StreamSettings:  `{"network":"ws","security":"tls"}`, // PSP's stored truth
+		InboundSettings: `{"decryption":"none"}`,
+		ConfigSyncedAt:  &now, ConfigSyncState: "synced",
+	}
+	live := ports.Inbound{
+		ID: 3, Protocol: "vless", Port: 443,
+		StreamSettings: `{"network":"tcp","security":"none"}`, // drifted on 3X-UI
+		Settings:       `{"decryption":"none","clients":[{"id":"x"}]}`,
+	}
+	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live}
+	repo := &recNodeRepo{nodes: []*domain.Node{node}}
+	audit := &recAudit{}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit} // axisAReversePush defaults false
+
+	report := &Report{}
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+
+	if len(client.updated) != 0 {
+		t.Fatalf("reverse-push disabled: must NOT write to the 3X-UI inbound, got %d UpdateInbound calls", len(client.updated))
+	}
+	if got := audit.findAuditByAction("inbound_config_drift_adopted"); got == nil {
+		t.Fatalf("expected drift-adopted audit, got entries=%+v", audit.entries)
+	}
+	if len(repo.updatesCfg) == 0 {
+		t.Fatalf("adopt must write the snapshot via UpdateInboundConfig")
+	}
+	last := repo.updatesCfg[len(repo.updatesCfg)-1]
+	if last.StreamSettings != `{"network":"tcp","security":"none"}` {
+		t.Fatalf("adopt must capture the LIVE config into the snapshot, got %q", last.StreamSettings)
+	}
+	if last.ConfigSyncState != "synced" {
+		t.Fatalf("adopt must converge the snapshot to synced, got %q", last.ConfigSyncState)
 	}
 	if report.Fixed != 1 {
 		t.Fatalf("want report.Fixed=1, got %d", report.Fixed)
@@ -239,7 +287,7 @@ func TestCheckNodes_StaleReadDoesNotRevertAdminEdit(t *testing.T) {
 		fresh.ConfigSyncedAt = &freshStamp
 		return &fresh, nil
 	}
-	svc := &Service{nodes: repo, pool: recPool{c: client}}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
 	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
@@ -275,7 +323,7 @@ func TestCheckNodes_InSync_NoOp(t *testing.T) {
 	}
 	client := &recClient{inbounds: []ports.Inbound{live}}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
-	svc := &Service{nodes: repo, pool: recPool{c: client}}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
 	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
@@ -299,7 +347,7 @@ func TestCheckNodes_BackfillEmitsAudit(t *testing.T) {
 	client := &recClient{inbounds: live}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
 	audit := &recAudit{}
-	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
 	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, live))
 
@@ -323,7 +371,7 @@ func TestCheckNodes_DriftPushedEmitsAudit(t *testing.T) {
 	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
 	audit := &recAudit{}
-	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
 	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
 
@@ -352,7 +400,7 @@ func TestCheckNodes_PushFailMarksPendingAndAudits(t *testing.T) {
 	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live, updateErr: errPushFail{}}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
 	audit := &recAudit{}
-	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
 	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
 
@@ -389,7 +437,7 @@ func TestCheckNodes_RecaptureFailMarksPendingAndAudits(t *testing.T) {
 	client := &recClient{inbounds: []ports.Inbound{live}, getErr: errRecaptureFail{}}
 	repo := &recNodeRepo{nodes: []*domain.Node{node}}
 	audit := &recAudit{}
-	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
 	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
 
