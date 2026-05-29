@@ -75,16 +75,30 @@ func applyPagination(q *gorm.DB, p ports.Pagination, sortAllowlist map[string]st
 	return q
 }
 
-// likeEscaper neutralises every LIKE meta-character (`\`, `%`, `_`) so an
-// admin / operator typing "100_" or "50%" into a search box matches the
-// literal substring instead of "any single char after 100" / "any
-// suffix after 50". Backslash MUST come first or the subsequent escapes
-// double up. The pattern is fed into a parameterised query (no string
-// concatenation into SQL), so this isn't an injection fix — it's a
-// "user-facing search behaves the way users expect" fix, AND a perf
-// guard against the wildcard `_` pattern triggering a full-table scan
-// when the column is otherwise selective.
-var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+// likeEscapeChar is the LIKE escape character used by keywordLike +
+// likeCols. It is deliberately NOT backslash: in a MySQL string literal
+// backslash is itself an escape, so the clause `ESCAPE '\'` parses as an
+// unterminated string and every keyword search dies with a 1064 syntax
+// error (the `\\` form that fixes MySQL in turn breaks SQLite, whose
+// ESCAPE demands a single-character literal). `!` is an ordinary literal
+// in all three dialects (SQLite / MySQL / Postgres), so one helper stays
+// portable across every backend config.DBKind picks.
+const likeEscapeChar = "!"
+
+// likeEscaper neutralises every LIKE meta-character (the escape char
+// itself, `%`, `_`) so an admin / operator typing "100_" or "50%" into a
+// search box matches the literal substring instead of "any single char
+// after 100" / "any suffix after 50". The escape char MUST be replaced
+// first or the subsequent escapes double up. The pattern is fed into a
+// parameterised query (no string concatenation into SQL), so this isn't
+// an injection fix — it's a "user-facing search behaves the way users
+// expect" fix, AND a perf guard against the wildcard `_` pattern
+// triggering a full-table scan when the column is otherwise selective.
+var likeEscaper = strings.NewReplacer(
+	likeEscapeChar, likeEscapeChar+likeEscapeChar,
+	`%`, likeEscapeChar+`%`,
+	`_`, likeEscapeChar+`_`,
+)
 
 // keywordLike returns the LIKE pattern for a Pagination.Keyword in the
 // canonical form every repo uses: leading-and-trailing `%` for
@@ -103,21 +117,22 @@ func keywordLike(k string) string {
 
 // likeCols builds the case-insensitive substring-match predicate every
 // keyword search uses, OR-joined across the given column expressions, each
-// with the `ESCAPE '\'` clause that makes keywordLike's backslash-escaping
-// actually take effect. This is REQUIRED on SQLite (the zero-config default
-// backend): SQLite has no default LIKE escape character, so without an
-// explicit ESCAPE the backslash keywordLike injects is treated as a literal
-// pattern char while `%`/`_` stay wildcards — a search for "u_5@x.org"
-// silently matches nothing / the wrong rows. MySQL and Postgres default to
-// backslash-as-escape, so the clause is a harmless no-op there.
+// with the explicit `ESCAPE '!'` clause that makes keywordLike's wildcard-
+// escaping actually take effect. The explicit clause is REQUIRED for
+// cross-dialect consistency: SQLite (the zero-config default backend) has
+// NO default LIKE escape character, so without it the `!` keywordLike
+// injects would be a literal pattern char while `%`/`_` stay wildcards — a
+// search for "u_5@x.org" would silently match the wrong rows. Declaring the
+// escape char explicitly makes SQLite agree with MySQL/Postgres (which
+// default to backslash). See likeEscapeChar for why it isn't backslash.
 //
-// Each expr is wrapped as LOWER(<expr>) LIKE ? ESCAPE '\', so callers pass
+// Each expr is wrapped as LOWER(<expr>) LIKE ? ESCAPE '!', so callers pass
 // the inner column or expression (e.g. "upn" or "COALESCE(users.upn, ”)")
 // and supply one bound keywordLike value per expr.
 func likeCols(exprs ...string) string {
 	parts := make([]string, len(exprs))
 	for i, e := range exprs {
-		parts[i] = "LOWER(" + e + ") LIKE ? ESCAPE '\\'"
+		parts[i] = "LOWER(" + e + ") LIKE ? ESCAPE '" + likeEscapeChar + "'"
 	}
 	return strings.Join(parts, " OR ")
 }

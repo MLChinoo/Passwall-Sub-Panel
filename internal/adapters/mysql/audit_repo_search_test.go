@@ -62,12 +62,17 @@ func TestAuditRepoSearch(t *testing.T) {
 	}
 }
 
-// TestAuditRepoSearchEscapesLikeMeta locks the SQLite LIKE-escape fix
-// (likeCols' ESCAPE '\' clause): a keyword containing an underscore must match
-// the LITERAL underscore, not act as a single-char wildcard. Without ESCAPE,
-// SQLite (the default backend) ignores keywordLike's backslash-escaping, so
-// "user_5" would ALSO match "userX5" — returning 2 rows instead of 1. The
+// TestAuditRepoSearchEscapesLikeMeta locks the LIKE-escape fix (likeCols'
+// ESCAPE '!' clause): a keyword containing an underscore must match the
+// LITERAL underscore, not act as a single-char wildcard. Without the explicit
+// ESCAPE, SQLite (the default backend) ignores keywordLike's wildcard-escaping,
+// so "user_5" would ALSO match "userX5" — returning 2 rows instead of 1. The
 // other 7 keyword-search repos share the same likeCols construction.
+//
+// The escape char is `!`, NOT backslash: `ESCAPE '\'` is a 1064 syntax error on
+// MySQL (backslash escapes the closing quote in a MySQL string literal) — the
+// beta.7 regression that broke every keyword search on MySQL deployments.
+// TestLikeColsEscapeIsPortable guards the generated-SQL form directly.
 func TestAuditRepoSearchEscapesLikeMeta(t *testing.T) {
 	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
