@@ -4,6 +4,19 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.2-beta.5 — 2026-05-28
+
+### Fixed
+
+- **应急配额已耗尽但时间窗未到的用户,`/sub` 仍发可用订阅**(MEDIUM,审计发现)──
+  `/sub` 的 gating switch 只挡"应急窗口按时间过期",缺"窗口还在、但 per-window 配额已烧完"
+  这一档。应急窗口只在下一个 traffic poll 周期(默认 5min)才被拆掉;在那之前 `/sub` 一直返回
+  可用配置 + Subscription-Userinfo,面板侧授权闸漏掉了这个口子(3X-UI 自身 per-client floor 是
+  兜底,但面板闸才是权威切断点)。新增 `domain.User.EmergencyQuotaExhausted(quotaBytes, now)`
+  (仿 `IsExpired`,与 `emergencyFloor` / poll 拆窗口同一套 used = Lifetime - EmergencyBaseline
+  算法,两层不会漂移),gate 用它在配额耗尽时返回 opaque 404。补 domain 纯单测 6 档(used==/>/<
+  quota、无上限、时间过期、原因不符、无窗口)。
+
 ## v3.6.2-beta.4 — 2026-05-28
 
 P2 live 写验证(在真实 3.2.0 面板的隔离临时 inbound 上实测,测完连 client 带 inbound 一起删
