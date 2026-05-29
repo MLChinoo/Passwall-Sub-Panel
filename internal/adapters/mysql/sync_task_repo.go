@@ -122,9 +122,13 @@ func (r *syncTaskRepo) ListDue(ctx context.Context, now time.Time, limit int) ([
 	return out, nil
 }
 
-func (r *syncTaskRepo) MarkRunning(ctx context.Context, id int64) error {
-	return r.db.WithContext(ctx).Model(&syncTaskRow{}).Where("id = ? AND status = ?", id, string(domain.SyncTaskPending)).
-		Updates(map[string]any{"status": string(domain.SyncTaskRunning)}).Error
+func (r *syncTaskRepo) MarkRunning(ctx context.Context, id int64) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&syncTaskRow{}).Where("id = ? AND status = ?", id, string(domain.SyncTaskPending)).
+		Updates(map[string]any{"status": string(domain.SyncTaskRunning)})
+	// RowsAffected == 0 means the row was no longer Pending — Canceled by an
+	// admin (or already claimed) since ListDue selected it. Report not-claimed
+	// so the caller skips the side effect rather than running a canceled task.
+	return res.RowsAffected > 0, res.Error
 }
 
 func (r *syncTaskRepo) MarkSucceeded(ctx context.Context, id int64) error {

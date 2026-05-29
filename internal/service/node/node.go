@@ -484,24 +484,33 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 			task.Type != domain.SyncTaskNodeUpdate {
 			continue
 		}
-		if err := s.tasks.MarkRunning(ctx, task.ID); err != nil {
-			return err
+		claimed, err := s.tasks.MarkRunning(ctx, task.ID)
+		if err != nil {
+			// Per-task bookkeeping error: log + continue so one transient DB
+			// blip doesn't stall the rest of the due batch.
+			log.Warn("node task mark-running", "task_id", task.ID, "err", err)
+			continue
+		}
+		if !claimed {
+			// Canceled by admin (or claimed by another runner) between ListDue
+			// and here — skip so the 3X-UI mutation the admin canceled never runs.
+			continue
 		}
 		if err := s.runNodeTask(ctx, task); err != nil {
 			if isPermanentNodeTaskError(err) {
 				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
-					return markErr
+					log.Warn("node task cancel", "task_id", task.ID, "err", markErr)
 				}
 				continue
 			}
 			next := time.Now().Add(nodeTaskBackoff(task.Attempts + 1))
 			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
-				return markErr
+				log.Warn("node task mark-retry", "task_id", task.ID, "err", markErr)
 			}
 			continue
 		}
 		if err := s.tasks.MarkSucceeded(ctx, task.ID); err != nil {
-			return err
+			log.Warn("node task mark-succeeded", "task_id", task.ID, "err", err)
 		}
 	}
 	return nil

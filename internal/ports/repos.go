@@ -355,7 +355,11 @@ type SyncTaskRepo interface {
 	HasActiveByTargetAny(ctx context.Context, types []domain.SyncTaskType, targetType string, targetID int64) (bool, error)
 	List(ctx context.Context, filter SyncTaskFilter) (items []*domain.SyncTask, total int64, err error)
 	ListDue(ctx context.Context, now time.Time, limit int) ([]*domain.SyncTask, error)
-	MarkRunning(ctx context.Context, id int64) error
+	// MarkRunning atomically claims a Pending task (Pending -> Running).
+	// claimed is false when no row matched — the task was Canceled by an admin
+	// or already claimed by another runner between ListDue and here — so the
+	// caller MUST skip executing its (often irreversible) side effect.
+	MarkRunning(ctx context.Context, id int64) (claimed bool, err error)
 	MarkSucceeded(ctx context.Context, id int64) error
 	MarkRetry(ctx context.Context, id int64, lastError string, nextRunAt time.Time) error
 	Cancel(ctx context.Context, id int64) error

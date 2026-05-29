@@ -71,7 +71,7 @@ type Service struct {
 	selector  NodeSelector
 	syncer    ClientSyncer
 	pool      ports.XUIPool
-	settings ports.SettingsRepo
+	settings  ports.SettingsRepo
 	// trafficUsage is set lazily via SetTrafficUsage after traffic.Service
 	// is constructed (traffic depends on user, so user must exist first).
 	// May be nil during early-start; trafficFloor degrades to 0 in that case.
@@ -1647,8 +1647,19 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 			task.Type != domain.SyncTaskUserPushConfig {
 			continue
 		}
-		if err := s.tasks.MarkRunning(ctx, task.ID); err != nil {
-			return err
+		claimed, err := s.tasks.MarkRunning(ctx, task.ID)
+		if err != nil {
+			// Per-task bookkeeping error: log and continue so one transient DB
+			// blip doesn't strand the rest of this batch (the task stays Pending
+			// and is retried next tick).
+			log.Warn("user task mark-running", "task_id", task.ID, "err", err)
+			continue
+		}
+		if !claimed {
+			// Canceled by admin (or claimed by another runner) in the window
+			// between ListDue and here — skip so the 3X-UI side effect the admin
+			// just canceled never fires.
+			continue
 		}
 		if err := s.runUserTask(ctx, task); err != nil {
 			// Cap retries at maxUserTaskAttempts. At 1-minute backoff this
@@ -1665,18 +1676,18 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 					"target_id", task.TargetID, "attempts", task.Attempts+1,
 					"last_err", err.Error())
 				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
-					return markErr
+					log.Warn("user task cancel", "task_id", task.ID, "err", markErr)
 				}
 				continue
 			}
 			next := time.Now().Add(deleteTaskBackoff(task.Attempts + 1))
 			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
-				return markErr
+				log.Warn("user task mark-retry", "task_id", task.ID, "err", markErr)
 			}
 			continue
 		}
 		if err := s.tasks.MarkSucceeded(ctx, task.ID); err != nil {
-			return err
+			log.Warn("user task mark-succeeded", "task_id", task.ID, "err", err)
 		}
 	}
 	return nil

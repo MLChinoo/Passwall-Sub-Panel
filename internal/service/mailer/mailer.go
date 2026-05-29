@@ -107,18 +107,24 @@ func (s *Service) ProcessDueMailTasks(ctx context.Context, limit int) error {
 		if task.Type != domain.SyncTaskMailNotify {
 			continue
 		}
-		if err := s.tasks.MarkRunning(ctx, task.ID); err != nil {
-			return err
+		claimed, err := s.tasks.MarkRunning(ctx, task.ID)
+		if err != nil {
+			log.Warn("mail task mark-running", "task_id", task.ID, "err", err)
+			continue
+		}
+		if !claimed {
+			// Canceled (or claimed by another runner) between ListDue and here — skip.
+			continue
 		}
 		if err := s.processMailTask(ctx, task); err != nil {
 			next := time.Now().Add(mailTaskBackoff(task.Attempts + 1))
 			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
-				return markErr
+				log.Warn("mail task mark-retry", "task_id", task.ID, "err", markErr)
 			}
 			continue
 		}
 		if err := s.tasks.MarkSucceeded(ctx, task.ID); err != nil {
-			return err
+			log.Warn("mail task mark-succeeded", "task_id", task.ID, "err", err)
 		}
 	}
 	return nil
