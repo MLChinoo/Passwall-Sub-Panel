@@ -4,6 +4,35 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.2-beta.4 — 2026-05-28
+
+P2 live 写验证(在真实 3.2.0 面板的隔离临时 inbound 上实测,测完连 client 带 inbound 一起删
+干净、未碰任何真实节点 / 用户)的修复与结论。
+
+### Fixed
+
+- **`tgId` 类型不匹配 → 对 3.2.0 的每次 client 新建 / 更新都失败**(showstopper)──
+  `/clients/add`·`/clients/update` 要 `tgId` 为 int64,而 `buildClientJSON` 发的是 string
+  (`s.TgID`),面板返回 `cannot unmarshal string into ... tgId of type int64` + `success:false`。
+  这是 beta.1 迁移在真实 3.2.0 上的真正阻断点 —— openapi 推导没暴露、live 验证才抓到。PSP 不用
+  3X-UI 的 Telegram 集成,`buildClientJSON` 改为发数字(`strconv.Atoi`,空 = 0);补单测断言
+  `tgId` 序列化为数字而非字符串。
+
+### Changed
+
+- **reconcile 轴 A 反向推送重新开启** ── beta.2 把 `axisAReversePush` 默认关(漂移改"采纳"),
+  是因为 `/inbounds/update` 重注入 `settings.clients` 在 3.2.0 一等公民模型下行为未验证。P2 实测
+  复刻该 read-modify-write 后 first-class client 完好(`/clients/list` 精确 1 条、无孤儿、无重复、
+  uuid 不变、仍在 `settings.clients`),证伪了 clobber 担心;`New()` 置回 `true` 恢复反向推送,
+  `false`(采纳)保留为 kill-switch + 测试覆盖。
+
+### Notes
+
+- §4.1(`/clients/update` 整行替换会清 `subId` / `comment`)经 live 验证**证伪** —— 实为 merge:
+  改 `totalGB` 时省略 `subId`,`subId` 仍保留。PSP 的 `UpdateClient` 省略字段是安全的,无需补。
+- 迁移至此对真实 3.2.0 面板验证通过(add / update / del / inbound-update RMW 全跑通),可以打
+  `v3.6.2-beta.*` tag。全部实测逐条见 `docs/3xui-3.2-clients-migration.md` §P2。
+
 ## v3.6.2-beta.3 — 2026-05-28
 
 审计后续:对 3 个 critic 标出的 HIGH 做对抗验证 —— 2 个证伪、1 个确认(降为 MEDIUM)并修复。
