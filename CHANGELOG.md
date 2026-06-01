@@ -4,6 +4,40 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.2 — 2026-05-31
+
+正式版。汇总 v3.6.2-beta.1 → beta.9 全部改动,beta.9 内容直发为正式版定稿。本次是
+patch release:核心是适配 3X-UI 3.2.0(**硬切要求 ≥ 3.2.0**),叠加一个新功能(批量
+升级 3X-UI)、compat 下限运行时化,以及多轮审计 / 回归修复,无 schema 破坏性变更。
+完整逐项见下方各 pre-release 段落,下面只列核心叙事。
+
+### 主要变化（叙事性总述）
+
+- **适配 3X-UI 3.2.0,硬切要求 ≥ 3.2.0（beta.1 / beta.4）**:
+  3.2.0 把客户端管理从 inbound 作用域端点整体迁到一等公民 `/panel/api/clients/*`,删掉了
+  PSP 在用的 `addClient` / `delClientByEmail` / `getClientTraffics*` / `resetClientTraffic`
+  等。xui adapter 迁到 `/clients/*`(按 email 寻址,而 PSP 的 `u{userID}-n{nodeID}@domain`
+  本就每节点唯一、天然对上,`ports.XUIClient` 签名不变、服务层零改);traffic poll 去掉
+  per-inbound fallback,Phase 2 全程零 3X-UI 网络调用。**在真实 3.2.0 面板的隔离临时
+  inbound 上 live 实测**(add / update / del / inbound-update RMW 全跑通,测完删干净、未碰
+  真实节点 / 用户),抓到并修掉 openapi 推导没暴露的 `tgId` string→int64 showstopper;
+  reconcile 轴 A 反向推送经 live 验证(first-class client 完好、无孤儿 / 重复 / uuid 不变)
+  后重新开启。逐项映射与实测见 `docs/3xui-3.2-clients-migration.md`。
+- **Servers 页「批量升级 3X-UI」（beta.1）**:选中多台面板一键触发 3X-UI 自升级(镜像
+  已有的批量升级 Xray)。**尊重版本门禁、不批量强制** —— 超出已测范围的面板被 gate 拦下
+  并计入汇总,强制仍保留在单台 ⋮ 菜单逐台确认;已是最新版的面板短路返回、不再计为失败。
+- **compat 下限运行时化 + 防忘 drift 闸（beta.8）**:硬切的最低 3X-UI 版本接入运行时 ——
+  `ActiveMinXUI() = max(编译 const, JSON min_xui)`,平时只维护 `docs/compat/v3.json` 一处
+  就能抬高下限;`TestMinXUIConstMatchesCompatJSON` 锁两处一致,drift 直接让 `go test` 红。
+  修掉了 < 3.2.0 面板不报 too_old 警告的问题。
+- **多轮审计 + 回归修复（贯穿 beta.2 → beta.9）**:每批改动后跑并行 review agent + 对抗
+  验证,修引入的回归。关键项:refresh 端点不校验 TokenVersion → 会话撤销可被绕过(HIGH);
+  关键词搜索跨方言 LIKE 转义最终统一用 `!`(三库通用),修掉中途以反斜杠 `ESCAPE '\'`
+  引入、打挂全部 MySQL 部署关键词搜索的 1064 回归;应急配额已耗尽但时间窗未到仍发可用
+  订阅(`/sub` 泄漏);被取消的同步任务仍执行 3X-UI 副作用、单任务记账出错会停掉整批;
+  轮换 jwt_secret 让落盘密钥启动解不开且报错误导;编辑默认规则集冒出两条同 slug 重复行
+  (Save 改按文档 slug 解析 + 前端 slug 重复校验,beta.9)。
+
 ## v3.6.2-beta.9 — 2026-05-28
 
 ### Fixed
