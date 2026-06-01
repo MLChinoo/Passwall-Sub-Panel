@@ -64,6 +64,18 @@ type AuditFilter struct {
 	Until  *time.Time
 }
 
+// AuthEventFilter scopes a query over the authentication-event log.
+type AuthEventFilter struct {
+	Pagination
+	UserID  *int64
+	Method  string // "local" / "saml" / "oidc"; empty = any
+	Outcome string // "success" / "failure"; empty = any
+	Since   *time.Time
+	Until   *time.Time
+	// Search is a case-insensitive substring matched across upn / ip / ua / reason.
+	Search string
+}
+
 type SubLogFilter struct {
 	Pagination
 	UserID *int64
@@ -354,6 +366,14 @@ type AuditRepo interface {
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
+// AuthEventRepo stores the first-class authentication-event log (logins across
+// every method, success + failure). DeleteBefore drives retention.
+type AuthEventRepo interface {
+	Insert(ctx context.Context, e *domain.AuthEvent) error
+	List(ctx context.Context, filter AuthEventFilter) (items []*domain.AuthEvent, total int64, err error)
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 type SubLogRepo interface {
 	Insert(ctx context.Context, log *domain.SubLog) error
 	List(ctx context.Context, filter SubLogFilter) (items []*domain.SubLog, total int64, err error)
@@ -584,6 +604,12 @@ type UISettings struct {
 	// floored at 1 so the panel can't hammer the upstream DB hosts. The update
 	// loop re-reads this each cycle, so changes take effect without a restart.
 	GeoIPUpdateIntervalHours int `json:"geo_ip_update_interval_hours"`
+
+	// AuthEventRetentionDays bounds how long the authentication-event log is
+	// kept — separate from AuditRetentionDays so logins can be retained on their
+	// own (e.g. longer for compliance) schedule. Default 90; the loader floors
+	// <=0 to 90 (mirrors traffic_history_days) so the log stays bounded.
+	AuthEventRetentionDays int `json:"auth_event_retention_days"`
 
 	// ---- Subscription settings ----
 	// SubPath is the URL path prefix for subscription endpoints.
@@ -836,6 +862,7 @@ type Repos struct {
 	Traffic     TrafficRepo
 	NodeTraffic NodeTrafficRepo
 	Audit       AuditRepo
+	AuthEvent   AuthEventRepo
 	SubLog      SubLogRepo
 	SyncTask    SyncTaskRepo
 	RuleSet     RuleSetRepo

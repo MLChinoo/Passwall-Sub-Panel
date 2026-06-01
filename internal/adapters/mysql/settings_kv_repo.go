@@ -192,6 +192,7 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		intField("security", "sub_per_ip_per_min", &s.SubPerIPPerMin),
 		intField("security", "login_per_ip_per_min", &s.LoginPerIPPerMin),
 		intField("security", "audit_retention_days", &s.AuditRetentionDays),
+		intField("security", "auth_event_retention_days", &s.AuthEventRetentionDays),
 		intField("security", "sync_task_retention_days", &s.SyncTaskRetentionDays),
 		intField("security", "traffic_history_days", &s.TrafficHistoryDays),
 		boolField("security", "emergency_access_enabled", &s.EmergencyAccessEnabled),
@@ -410,6 +411,11 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 		// Floor at 1h so a stray 0 (or a careless setting) can't turn the
 		// updater into a tight loop against MaxMind / DB-IP. 12h default.
 		out.GeoIPUpdateIntervalHours = 12
+	}
+	if out.AuthEventRetentionDays <= 0 {
+		// Floor to 90d (like traffic_history_days) so the auth log stays
+		// bounded; enterprises wanting longer retention set a larger value.
+		out.AuthEventRetentionDays = 90
 	}
 	// Unified client registry (v3.3.0). When absent, either migrate the legacy
 	// two-table config (sub_client_rules + sub_import_clients) in place — a

@@ -132,7 +132,7 @@ func NewRouter(d Deps) *gin.Engine {
 	subPathCache := newSubPathCache(d.Repos.Settings)
 
 	// Auth endpoints
-	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings)
+	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings, d.Repos.AuthEvent)
 	loginLimiter := middleware.NewPerIPLimiter(d.LoginPerIPPerMin, time.Minute)
 	authGroup := g.Group("/api/auth")
 	{
@@ -270,6 +270,11 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.GET("/audit", auditH.List)
 		adminGroup.DELETE("/audit", auditH.Clear)
 
+		// Authentication-event log (logins across every method) — staff-readable
+		// for security review; region enriched via Geo at view time.
+		authEventsH := handler.NewAdminAuthEventsHandler(d.Repos.AuthEvent, d.Geo)
+		staffGroup.GET("/auth-events", authEventsH.List)
+
 		dashboard := handler.NewAdminDashboardHandler(d.Repos.User, d.Repos.Node, d.Repos.Group, d.Repos.XUIPanel)
 		staffGroup.GET("/dashboard/summary", dashboard.Summary)
 
@@ -290,9 +295,9 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.PUT("/servers/:id", servers.Update)
 		adminGroup.DELETE("/servers/:id", servers.Delete)
 		adminGroup.POST("/servers/probe", servers.Test)
-			adminGroup.POST("/servers/:id/upgrade-panel", servers.UpgradePanel)
-			adminGroup.POST("/servers/:id/upgrade-xray", servers.UpgradeXray)
-			adminGroup.GET("/servers/:id/xray-versions", servers.ListXrayVersions)
+		adminGroup.POST("/servers/:id/upgrade-panel", servers.UpgradePanel)
+		adminGroup.POST("/servers/:id/upgrade-xray", servers.UpgradeXray)
+		adminGroup.GET("/servers/:id/xray-versions", servers.ListXrayVersions)
 
 		settings := handler.NewAdminSettingsHandler(d.Repos.Settings, d.JWTParams)
 		adminGroup.GET("/settings/ui", settings.Get)

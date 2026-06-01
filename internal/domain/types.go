@@ -621,6 +621,36 @@ type AuditEntry struct {
 	At         time.Time `json:"at"`
 }
 
+// AuthMethod and AuthOutcome classify an AuthEvent.
+type AuthMethod string
+type AuthOutcome string
+
+const (
+	AuthMethodLocal AuthMethod = "local"
+	AuthMethodSAML  AuthMethod = "saml"
+	AuthMethodOIDC  AuthMethod = "oidc"
+
+	AuthOutcomeSuccess AuthOutcome = "success"
+	AuthOutcomeFailure AuthOutcome = "failure"
+)
+
+// AuthEvent is one authentication attempt — a login via any method, success or
+// failure. First-class and separate from AuditEntry so logins are queryable by
+// method / outcome / user and retained on their own schedule. (Token refresh
+// stays in the generic audit log, not here.) Region is resolved from IP at view
+// time, never stored — same as AuditEntry / SubLog.
+type AuthEvent struct {
+	ID      int64       `json:"id"`
+	UserID  int64       `json:"user_id,omitempty"` // 0 when the attempt couldn't be resolved to a user
+	UPN     string      `json:"upn"`               // resolved (success) or attempted (failure) identifier
+	Method  AuthMethod  `json:"method"`
+	Outcome AuthOutcome `json:"outcome"`
+	Reason  string      `json:"reason,omitempty"` // failure reason code; "" on success
+	IP      string      `json:"ip"`
+	UA      string      `json:"ua,omitempty"`
+	At      time.Time   `json:"at"`
+}
+
 // GeoLocation is a resolved geolocation for an IP. Empty fields mean
 // "unknown" (private/reserved IP, lookup disabled, or provider failure).
 // CountryCode is ISO 3166-1 alpha-2 (e.g. "HK"); the frontend renders the

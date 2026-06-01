@@ -96,9 +96,12 @@ func TestShouldAuditPath_AdminWrites(t *testing.T) {
 	}
 }
 
-func TestShouldAuditPath_LoginAttempt(t *testing.T) {
-	if !shouldAuditPath("/api/auth/local/login", "POST") {
-		t.Fatal("login POST must audit — covers brute-force / unauthorized attempts")
+func TestShouldAuditPath_LoginNotInGenericAudit(t *testing.T) {
+	// Login moved to the first-class auth_events log (all methods, success +
+	// failure), so the generic write-audit must NOT also record it — otherwise
+	// every login is double-logged.
+	if shouldAuditPath("/api/auth/local/login", "POST") {
+		t.Fatal("login POST must NOT be in the generic audit — it's recorded in auth_events")
 	}
 	if shouldAuditPath("/api/auth/methods", "GET") {
 		t.Fatal("auth methods discovery is read-only public; should not audit")

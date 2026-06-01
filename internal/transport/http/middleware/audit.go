@@ -25,8 +25,10 @@ type AsyncDispatch func(name string, fn func(ctx context.Context))
 
 // AuditWrites records every write request (POST/PUT/PATCH/DELETE) that lands
 // on an audited path. Attached at the engine level so it covers admin
-// endpoints AND user-side self-service AND the local login endpoint —
-// shouldAuditPath is the gate.
+// endpoints AND user-side self-service AND token refresh — shouldAuditPath is
+// the gate. Login itself is NOT here: it's recorded in the first-class
+// authentication-event log (auth_events) across every method, so the local
+// login route was removed from shouldAuditPath to avoid double-logging.
 //
 // Path filter runs BEFORE the request body is read, so static asset / sub
 // fetch / health probe traffic doesn't pay the io.ReadAll cost.
@@ -112,9 +114,8 @@ func shouldAuditPath(path, method string) bool {
 		// Every admin write (settings, users, nodes, …) was already
 		// covered by the previous AdminAudit version; preserve that.
 		return true
-	case path == "/api/auth/local/login":
-		// Login attempts (success AND failure) — security log.
-		return true
+	// NOTE: /api/auth/local/login is deliberately NOT audited here — logins
+	// (all methods, success + failure) go to the first-class auth_events log.
 	case strings.HasPrefix(path, "/api/user/me"):
 		// User self-service writes: password change, sub-token reset,
 		// personal rules edit, emergency-access request.

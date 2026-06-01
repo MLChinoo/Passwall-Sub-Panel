@@ -606,6 +606,7 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 		// downsampled.
 		a.runRollup(ctx)
 		a.pruneAudit(ctx)
+		a.pruneAuthEvents(ctx)
 		a.pruneSyncTasks(ctx)
 		a.pruneTrafficSnapshots(ctx)
 		a.pruneMailSent(ctx)
@@ -814,6 +815,33 @@ func (a *App) pruneAudit(ctx context.Context) {
 	}
 	if deleted > 0 {
 		log.Info("audit cleanup", "deleted", deleted, "retention_days", settings.AuditRetentionDays)
+	}
+}
+
+// pruneAuthEvents trims the first-class authentication-event log on its own
+// retention (auth_event_retention_days, floored to 90 by the loader, so the
+// <=0 guard is defensive). Uses the repo directly — there's no auth-event
+// service, just the data layer + handler.
+func (a *App) pruneAuthEvents(ctx context.Context) {
+	if a.repos.AuthEvent == nil || a.settings == nil {
+		return
+	}
+	settings, err := a.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		log.Warn("auth event cleanup load settings", "err", err)
+		return
+	}
+	if settings.AuthEventRetentionDays <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -settings.AuthEventRetentionDays)
+	deleted, err := a.repos.AuthEvent.DeleteBefore(ctx, cutoff)
+	if err != nil {
+		log.Warn("auth event cleanup", "err", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("auth event cleanup", "deleted", deleted, "retention_days", settings.AuthEventRetentionDays)
 	}
 }
 

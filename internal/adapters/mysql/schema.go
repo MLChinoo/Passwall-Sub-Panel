@@ -30,8 +30,8 @@ type userRow struct {
 	// not by a DB constraint, so a legacy install upgrading from
 	// pre-v2.3.0 (every row defaulting to ('local','')) doesn't fail
 	// AutoMigrate; first-time SSO login backfills sso_subject on demand.
-	SSOProvider        string `gorm:"size:64;not null;default:local;index:idx_user_sso,priority:1"`
-	SSOSubject         string `gorm:"size:255;not null;default:'';index:idx_user_sso,priority:2"`
+	SSOProvider string `gorm:"size:64;not null;default:local;index:idx_user_sso,priority:1"`
+	SSOSubject  string `gorm:"size:255;not null;default:'';index:idx_user_sso,priority:2"`
 	// Email previously carried `;index` but no callsite ever issued
 	// `WHERE email = ?` — every search is `LOWER(email) LIKE ?` which
 	// can't use a B-tree index. The index was pure write amplification
@@ -574,11 +574,42 @@ func (r *auditRow) toDomain() *domain.AuditEntry {
 	}
 }
 
+// authEventRow is the first-class authentication-event log (logins across every
+// method). Composite (user_id, at) index serves the per-user activity view; the
+// standalone at index serves the global time-ordered list + retention prune.
+type authEventRow struct {
+	ID      int64     `gorm:"primaryKey;autoIncrement"`
+	UserID  int64     `gorm:"index:idx_authevent_user_time,priority:1;default:0"`
+	UPN     string    `gorm:"size:255;not null;default:''"`
+	Method  string    `gorm:"size:16;not null"`
+	Outcome string    `gorm:"size:16;not null"`
+	Reason  string    `gorm:"size:64;not null;default:''"`
+	IP      string    `gorm:"size:64"`
+	UA      string    `gorm:"size:512"`
+	At      time.Time `gorm:"index:idx_authevent_user_time,priority:2;index:idx_authevent_at"`
+}
+
+func (authEventRow) TableName() string { return "auth_events" }
+
+func (r *authEventRow) toDomain() *domain.AuthEvent {
+	return &domain.AuthEvent{
+		ID:      r.ID,
+		UserID:  r.UserID,
+		UPN:     r.UPN,
+		Method:  domain.AuthMethod(r.Method),
+		Outcome: domain.AuthOutcome(r.Outcome),
+		Reason:  r.Reason,
+		IP:      r.IP,
+		UA:      r.UA,
+		At:      r.At,
+	}
+}
+
 type subLogRow struct {
-	ID     int64 `gorm:"primaryKey;autoIncrement"`
-	UserID int64 `gorm:"index:idx_sub_user_time,priority:1"`
-	IP     string `gorm:"size:64"`
-	UA     string `gorm:"size:255"`
+	ID         int64  `gorm:"primaryKey;autoIncrement"`
+	UserID     int64  `gorm:"index:idx_sub_user_time,priority:1"`
+	IP         string `gorm:"size:64"`
+	UA         string `gorm:"size:255"`
 	ClientType string `gorm:"size:32"`
 	// idx_sub_user_time (user_id, accessed_at) covers the dominant admin
 	// query "WHERE user_id = ? ORDER BY accessed_at DESC LIMIT N" with a
@@ -599,9 +630,9 @@ type syncTaskRow struct {
 	Payload    string `gorm:"type:text"`
 	LastError  string `gorm:"type:text"`
 	Attempts   int
-	NextRunAt time.Time `gorm:"index:idx_task_due,priority:3"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	NextRunAt  time.Time `gorm:"index:idx_task_due,priority:3"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	// idx_task_finished covers the hourly cleanup paths
 	// (DeleteSucceededBefore + DeleteFinished) which filter on
 	// finished_at. Neither idx_task_due (type, status, next_run_at)
@@ -1034,6 +1065,7 @@ func EnsureSchema(db *gorm.DB) error {
 		&clientTrafficHourlyRow{},
 		&nodeTrafficHourlyRow{},
 		&auditRow{},
+		&authEventRow{},
 		&subLogRow{},
 		&syncTaskRow{},
 		&xuiPanelRow{},

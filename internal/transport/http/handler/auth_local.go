@@ -15,15 +15,16 @@ import (
 // AuthLocalHandler exposes /api/auth/local/login and the public /methods
 // metadata endpoint the login page consults.
 type AuthLocalHandler struct {
-	auth     *auth.Service
-	user     *user.Service
-	saml     *auth.SAMLService
-	oidc     *auth.OIDCService
-	settings ports.SettingsRepo
+	auth       *auth.Service
+	user       *user.Service
+	saml       *auth.SAMLService
+	oidc       *auth.OIDCService
+	settings   ports.SettingsRepo
+	authEvents ports.AuthEventRepo
 }
 
-func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *auth.SAMLService, oidcSvc *auth.OIDCService, settings ports.SettingsRepo) *AuthLocalHandler {
-	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings}
+func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *auth.SAMLService, oidcSvc *auth.OIDCService, settings ports.SettingsRepo, authEvents ports.AuthEventRepo) *AuthLocalHandler {
+	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings, authEvents: authEvents}
 }
 
 // localLoginDisallowedForUsers reports whether non-admin accounts should be
@@ -193,20 +194,25 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrUnauthorized):
+			recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, 0, req.UPN, "invalid_credentials")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		case errors.Is(err, domain.ErrForbidden):
 			// u is non-nil here so the message can name the actual reason —
 			// otherwise the user just sees "Account disabled" and has no idea
 			// whether to wait, contact the admin, or check their quota.
 			reason := domain.DisabledNone
+			uid := int64(0)
 			if u != nil {
 				reason = u.AutoDisabledReason
+				uid = u.ID
 			}
+			recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, uid, req.UPN, "disabled:"+string(reason))
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":  disabledReasonMessage(reason),
 				"reason": string(reason),
 			})
 		default:
+			recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, 0, req.UPN, "error")
 			respondError(c, err)
 		}
 		return
@@ -214,14 +220,17 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 	// Non-admin local-login lock is controlled by DisallowUserLocalLogin.
 	// /login/local itself stays reachable so admins always have a break-glass path.
 	if u.Role != domain.RoleAdmin && h.localLoginDisallowedForUsers(c) {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, u.ID, u.UPN, "local_login_disallowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "Local login is restricted to administrators; please use SSO"})
 		return
 	}
 	access, refresh, err := h.auth.IssueTokens(u)
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, u.ID, u.UPN, "token_error")
 		respondError(c, err)
 		return
 	}
+	recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeSuccess, u.ID, u.UPN, "")
 	c.JSON(http.StatusOK, loginResponse{
 		AccessToken:  access,
 		RefreshToken: refresh,

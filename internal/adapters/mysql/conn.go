@@ -90,22 +90,23 @@ func Open(kind, dsn string) (*gorm.DB, error) {
 // and safely share a single *gorm.DB.
 func NewRepos(db *gorm.DB) ports.Repos {
 	return ports.Repos{
-		User:       &userRepo{db: db},
-		Group:      &groupRepo{db: db},
-		Node:       &nodeRepo{db: db},
-		Separator:  &separatorRepo{db: db},
-		Ownership:  &ownershipRepo{db: db},
-		Traffic:    &trafficRepo{db: db},
+		User:        &userRepo{db: db},
+		Group:       &groupRepo{db: db},
+		Node:        &nodeRepo{db: db},
+		Separator:   &separatorRepo{db: db},
+		Ownership:   &ownershipRepo{db: db},
+		Traffic:     &trafficRepo{db: db},
 		NodeTraffic: &nodeTrafficRepo{db: db},
-		Audit:      &auditRepo{db: db},
-		SubLog:     &subLogRepo{db: db},
-		SyncTask:   &syncTaskRepo{db: db},
+		Audit:       &auditRepo{db: db},
+		AuthEvent:   &authEventRepo{db: db},
+		SubLog:      &subLogRepo{db: db},
+		SyncTask:    &syncTaskRepo{db: db},
 		// RuleSet is intentionally absent here: production wires the
 		// yamladapter.RuleSetRepo in app.go (rule sets live in
 		// config/rulesets/*.yaml, not the DB). A previous MySQL repo
 		// existed but was never actually injected, so it was dead code
 		// and got removed during the v3 schema cleanup.
-		XUIPanel:   &xuiPanelRepo{db: db},
+		XUIPanel: &xuiPanelRepo{db: db},
 		// Settings is wrapped in the in-process cache decorator so the
 		// hot paths (render, traffic poll, reconcile, paneltz) don't
 		// fan into the DB for the same row dozens of times per request
