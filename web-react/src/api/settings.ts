@@ -134,6 +134,23 @@ export interface UISettings {
   /** Auto-prune cutoff for the mail_sent table (Logs → Email tab).
    *  0 disables auto-prune. Default 30. */
   mail_sent_retention_days: number
+
+  // ---- IP geolocation (offline .mmdb region display in access logs) ----
+  /** Master toggle. Off by default; resolution is fully offline against a
+   *  local .mmdb in <ConfigDir>/geoip/ (no per-IP external calls). */
+  geo_ip_enabled: boolean
+  /** Active database filename when several .mmdb are present. Empty = first by
+   *  name. Only one is ever active (no merging → no conflict). */
+  geo_ip_db_file: string
+  geo_ip_auto_update: boolean
+  /** Updater source. maxmind (GeoLite2-City, recommended) / dbip / ipinfo / custom. */
+  geo_ip_update_source: 'maxmind' | 'dbip' | 'ipinfo' | 'custom' | ''
+  geo_ip_update_url: string
+  geo_ip_update_edition: string
+  /** Write-only: sent on PUT (empty = keep existing), never returned. The
+   *  presence flag below reports whether one is stored. */
+  geo_ip_update_token?: string
+  has_geo_ip_update_token: boolean
 }
 
 export async function getUISettings() {
@@ -143,6 +160,34 @@ export async function getUISettings() {
 
 export async function putUISettings(s: UISettings) {
   const { data } = await client.put<UISettings>('/admin/settings/ui', s)
+  return data
+}
+
+// ---- Geo IP database (offline .mmdb) status + manual update ----
+export interface GeoDBStatus {
+  file: string
+  type: string
+  granularity: string
+  build_epoch: number
+  active: boolean
+  error?: string
+}
+
+export interface GeoIPStatus {
+  enabled: boolean
+  dir: string
+  active: string
+  available: GeoDBStatus[]
+}
+
+export async function getGeoIPStatus() {
+  const { data } = await client.get<GeoIPStatus>('/admin/settings/geoip/status')
+  return data
+}
+
+/** Trigger an immediate download/refresh of the configured source's database. */
+export async function updateGeoIPNow() {
+  const { data } = await client.post<{ file: string }>('/admin/settings/geoip/update')
   return data
 }
 

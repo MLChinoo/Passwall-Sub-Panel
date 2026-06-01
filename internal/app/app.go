@@ -25,6 +25,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/health"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
@@ -74,6 +75,7 @@ type App struct {
 	audit     *audit.Service
 	mail      *mailer.Service
 	health    *health.Service
+	geo       *geo.Service
 	settings  ports.SettingsRepo
 	syncTasks ports.SyncTaskRepo
 	// trafficRepo / nodeTraffic kept for the retention cron — PruneBefore is
@@ -266,6 +268,10 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	reconcileSvc := reconcile.New(repos.User, repos.Ownership, repos.Node, repos.Group, repos.Settings, repos.Audit, pool, syncSvc)
 	healthSvc := health.New(repos.Node)
 	renderSvc := render.New(repos, pool, groupSvc)
+	// Geo IP resolution for access-log region display — fully offline against a
+	// local .mmdb in <ConfigDir>/geoip/. No per-IP external calls. Reads
+	// enabled/active-file live from settings and hot-reloads the DB on change.
+	geoSvc := geo.New(repos.Settings, cfg.ConfigDir)
 
 	// --- async dispatcher for handler-spawned background work ---
 	//
@@ -307,6 +313,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		Traffic:          trafficSvc,
 		Mail:             mailSvc,
 		Reconcile:        reconcileSvc,
+		Geo:              geoSvc,
 		SubPerIPPerMin:   sysSettings.SubPerIPPerMin,
 		LoginPerIPPerMin: sysSettings.LoginPerIPPerMin,
 	})
@@ -328,6 +335,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	a.audit = auditSvc
 	a.mail = mailSvc
 	a.health = healthSvc
+	a.geo = geoSvc
 	a.settings = repos.Settings
 	a.syncTasks = repos.SyncTask
 	a.trafficRepo = repos.Traffic
@@ -408,6 +416,7 @@ func (a *App) Run() error {
 	})
 	safego.GoTracked(&a.bgWG, "sync-task-loop", func() { a.runSyncTaskLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "audit-cleanup-loop", func() { a.runAuditCleanupLoop(bgCtx) })
+	safego.GoTracked(&a.bgWG, "geo-update-loop", func() { a.runGeoUpdateLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "traffic-loop", func() { a.runTrafficLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "mail-loop", func() { a.runMailLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "reconcile-loop", func() { a.runReconcileLoop(bgCtx) })
@@ -528,6 +537,40 @@ func (a *App) runMailLoop(ctx context.Context) {
 			// Process due mail notification tasks (retries).
 			if err := a.mail.ProcessDueMailTasks(ctx, 20); err != nil {
 				log.Warn("mail tasks", "err", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// runGeoUpdateLoop keeps the offline geo database current when auto-update is
+// enabled. Required for MaxMind's 30-day EULA. Checks at startup (after a short
+// delay so boot isn't blocked on an external download) then every 12h; each
+// pass only downloads a PUBLIC database — no user IPs are involved.
+func (a *App) runGeoUpdateLoop(ctx context.Context) {
+	if a.geo == nil {
+		return
+	}
+	const interval = 12 * time.Hour
+	// Small initial delay so a fresh boot serves quickly before the first fetch.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second):
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		set, err := a.settings.Load(ctx, ports.UISettings{})
+		if err == nil && set.GeoIPEnabled && set.GeoIPAutoUpdate {
+			if file, uerr := a.geo.Update(ctx); uerr != nil {
+				log.Warn("geo auto-update", "err", uerr)
+			} else {
+				log.Info("geo auto-update ok", "file", file)
 			}
 		}
 		select {

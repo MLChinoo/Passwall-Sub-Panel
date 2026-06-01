@@ -51,6 +51,9 @@ import {
   putSAML,
   putUISettings,
   sendTestMail,
+  getGeoIPStatus,
+  updateGeoIPNow,
+  type GeoIPStatus,
   type SAMLMetadataSummary,
   type MailReminderKind,
   type MailSettings,
@@ -162,8 +165,28 @@ export default function SettingsView() {
   const [settings, setSettings] = useState<UISettings | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [geoStatus, setGeoStatus] = useState<GeoIPStatus | null>(null)
+  const [geoBusy, setGeoBusy] = useState(false)
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load(); void loadGeoStatus() }, [])
+
+  async function loadGeoStatus() {
+    try { setGeoStatus(await getGeoIPStatus()) } catch { /* non-fatal: section still renders */ }
+  }
+
+  // runGeoUpdate triggers an immediate DB download/refresh, then re-reads the
+  // status so the active-file dropdown + build dates reflect the new file.
+  async function runGeoUpdate() {
+    setGeoBusy(true)
+    try {
+      const { file } = await updateGeoIPNow()
+      pushSnack(t('settings.geo.update_ok', { defaultValue: '数据库已更新：' }) + file, 'success')
+      await loadGeoStatus()
+    } catch (e) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || String(e)
+      pushSnack(msg, 'warning')
+    } finally { setGeoBusy(false) }
+  }
 
   // Go's `json.Marshal(nil slice)` serialises as `null`, so a fresh DB
   // returns `quick_links: null` etc. instead of an empty array. The
@@ -414,6 +437,87 @@ export default function SettingsView() {
               onChange={v => patch('emergency_access_quota_gb', v)}
               step="any"
               helperText={t('settings.general.emergency_access_quota_gb_hint')} />
+          </Section>
+
+          <Section title={t('settings.geo.section', { defaultValue: 'IP 地区显示（访问日志）' })} md={md}>
+            <FormControlLabel label={t('settings.geo.enabled', { defaultValue: '启用 IP 地区显示' })}
+              control={<Switch checked={settings.geo_ip_enabled} onChange={(_, c) => patch('geo_ip_enabled', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+              {t('settings.geo.hint', { defaultValue: '完全离线：用本地 .mmdb 库解析，不外呼第三方、不缓存。把库放进 ' })}
+              <code>{geoStatus?.dir || '<ConfigDir>/geoip/'}</code>
+              {t('settings.geo.hint2', { defaultValue: '，或在下方配置自动更新。国家/省较可靠，城市仅供参考。' })}
+            </Typography>
+
+            <TextField select fullWidth size="small" label={t('settings.geo.active_db', { defaultValue: '激活数据库' })}
+              value={settings.geo_ip_db_file}
+              onChange={e => patch('geo_ip_db_file', e.target.value)}
+              helperText={t('settings.geo.active_db_hint', { defaultValue: '存在多个库时选用哪个（留空=按名取第一个）。只有一个激活源——不合并、无冲突。' })}>
+              <MenuItem value="">{t('settings.geo.auto', { defaultValue: '（自动：按文件名第一个）' })}</MenuItem>
+              {(geoStatus?.available || []).map(db => (
+                <MenuItem key={db.file} value={db.file}>{db.file} — {db.granularity}{db.type ? ` · ${db.type}` : ''}</MenuItem>
+              ))}
+            </TextField>
+
+            <Box sx={{ fontSize: 12, color: md.onSurfaceVariant, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+              {(geoStatus?.available?.length ?? 0) === 0
+                ? t('settings.geo.no_db', { defaultValue: '未发现 .mmdb 库——放一个进去，或配置自动更新后点「立即更新」。' })
+                : geoStatus!.available.map(db => (
+                  <span key={db.file}>
+                    {db.active ? '● ' : '○ '}{db.file}
+                    {db.error
+                      ? ` — ⚠ ${db.error}`
+                      : ` — ${db.granularity}${db.type ? ` · ${db.type}` : ''}${db.build_epoch ? ` · ${t('settings.geo.built', { defaultValue: '构建' })} ${new Date(db.build_epoch * 1000).toLocaleDateString()}` : ''}`}
+                  </span>
+                ))}
+            </Box>
+
+            <FormControlLabel label={t('settings.geo.auto_update', { defaultValue: '自动更新数据库（每 12 小时）' })}
+              control={<Switch checked={settings.geo_ip_auto_update} onChange={(_, c) => patch('geo_ip_auto_update', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            <Pair>
+              <TextField select fullWidth size="small" label={t('settings.geo.source', { defaultValue: '更新来源' })}
+                value={settings.geo_ip_update_source || 'maxmind'}
+                onChange={e => patch('geo_ip_update_source', e.target.value as UISettings['geo_ip_update_source'])}>
+                <MenuItem value="maxmind">MaxMind GeoLite2（城市级，推荐）</MenuItem>
+                <MenuItem value="dbip">DB-IP City Lite（城市级，免账号）</MenuItem>
+                <MenuItem value="ipinfo">IPinfo Lite（仅国家 + ASN）</MenuItem>
+                <MenuItem value="custom">{t('settings.geo.source_custom', { defaultValue: '自定义 URL' })}</MenuItem>
+              </TextField>
+              {settings.geo_ip_update_source === 'maxmind' && (
+                <TextField fullWidth size="small" label={t('settings.geo.edition', { defaultValue: 'MaxMind edition' })}
+                  value={settings.geo_ip_update_edition} onChange={e => patch('geo_ip_update_edition', e.target.value)}
+                  placeholder="GeoLite2-City" />
+              )}
+              {settings.geo_ip_update_source === 'custom' && (
+                <TextField fullWidth size="small" label={t('settings.geo.url', { defaultValue: '下载 URL（.mmdb / .gz / .tar.gz）' })}
+                  value={settings.geo_ip_update_url} onChange={e => patch('geo_ip_update_url', e.target.value)}
+                  placeholder="https://…/db.mmdb" />
+              )}
+            </Pair>
+            {settings.geo_ip_update_source !== 'dbip' && (
+              <TextField fullWidth size="small" type="password" autoComplete="new-password"
+                label={settings.geo_ip_update_source === 'maxmind'
+                  ? t('settings.geo.token_maxmind', { defaultValue: 'MaxMind License Key' })
+                  : settings.geo_ip_update_source === 'ipinfo'
+                    ? t('settings.geo.token_ipinfo', { defaultValue: 'IPinfo Token' })
+                    : t('settings.geo.token_custom', { defaultValue: 'Token / 凭据（可选）' })}
+                value={settings.geo_ip_update_token ?? ''}
+                onChange={e => patch('geo_ip_update_token', e.target.value)}
+                placeholder={settings.has_geo_ip_update_token ? t('settings.geo.token_set', { defaultValue: '已设置（留空则保持不变）' }) : ''} />
+            )}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+              <Button variant="outlined" size="small" disabled={geoBusy} onClick={runGeoUpdate}
+                startIcon={geoBusy ? <CircularProgress size={14} color="inherit" /> : undefined}>
+                {t('settings.geo.update_now', { defaultValue: '立即更新' })}
+              </Button>
+              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                {t('settings.geo.update_hint', { defaultValue: '先保存设置（含 token）再点立即更新。MaxMind 库须 30 天内更新一次（EULA），建议开启自动更新。' })}
+              </Typography>
+            </Box>
+            <Typography sx={{ fontSize: 11, color: md.onSurfaceVariant }}>
+              {t('settings.geo.attribution', { defaultValue: '数据来源需在使用处署名：MaxMind（GeoLite2）/ DB-IP / IPinfo —— 视所用库而定。' })}
+            </Typography>
           </Section>
         </Box>
       )}

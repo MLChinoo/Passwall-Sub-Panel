@@ -1,5 +1,14 @@
 import { client } from './client'
 
+/** Resolved IP geolocation (offline mmdb). Empty/absent when geo is disabled
+ * or the IP couldn't be resolved. */
+export interface GeoLocation {
+  country_code: string
+  country: string
+  region: string
+  city: string
+}
+
 export interface SubLog {
   id: number
   user_id: number
@@ -10,6 +19,7 @@ export interface SubLog {
   ua: string
   client_type: string
   accessed_at: string
+  region?: GeoLocation
 }
 
 export interface SubLogListResponse {

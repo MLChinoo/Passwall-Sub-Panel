@@ -6,17 +6,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 )
 
 // AdminAuditHandler exposes /api/admin/audit — paginated audit log
 // retrieval with optional actor / action / time-range filters.
 type AdminAuditHandler struct {
 	repo ports.AuditRepo
+	geo  *geo.Service // nil-tolerant: nil/disabled → no region field
 }
 
-func NewAdminAuditHandler(repo ports.AuditRepo) *AdminAuditHandler {
-	return &AdminAuditHandler{repo: repo}
+func NewAdminAuditHandler(repo ports.AuditRepo, geoSvc *geo.Service) *AdminAuditHandler {
+	return &AdminAuditHandler{repo: repo, geo: geoSvc}
+}
+
+// auditView is an AuditEntry plus its resolved IP region (omitted when geo is
+// disabled or the IP isn't resolved yet — the cache fills on later views).
+type auditView struct {
+	*domain.AuditEntry
+	Region *domain.GeoLocation `json:"region,omitempty"`
 }
 
 func (h *AdminAuditHandler) List(c *gin.Context) {
@@ -42,7 +52,23 @@ func (h *AdminAuditHandler) List(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, pagedEnvelope(items, total, p))
+	ips := make([]string, 0, len(items))
+	for _, it := range items {
+		ips = append(ips, it.IP)
+	}
+	regions := map[string]domain.GeoLocation{}
+	if h.geo != nil {
+		regions = h.geo.Lookup(c.Request.Context(), ips)
+	}
+	views := make([]auditView, len(items))
+	for i, it := range items {
+		views[i] = auditView{AuditEntry: it}
+		if loc, ok := regions[it.IP]; ok {
+			locCopy := loc
+			views[i].Region = &locCopy
+		}
+	}
+	c.JSON(http.StatusOK, pagedEnvelope(views, total, p))
 }
 
 func (h *AdminAuditHandler) Clear(c *gin.Context) {

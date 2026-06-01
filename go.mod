@@ -10,6 +10,7 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/google/uuid v1.6.0
+	github.com/oschwald/maxminddb-golang v1.13.1
 	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1

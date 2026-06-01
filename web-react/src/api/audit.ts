@@ -1,4 +1,5 @@
 import { client } from './client'
+import type { GeoLocation } from './subLogs'
 
 export interface AuditEntry {
   id: number
@@ -9,6 +10,7 @@ export interface AuditEntry {
   after_json: string
   ip: string
   at: string
+  region?: GeoLocation
 }
 
 export interface AuditFilter {

@@ -553,6 +553,30 @@ type UISettings struct {
 	// Fractional GB allowed (e.g. 0.12). Stored as a float string in the KV.
 	EmergencyAccessQuotaGB float64 `json:"emergency_access_quota_gb"`
 
+	// ---- IP geolocation (access-log region display, offline .mmdb) ----
+	// Resolution is fully offline against a local .mmdb in <ConfigDir>/geoip/;
+	// no per-IP external calls. GeoIPEnabled gates the whole feature (default
+	// false — admin opts in after placing/downloading a database).
+	GeoIPEnabled bool `json:"geo_ip_enabled"`
+	// GeoIPDBFile selects which .mmdb is the ACTIVE source when several are
+	// present (filename only, within the geoip dir). Empty = first by name.
+	// Only one database is ever active — sources are never merged, so two
+	// databases can't conflict.
+	GeoIPDBFile string `json:"geo_ip_db_file"`
+	// GeoIPAutoUpdate enables periodic re-download of the database (the panel
+	// fetches a public DB — no user IPs involved).
+	GeoIPAutoUpdate bool `json:"geo_ip_auto_update"`
+	// GeoIPUpdateSource picks the updater: "ipinfo" (ipinfo Lite), "maxmind"
+	// (GeoLite2, .tar.gz), or "custom" (direct URL).
+	GeoIPUpdateSource string `json:"geo_ip_update_source"`
+	// GeoIPUpdateToken is the ipinfo token / MaxMind license key / custom
+	// bearer. Encrypted at rest, masked in the admin GET (has_geo_ip_update_token).
+	GeoIPUpdateToken string `json:"geo_ip_update_token,omitempty"`
+	// GeoIPUpdateURL is the direct download URL for the "custom" source.
+	GeoIPUpdateURL string `json:"geo_ip_update_url"`
+	// GeoIPUpdateEdition is the MaxMind edition id (e.g. GeoLite2-City).
+	GeoIPUpdateEdition string `json:"geo_ip_update_edition"`
+
 	// ---- Subscription settings ----
 	// SubPath is the URL path prefix for subscription endpoints.
 	// Defaults to "sub". Dynamic, no restart required.

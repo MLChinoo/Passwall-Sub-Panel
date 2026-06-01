@@ -7,7 +7,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 )
 
 // AdminSubLogHandler exposes /api/admin/sub-logs — paginated subscription
@@ -15,10 +17,19 @@ import (
 type AdminSubLogHandler struct {
 	repo     ports.SubLogRepo
 	settings ports.SettingsRepo
+	geo      *geo.Service // nil-tolerant: nil/disabled → no region field
 }
 
-func NewAdminSubLogHandler(repo ports.SubLogRepo, settings ports.SettingsRepo) *AdminSubLogHandler {
-	return &AdminSubLogHandler{repo: repo, settings: settings}
+func NewAdminSubLogHandler(repo ports.SubLogRepo, settings ports.SettingsRepo, geoSvc *geo.Service) *AdminSubLogHandler {
+	return &AdminSubLogHandler{repo: repo, settings: settings, geo: geoSvc}
+}
+
+// subLogView is a SubLog plus its resolved IP region (omitted when geo is
+// disabled or the IP isn't resolved yet). The user-detail "last region" view
+// reads this off /api/admin/sub-logs?user_id=X&page_size=1.
+type subLogView struct {
+	*domain.SubLog
+	Region *domain.GeoLocation `json:"region,omitempty"`
 }
 
 func (h *AdminSubLogHandler) List(c *gin.Context) {
@@ -47,7 +58,23 @@ func (h *AdminSubLogHandler) List(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, pagedEnvelope(items, total, p))
+	ips := make([]string, 0, len(items))
+	for _, it := range items {
+		ips = append(ips, it.IP)
+	}
+	regions := map[string]domain.GeoLocation{}
+	if h.geo != nil {
+		regions = h.geo.Lookup(c.Request.Context(), ips)
+	}
+	views := make([]subLogView, len(items))
+	for i, it := range items {
+		views[i] = subLogView{SubLog: it}
+		if loc, ok := regions[it.IP]; ok {
+			locCopy := loc
+			views[i].Region = &locCopy
+		}
+	}
+	c.JSON(http.StatusOK, pagedEnvelope(views, total, p))
 }
 
 func (h *AdminSubLogHandler) Clear(c *gin.Context) {

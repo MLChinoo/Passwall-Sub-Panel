@@ -73,6 +73,17 @@ type settingsDTO struct {
 	// Notify thresholds (moved from mail_settings to settings KV type='notify').
 	ExpireBeforeDays     int `json:"expire_before_days"`
 	TrafficRemainPercent int `json:"traffic_remain_percent"`
+	// Geo IP (access-log region display, offline .mmdb).
+	GeoIPEnabled       bool   `json:"geo_ip_enabled"`
+	GeoIPDBFile        string `json:"geo_ip_db_file"`
+	GeoIPAutoUpdate    bool   `json:"geo_ip_auto_update"`
+	GeoIPUpdateSource  string `json:"geo_ip_update_source"`
+	GeoIPUpdateURL     string `json:"geo_ip_update_url"`
+	GeoIPUpdateEdition string `json:"geo_ip_update_edition"`
+	// GeoIPUpdateToken is write-only: accepted on PUT (empty = keep existing),
+	// never echoed on GET. HasGeoIPUpdateToken reports whether one is set.
+	GeoIPUpdateToken    string `json:"geo_ip_update_token,omitempty"`
+	HasGeoIPUpdateToken bool   `json:"has_geo_ip_update_token"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -142,6 +153,14 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		ThemeColor:                 s.ThemeColor,
 		ExpireBeforeDays:           s.ExpireBeforeDays,
 		TrafficRemainPercent:       s.TrafficRemainPercent,
+		GeoIPEnabled:       s.GeoIPEnabled,
+		GeoIPDBFile:        s.GeoIPDBFile,
+		GeoIPAutoUpdate:    s.GeoIPAutoUpdate,
+		GeoIPUpdateSource:  s.GeoIPUpdateSource,
+		GeoIPUpdateURL:     s.GeoIPUpdateURL,
+		GeoIPUpdateEdition: s.GeoIPUpdateEdition,
+		// Update token masked: never echoed, only presence reported.
+		HasGeoIPUpdateToken: strings.TrimSpace(s.GeoIPUpdateToken) != "",
 	})
 }
 
@@ -212,6 +231,28 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		ThemeColor:                 strings.TrimSpace(req.ThemeColor),
 		ExpireBeforeDays:           req.ExpireBeforeDays,
 		TrafficRemainPercent:       req.TrafficRemainPercent,
+		GeoIPEnabled:       req.GeoIPEnabled,
+		GeoIPDBFile:        strings.TrimSpace(req.GeoIPDBFile),
+		GeoIPAutoUpdate:    req.GeoIPAutoUpdate,
+		GeoIPUpdateSource:  strings.TrimSpace(req.GeoIPUpdateSource),
+		GeoIPUpdateURL:     strings.TrimSpace(req.GeoIPUpdateURL),
+		GeoIPUpdateEdition: strings.TrimSpace(req.GeoIPUpdateEdition),
+		// GeoIPUpdateToken resolved below ("empty = keep existing").
+	}
+	// Update token is write-only: a blank field on save means the admin didn't
+	// re-enter the masked token, so preserve the stored one (mirrors the
+	// SMTP/SSO secret-handling pattern).
+	if strings.TrimSpace(req.GeoIPUpdateToken) == "" {
+		s.GeoIPUpdateToken = prev.GeoIPUpdateToken
+	} else {
+		s.GeoIPUpdateToken = strings.TrimSpace(req.GeoIPUpdateToken)
+	}
+	switch s.GeoIPUpdateSource {
+	case "", "ipinfo", "maxmind", "custom":
+		// valid
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geo_ip_update_source must be ipinfo, maxmind, or custom"})
+		return
 	}
 	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Retention days must be >= 0"})
@@ -309,6 +350,14 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		ThemeColor:                 s.ThemeColor,
 		ExpireBeforeDays:           s.ExpireBeforeDays,
 		TrafficRemainPercent:       s.TrafficRemainPercent,
+		GeoIPEnabled:       s.GeoIPEnabled,
+		GeoIPDBFile:        s.GeoIPDBFile,
+		GeoIPAutoUpdate:    s.GeoIPAutoUpdate,
+		GeoIPUpdateSource:  s.GeoIPUpdateSource,
+		GeoIPUpdateURL:     s.GeoIPUpdateURL,
+		GeoIPUpdateEdition: s.GeoIPUpdateEdition,
+		// Update token masked: never echoed, only presence reported.
+		HasGeoIPUpdateToken: strings.TrimSpace(s.GeoIPUpdateToken) != "",
 	})
 }
 

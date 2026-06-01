@@ -4,6 +4,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.7.0-beta.1 — 2026-06-01
+
+minor 版首个 beta:新增「访问日志 IP 地区显示」功能。本 beta 同时含尚未单独发布的
+v3.6.3 审计修复批次(见下方 v3.6.3 段)—— 自 v3.6.2 以来的全部改动都在这一个 beta 里。
+
+### Added
+
+- **访问日志 IP 地区显示(完全离线)** ── 订阅访问日志和审计日志的每条记录,在 IP 下方显示
+  来源地区(国旗 + 国家/城市)。**纯离线**:用本地 `.mmdb` 库(放 `<ConfigDir>/geoip/`)做
+  本地内存查询,**不外呼第三方、不缓存、不写数据库**——用户真实 IP 不离开服务器。reader 自动
+  识别多种 schema(MaxMind GeoLite2 / GeoIP2、DB-IP Lite、IPinfo Lite),放哪个库就用哪种粒度。
+  - **单一激活源,绝无冲突**:同时存在多个 `.mmdb` 时**不合并**,管理员在设置里选激活哪个
+    (`geo_ip_db_file`,留空=按名取第一个),所以两个库永远不会"打架"。
+  - **可选自动更新**(后台每 12h + 设置页「立即更新」按钮):来源 `maxmind`(GeoLite2-City
+    `.tar.gz`,**默认**,需 license key,满足 30 天 EULA)/ `dbip`(月版 `.gz`,免账号匿名)/
+    `ipinfo`(token,国家+ASN)/ `custom`(任意 `.mmdb`/`.gz`/`.tar.gz` URL)。下载→**校验确实
+    是合法 mmdb**→原子替换→热重载;走 `safehttp`(SSRF 防护);只下载**公共库**,不涉及用户 IP。
+  - **管理后台可配置**:设置页新增 geo 区块(启用开关、激活库下拉、自动更新开关、来源选择、
+    token[**加密落盘 + GET 脱敏**]、MaxMind edition / 自定义 URL、库状态[类型/粒度/构建日期/
+    当前激活]、立即更新);后端 `GET /api/admin/settings/geoip/status` + `POST .../update`。
+  - **诚实标注精度**:经独立基准(arXiv:2605.21937 等)核实,免费库**国家级可靠(~88% 中国、
+    ~99% 全球),城市级一般、亚洲最差**,且代理出口 IP 会解析到机房——UI 把城市标为"仅供参考",
+    国家/省作权威。各数据源的署名要求在设置页注明。
+  - 新增依赖 `oschwald/maxminddb-golang`(纯 Go,无 CGO)。
+
 ## v3.6.3 — 2026-05-31
 
 全面审计（19 维度 / 对抗式验证）后的修复批次。patch release:1 个 HIGH（进程崩溃路径）

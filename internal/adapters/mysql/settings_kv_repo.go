@@ -213,6 +213,15 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		// notify --- mail trigger thresholds (moved out of mail_settings)
 		intField("notify", "expire_before_days", &s.ExpireBeforeDays),
 		intField("notify", "traffic_remain_percent", &s.TrafficRemainPercent),
+
+		// geo --- IP geolocation for access-log region display (offline .mmdb)
+		boolField("geo", "geo_ip_enabled", &s.GeoIPEnabled),
+		strField("geo", "geo_ip_db_file", &s.GeoIPDBFile),
+		boolField("geo", "geo_ip_auto_update", &s.GeoIPAutoUpdate),
+		strField("geo", "geo_ip_update_source", &s.GeoIPUpdateSource),
+		encStrField("geo", "geo_ip_update_token", &s.GeoIPUpdateToken), // encrypted at rest
+		strField("geo", "geo_ip_update_url", &s.GeoIPUpdateURL),
+		strField("geo", "geo_ip_update_edition", &s.GeoIPUpdateEdition),
 	}
 }
 
@@ -224,6 +233,16 @@ func strField(typ, name string, dst *string) settingDescriptor {
 		Marshal:   func() (string, error) { return *dst, nil },
 		Unmarshal: func(raw string) error { *dst = raw; return nil },
 	}
+}
+
+// encStrField is a string setting whose value is encrypted at rest (AES-GCM via
+// secrets.go), the same as the SMTP/SAML/OIDC credential columns. Used for
+// provider tokens stored in the KV table (e.g. geo_ip_token). The admin GET
+// handler must still mask it (return has_* instead of the value).
+func encStrField(typ, name string, dst *string) settingDescriptor {
+	d := strField(typ, name, dst)
+	d.Encrypted = true
+	return d
 }
 
 func intField(typ, name string, dst *int) settingDescriptor {
@@ -376,6 +395,15 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 		// large per-client tier is no longer rolled up at all. 0 is coerced here
 		// (no "keep forever" mode), so the prune's `> 0` guard never sees a 0.
 		out.TrafficHistoryDays = 730
+	}
+	if out.GeoIPUpdateSource == "" {
+		// MaxMind GeoLite2-City is the recommended default: best free global
+		// city-level detail. Inert until GeoIPEnabled + GeoIPAutoUpdate +
+		// a license key are configured.
+		out.GeoIPUpdateSource = "maxmind"
+	}
+	if out.GeoIPUpdateEdition == "" {
+		out.GeoIPUpdateEdition = "GeoLite2-City"
 	}
 	// Unified client registry (v3.3.0). When absent, either migrate the legacy
 	// two-table config (sub_client_rules + sub_import_clients) in place — a

@@ -32,6 +32,7 @@ import { useCan } from '@/utils/permissions'
 
 import { clearAudit, listAudit, type AuditEntry } from '@/api/audit'
 import { clearSubLogs, getSubLogs, purgeSubLogs, type SubLog } from '@/api/subLogs'
+import { formatRegion } from '@/utils/geo'
 import { clearEmailLogs, getEmailLogs, purgeEmailLogs, type EmailLog } from '@/api/emailLogs'
 import { getUISettings, putUISettings } from '@/api/settings'
 import { confirm } from '@/components/ConfirmHost'
@@ -355,7 +356,13 @@ export default function LogsView() {
                     <TableRow key={r.id} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}>
                       <TableCell sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{r.id}</TableCell>
                       <TableCell sx={{ fontWeight: 500 }}>{r.user_upn || `#${r.user_id}`}</TableCell>
-                      <TableCell sx={{ fontSize: 13 }}>{r.ip}</TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>
+                        {r.ip}
+                        {formatRegion(r.region) && (
+                          <Box sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}
+                            title="地区由离线 IP 库估算；城市级仅供参考">{formatRegion(r.region)}</Box>
+                        )}
+                      </TableCell>
                       <TableCell sx={{ fontSize: 13 }}>{r.client_type}</TableCell>
                       <TableCell sx={{ fontSize: 12, color: md.onSurfaceVariant, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.ua}</TableCell>
                       <TableCell sx={{ fontSize: 13, whiteSpace: 'nowrap' }}>{formatDualTz(r.accessed_at, panelTz)}</TableCell>
@@ -422,7 +429,13 @@ export default function LogsView() {
                       <TableCell sx={{ fontWeight: 500 }}>{r.actor}</TableCell>
                       <TableCell sx={{ fontSize: 13 }}>{r.action}</TableCell>
                       <TableCell sx={{ fontSize: 13 }}>{r.target}</TableCell>
-                      <TableCell sx={{ fontSize: 13 }}>{r.ip}</TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>
+                        {r.ip}
+                        {formatRegion(r.region) && (
+                          <Box sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}
+                            title="地区由离线 IP 库估算；城市级仅供参考">{formatRegion(r.region)}</Box>
+                        )}
+                      </TableCell>
                       <TableCell sx={{ fontSize: 13, whiteSpace: 'nowrap' }}>{formatDualTz(r.at, panelTz)}</TableCell>
                       <TableCell align="right">
                         <Tooltip title={t('admin:logs.view_detail')}>

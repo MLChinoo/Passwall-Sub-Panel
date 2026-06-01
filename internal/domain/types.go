@@ -621,6 +621,22 @@ type AuditEntry struct {
 	At         time.Time `json:"at"`
 }
 
+// GeoLocation is a resolved geolocation for an IP. Empty fields mean
+// "unknown" (private/reserved IP, lookup disabled, or provider failure).
+// CountryCode is ISO 3166-1 alpha-2 (e.g. "HK"); the frontend renders the
+// flag from it.
+type GeoLocation struct {
+	CountryCode string `json:"country_code"`
+	Country     string `json:"country"`
+	Region      string `json:"region"`
+	City        string `json:"city"`
+}
+
+// Empty reports whether nothing useful was resolved.
+func (g GeoLocation) Empty() bool {
+	return g.CountryCode == "" && g.Country == "" && g.Region == "" && g.City == ""
+}
+
 // SyncTask is a persistent retryable operation that must change a 3X-UI
 // panel before the panel-side state can be considered complete.
 type SyncTask struct {

@@ -16,6 +16,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
@@ -61,6 +62,7 @@ type Deps struct {
 	Traffic   *traffic.Service
 	Mail      *mailer.Service
 	Reconcile *reconcile.Service
+	Geo       *geo.Service
 	Async     AsyncDispatcher
 
 	// Rate-limit caps resolved from the DB settings table at startup. The
@@ -262,7 +264,7 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.DELETE("/templates/:slug", templates.Delete)
 		adminGroup.POST("/templates/:slug/reset", templates.Reset)
 
-		auditH := handler.NewAdminAuditHandler(d.Repos.Audit)
+		auditH := handler.NewAdminAuditHandler(d.Repos.Audit, d.Geo)
 		// Read so operators can review their own actions; only admin can
 		// wipe history.
 		staffGroup.GET("/audit", auditH.List)
@@ -296,6 +298,12 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.GET("/settings/ui", settings.Get)
 		adminGroup.PUT("/settings/ui", settings.Put)
 
+		// Offline geo database status + manual update (touches the update token
+		// + fetches an external DB — admin only).
+		geoip := handler.NewAdminGeoIPHandler(d.Geo)
+		adminGroup.GET("/settings/geoip/status", geoip.Status)
+		adminGroup.POST("/settings/geoip/update", geoip.Update)
+
 		mail := handler.NewAdminMailHandler(d.Mail)
 		adminGroup.GET("/settings/mail", mail.Get)
 		adminGroup.PUT("/settings/mail", mail.PutSettings)
@@ -324,7 +332,7 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.POST("/sync-tasks/:id/cancel", tasks.Cancel)
 		adminGroup.POST("/sync-tasks/purge", tasks.PurgeFinished)
 
-		subLogs := handler.NewAdminSubLogHandler(d.Repos.SubLog, d.Repos.Settings)
+		subLogs := handler.NewAdminSubLogHandler(d.Repos.SubLog, d.Repos.Settings, d.Geo)
 		staffGroup.GET("/sub-logs", subLogs.List)
 		adminGroup.DELETE("/sub-logs", subLogs.Clear)
 		adminGroup.POST("/sub-logs/purge", subLogs.Purge)
