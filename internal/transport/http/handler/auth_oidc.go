@@ -9,6 +9,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 )
@@ -20,9 +21,10 @@ import (
 // returns a verified ID token, the panel upserts a domain.User and
 // hands back JWT cookies the same way SAML does.
 type AuthOIDCHandler struct {
-	oidc *auth.OIDCService
-	auth *auth.Service
-	user *user.Service
+	oidc       *auth.OIDCService
+	auth       *auth.Service
+	user       *user.Service
+	authEvents ports.AuthEventRepo
 }
 
 const (
@@ -33,8 +35,8 @@ const (
 	oidcCookieTTL      = 300 // seconds
 )
 
-func NewAuthOIDCHandler(oidcSvc *auth.OIDCService, authSvc *auth.Service, userSvc *user.Service) *AuthOIDCHandler {
-	return &AuthOIDCHandler{oidc: oidcSvc, auth: authSvc, user: userSvc}
+func NewAuthOIDCHandler(oidcSvc *auth.OIDCService, authSvc *auth.Service, userSvc *user.Service, authEvents ports.AuthEventRepo) *AuthOIDCHandler {
+	return &AuthOIDCHandler{oidc: oidcSvc, auth: authSvc, user: userSvc, authEvents: authEvents}
 }
 
 func (h *AuthOIDCHandler) Login(c *gin.Context) {
@@ -114,6 +116,7 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 
 	assertion, err := h.oidc.Exchange(c.Request.Context(), code, nonce, pkceVerifier)
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, "", "oidc_exchange_failed")
 		c.Redirect(http.StatusFound, "/sso-error?error=auth_failed&description="+url.QueryEscape(err.Error()))
 		return
 	}
@@ -148,14 +151,17 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 	}
 	u, err := h.user.EnsureSSO(c.Request.Context(), in)
 	if errors.Is(err, domain.ErrSSONoAccount) {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, upn, "sso_no_account")
 		c.Redirect(http.StatusFound, "/sso-no-account")
 		return
 	}
 	if errors.Is(err, domain.ErrSSOAccountConflict) {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, upn, "sso_conflict")
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_conflict&description="+url.QueryEscape(err.Error()))
 		return
 	}
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, upn, "sso_error")
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_error&description="+url.QueryEscape(err.Error()))
 		return
 	}
@@ -166,14 +172,17 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 		if u.AutoDisabledReason == domain.DisabledPendingApproval {
 			errorCode = "account_pending"
 		}
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, u.ID, u.UPN, "disabled:"+string(u.AutoDisabledReason))
 		c.Redirect(http.StatusFound, "/sso-error?error="+errorCode)
 		return
 	}
 	access, refresh, err := h.auth.IssueTokens(u)
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, u.ID, u.UPN, "token_error")
 		respondError(c, err)
 		return
 	}
+	recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeSuccess, u.ID, u.UPN, "")
 
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(CookieAccessToken, access, int(h.auth.AccessTTL().Seconds()), CookieAuthPath, "", secure, true)

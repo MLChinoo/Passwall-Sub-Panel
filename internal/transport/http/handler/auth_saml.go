@@ -10,6 +10,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/config"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 )
@@ -38,13 +39,14 @@ const (
 
 // AuthSAMLHandler exposes /api/auth/saml/{login,acs,metadata}.
 type AuthSAMLHandler struct {
-	saml *auth.SAMLService
-	auth *auth.Service
-	user *user.Service
+	saml       *auth.SAMLService
+	auth       *auth.Service
+	user       *user.Service
+	authEvents ports.AuthEventRepo
 }
 
-func NewAuthSAMLHandler(samlSvc *auth.SAMLService, authSvc *auth.Service, userSvc *user.Service) *AuthSAMLHandler {
-	return &AuthSAMLHandler{saml: samlSvc, auth: authSvc, user: userSvc}
+func NewAuthSAMLHandler(samlSvc *auth.SAMLService, authSvc *auth.Service, userSvc *user.Service, authEvents ports.AuthEventRepo) *AuthSAMLHandler {
+	return &AuthSAMLHandler{saml: samlSvc, auth: authSvc, user: userSvc, authEvents: authEvents}
 }
 
 // Login initiates SP-initiated SSO by redirecting the browser to the IdP.
@@ -89,6 +91,7 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 
 	assertion, err := h.saml.ParseACSResponse(c.Request, possibleIDs)
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, 0, "", "saml_assertion_invalid")
 		c.Redirect(http.StatusFound, "/sso-error?error=auth_failed&description="+url.QueryEscape(err.Error()))
 		return
 	}
@@ -122,14 +125,17 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 	}
 	u, err := h.user.EnsureSSO(c.Request.Context(), in)
 	if errors.Is(err, domain.ErrSSONoAccount) {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, 0, assertion.UPN, "sso_no_account")
 		c.Redirect(http.StatusFound, "/sso-no-account")
 		return
 	}
 	if errors.Is(err, domain.ErrSSOAccountConflict) {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, 0, assertion.UPN, "sso_conflict")
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_conflict&description="+url.QueryEscape(err.Error()))
 		return
 	}
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, 0, assertion.UPN, "sso_error")
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_error&description="+url.QueryEscape(err.Error()))
 		return
 	}
@@ -140,14 +146,17 @@ func (h *AuthSAMLHandler) ACS(c *gin.Context) {
 		if u.AutoDisabledReason == domain.DisabledPendingApproval {
 			errorCode = "account_pending"
 		}
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, u.ID, u.UPN, "disabled:"+string(u.AutoDisabledReason))
 		c.Redirect(http.StatusFound, "/sso-error?error="+errorCode)
 		return
 	}
 	access, refresh, err := h.auth.IssueTokens(u)
 	if err != nil {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeFailure, u.ID, u.UPN, "token_error")
 		respondError(c, err)
 		return
 	}
+	recordAuthEvent(c, h.authEvents, domain.AuthMethodSAML, domain.AuthOutcomeSuccess, u.ID, u.UPN, "")
 
 	secure := isHTTPS(c)
 	c.SetSameSite(http.SameSiteLaxMode)

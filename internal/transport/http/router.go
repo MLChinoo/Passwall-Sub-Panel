@@ -145,12 +145,12 @@ func NewRouter(d Deps) *gin.Engine {
 		// disabled — the underlying service rejects calls until admin
 		// re-enables it. That way an admin who flips SSO on in the panel
 		// doesn't need a restart for the routes to appear.
-		samlHandler := handler.NewAuthSAMLHandler(d.SAML, d.Auth, d.User)
+		samlHandler := handler.NewAuthSAMLHandler(d.SAML, d.Auth, d.User, d.Repos.AuthEvent)
 		authGroup.GET("/saml/login", samlHandler.Login)
 		authGroup.POST("/saml/acs", samlHandler.ACS)
 		authGroup.GET("/saml/metadata", samlHandler.Metadata)
 
-		oidcHandler := handler.NewAuthOIDCHandler(d.OIDC, d.Auth, d.User)
+		oidcHandler := handler.NewAuthOIDCHandler(d.OIDC, d.Auth, d.User, d.Repos.AuthEvent)
 		authGroup.GET("/oidc/login", oidcHandler.Login)
 		authGroup.GET("/oidc/callback", oidcHandler.Callback)
 
