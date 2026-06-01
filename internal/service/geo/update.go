@@ -94,6 +94,28 @@ func (s *Service) Update(ctx context.Context) (string, error) {
 	return target, nil
 }
 
+// knownUpdateSources is the canonical set of selectable geo-database download
+// sources. candidateURLs implements exactly one branch per entry; the settings
+// handler validates against this same set via IsValidUpdateSource, so the API
+// whitelist and the downloader can never drift (TestUpdateSourcesNoDrift guards
+// that every entry here is actually handled by candidateURLs).
+var knownUpdateSources = []string{"maxmind", "dbip", "ipinfo", "custom"}
+
+// IsValidUpdateSource reports whether src is a selectable update source. The
+// empty string is accepted and defaults to "maxmind" inside candidateURLs.
+func IsValidUpdateSource(src string) bool {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return true
+	}
+	for _, s := range knownUpdateSources {
+		if s == src {
+			return true
+		}
+	}
+	return false
+}
+
 // candidateURLs returns the download URL(s) and the target filename for the
 // configured source. DB-IP is month-stamped with no stable "latest", so we
 // return the current and previous month and try each in order.
@@ -122,7 +144,7 @@ func candidateURLs(set ports.UISettings) (urls []string, target string, err erro
 		return []string{"https://ipinfo.io/data/ipinfo_lite.mmdb?token=" + url.QueryEscape(token)}, "ipinfo-lite.mmdb", nil
 	case "dbip":
 		now := time.Now()
-		return []string{dbipURL(now), dbipURL(now.AddDate(0, -1, 0))}, "dbip-city-lite.mmdb", nil
+		return []string{dbipURL(now), dbipURL(prevMonthOf(now))}, "dbip-city-lite.mmdb", nil
 	case "custom":
 		u := strings.TrimSpace(set.GeoIPUpdateURL)
 		if u == "" {
@@ -136,6 +158,14 @@ func candidateURLs(set ports.UISettings) (urls []string, target string, err erro
 
 func dbipURL(t time.Time) string {
 	return "https://download.db-ip.com/free/dbip-city-lite-" + t.Format("2006-01") + ".mmdb.gz"
+}
+
+// prevMonthOf returns a time in the month before t's. It uses "1st of this
+// month minus a day" rather than t.AddDate(0,-1,0): the latter normalises a
+// 31st (e.g. 2026-03-31 → 2026-03-03) back into the SAME month, which would
+// silently make the DB-IP fallback URL identical to the current month's.
+func prevMonthOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).AddDate(0, 0, -1)
 }
 
 // customTarget derives a .mmdb filename from an arbitrary URL (basename, minus

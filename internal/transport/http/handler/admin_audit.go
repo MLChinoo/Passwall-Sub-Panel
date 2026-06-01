@@ -23,7 +23,8 @@ func NewAdminAuditHandler(repo ports.AuditRepo, geoSvc *geo.Service) *AdminAudit
 }
 
 // auditView is an AuditEntry plus its resolved IP region (omitted when geo is
-// disabled or the IP isn't resolved yet — the cache fills on later views).
+// disabled, the IP is private/unmapped, or no .mmdb is loaded — lookups are
+// fully offline against the active local database, no cache).
 type auditView struct {
 	*domain.AuditEntry
 	Region *domain.GeoLocation `json:"region,omitempty"`

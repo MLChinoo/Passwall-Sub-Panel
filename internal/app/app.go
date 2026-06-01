@@ -606,12 +606,26 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 	}
 }
 
+// runRollup re-emits EVERY hourly bucket (the hourly cleanup loop's
+// rollup-before-prune pass + first-run backfill).
 func (a *App) runRollup(ctx context.Context) {
 	if a.rollup == nil {
 		return
 	}
 	if err := a.rollup.RollupOnce(ctx); err != nil {
 		log.Warn("traffic rollup", "err", err)
+	}
+}
+
+// runRollupRecent re-emits only the last few hourly buckets (the open hour +
+// recent overlap). Called every traffic poll so the chart's "today" stays live
+// without re-upserting the whole raw window every cycle.
+func (a *App) runRollupRecent(ctx context.Context) {
+	if a.rollup == nil {
+		return
+	}
+	if err := a.rollup.RollupRecent(ctx); err != nil {
+		log.Warn("traffic rollup (recent)", "err", err)
 	}
 }
 
@@ -856,9 +870,10 @@ func (a *App) runTrafficLoop(ctx context.Context) {
 			// Roll up immediately after the poll so the hourly tables (the sole
 			// source for the traffic charts) reflect this cycle's snapshots —
 			// including the still-open current hour — keeping the chart's "today"
-			// as live as the raw poll. Idempotent + small (user+node only), and
-			// the hourly cleanup loop still runs its own rollup-before-prune pass.
-			a.runRollup(ctx)
+			// as live as the raw poll. RollupRecent re-emits only the last few
+			// hours (not the whole raw window) so this stays cheap every cycle;
+			// the hourly cleanup loop still runs a full rollup-before-prune pass.
+			a.runRollupRecent(ctx)
 			// Piggyback the 3X-UI compat re-probe onto the traffic poll
 			// cadence — PSP is already in a "talk to every panel" cycle,
 			// adding one /server/status call per panel is cheap (~10ms

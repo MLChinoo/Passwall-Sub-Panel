@@ -10,6 +10,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/jwtutil"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 )
 
 // AdminSettingsHandler exposes /api/admin/settings/ui — every runtime-editable
@@ -247,11 +248,13 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 	} else {
 		s.GeoIPUpdateToken = strings.TrimSpace(req.GeoIPUpdateToken)
 	}
-	switch s.GeoIPUpdateSource {
-	case "", "ipinfo", "maxmind", "custom":
-		// valid
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Geo_ip_update_source must be ipinfo, maxmind, or custom"})
+	// Single source of truth: geo.IsValidUpdateSource is the SAME set
+	// geo.Update (candidateURLs) can actually download, so the API can't accept
+	// a source the downloader rejects (or vice-versa). dbip was previously
+	// missing from this whitelist, so selecting "DB-IP City Lite" in the UI 400'd
+	// even though the downloader supported it.
+	if !geo.IsValidUpdateSource(s.GeoIPUpdateSource) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Geo_ip_update_source must be maxmind, dbip, ipinfo, or custom"})
 		return
 	}
 	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 {

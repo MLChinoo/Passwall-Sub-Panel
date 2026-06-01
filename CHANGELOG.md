@@ -4,6 +4,35 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.2 — 2026-06-01
+
+beta.1 发布后的逐行复查批次:1 个用户可见 bug + 流量图表精度/写入修复 + 两个 geo 健壮性小修。全部带回归 / drift 测试。无 schema 变更。
+
+### Fixed
+
+- **geo 自动更新选「DB-IP City Lite」保存即 400** ── 设置页下拉提供 `dbip`(免账号、城市级),
+  下载器 `candidateURLs` 也一直支持它,但设置 PUT 的来源校验白名单**漏了 `dbip`**(只有
+  `ipinfo`/`maxmind`/`custom`),选中保存被 400 拒绝 —— 一个纯校验侧的 drift。改为**单一真相源**
+  `geo.IsValidUpdateSource`(handler 直接调它),API 接受的来源集合 = 下载器能下的集合,结构上不可能
+  再分叉;新增 `TestUpdateSourcesNoDrift` 守门(任一侧漏改 `go test` 即红)。
+- **流量图表每个小时边界系统性少算 ~一个轮询间隔(5-min 节奏 ≈8%)** ── hourly rollup 原先按桶内
+  `MAX-MIN` 求 delta,**上一小时最后采样→下一小时首采样**那段跨边界流量两个桶都不计。改为
+  `MAX-floor`,floor 取「桶内 MIN」与「相邻前一小时的 MAX」中较低者(进位),把跨边界增量归到后一个
+  小时;跨边界计数器跳变(Xray 重启)时回退到桶内 MIN 防负;**缺口(中间整小时无数据)不进位**——
+  无法判断缺口流量发生时刻,保守用桶内 MAX-MIN。仅影响图表柱形,不触及权威口径(lifetime/period/
+  today 走独立 counter 路径)。
+- **rollup 写放大** ── 轮询期原先每 5 分钟把整个 ~7 天原始窗口的所有桶全部 re-upsert。新增
+  `RollupRecent`:轮询路径只重写最近几小时(开桶 + 重叠余量)的桶,旧的封口桶留给每小时清理循环的
+  全量 `RollupOnce`。进位仍按完整原始集计算,近窗桶与全量结果一致,写量从每实体上百桶/轮询降到个位数。
+- **DB-IP 上月回退 URL 在月末失效** ── DB-IP 是按月文件、无稳定 latest,故同时尝试本月+上月。
+  上月原用 `now.AddDate(0,-1,0)`,在 31 号(如 2026-03-31→2026-03-03)会归一化回**本月**,
+  回退 URL 与本月相同、形同虚设。改用「本月 1 号减一天」算上月(`prevMonthOf`),加 `TestPrevMonthOf`
+  覆盖月末 / 跨年 / 闰月。
+- **激活的 mmdb 文件损坏时日志刷屏** ── `ensureReader` 在 `Open` 失败时未记录已尝试的
+  (path, mtime),导致每次 `Lookup` 都重试 `Open` 并打一条 WARN。改为记录失败的 (path, mtime)
+  并丢弃陈旧 reader(避免拿另一个库的数据误导),后续 Lookup 直接短路,只在文件 mtime 变化或管理员
+  改选时重试。
+
 ## v3.6.3-beta.1 — 2026-06-01
 
 自 v3.6.2 以来的全部改动打包进这个 beta:① 新功能「访问日志 IP 地区显示」(离线 mmdb);

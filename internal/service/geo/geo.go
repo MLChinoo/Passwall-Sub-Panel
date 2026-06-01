@@ -134,13 +134,23 @@ func (s *Service) ensureReader(chosen string) *geoip.Reader {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.reader != nil && s.activePath == path && s.activeMod.Equal(mod) {
-		return s.reader // another goroutine reloaded it
+	if s.activePath == path && s.activeMod.Equal(mod) {
+		// Either the current good reader, or a previously-failed attempt at this
+		// exact (path, mtime): don't re-Open until the file actually changes.
+		return s.reader
 	}
 	nr, err := geoip.Open(path)
 	if err != nil {
 		log.Warn("geo: open mmdb failed", "path", path, "err", err)
-		return s.reader // keep the previous reader (if any) usable
+		// Record the attempt so subsequent Lookups short-circuit above instead
+		// of re-Opening and re-logging on every call — retry only when the
+		// file's mtime changes or the admin picks another. Drop any stale
+		// reader: serving a different database's data would mislead.
+		if s.reader != nil {
+			_ = s.reader.Close()
+		}
+		s.reader, s.activePath, s.activeMod = nil, path, mod
+		return nil
 	}
 	if s.reader != nil {
 		_ = s.reader.Close()

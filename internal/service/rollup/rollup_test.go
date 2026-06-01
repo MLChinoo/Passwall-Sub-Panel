@@ -209,6 +209,116 @@ func TestRollupNodeAndSkipsClient(t *testing.T) {
 	}
 }
 
+// TestRollupCarryInAcrossHourBoundary: a monotonic ramp that crosses the
+// 14:00→15:00 boundary. The 15:00 bucket must include the traffic that accrued
+// between 14:00's last sample (200) and 15:00's first (260) — i.e. delta =
+// 400-200 = 200, NOT the plain in-hour MAX-MIN of 400-260 = 140 (the ~8% the
+// old rollup dropped at every hour boundary). The 14:00 bucket has no preceding
+// hour, so it stays MAX-MIN = 100.
+func TestRollupCarryInAcrossHourBoundary(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+
+	insertUserSnap(t, g, 1, h14.Add(5*time.Minute), 100, 0, 100)
+	insertUserSnap(t, g, 1, h14.Add(55*time.Minute), 200, 0, 200)
+	insertUserSnap(t, g, 1, h15.Add(5*time.Minute), 260, 0, 260)
+	insertUserSnap(t, g, 1, h15.Add(55*time.Minute), 400, 0, 400)
+
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+
+	var first, second struct{ UpBytes int64 }
+	scanOne(t, g, &first, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14)
+	scanOne(t, g, &second, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
+	if first.UpBytes != 100 {
+		t.Fatalf("14:00 bucket (no carry-in) up = %d, want 100", first.UpBytes)
+	}
+	if second.UpBytes != 200 {
+		t.Fatalf("15:00 bucket (carry-in from 14:00 max=200) up = %d, want 200", second.UpBytes)
+	}
+}
+
+// TestRollupNoCarryInAcrossGap: when an hour is missing (panel was down), the
+// next present hour must NOT carry-in from a non-adjacent earlier hour — we
+// can't know when the gap's traffic happened, so the bucket stays in-hour
+// MAX-MIN rather than dumping the whole gap into one hour.
+func TestRollupNoCarryInAcrossGap(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+	h16 := h14.Add(2 * time.Hour) // 15:00 deliberately absent
+
+	insertUserSnap(t, g, 1, h14.Add(5*time.Minute), 100, 0, 100)
+	insertUserSnap(t, g, 1, h14.Add(55*time.Minute), 200, 0, 200)
+	insertUserSnap(t, g, 1, h16.Add(5*time.Minute), 500, 0, 500)
+	insertUserSnap(t, g, 1, h16.Add(55*time.Minute), 900, 0, 900)
+
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	var got struct{ UpBytes int64 }
+	scanOne(t, g, &got, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h16)
+	if got.UpBytes != 400 { // 900-500, NOT 900-200=700
+		t.Fatalf("16:00 bucket across a gap up = %d, want 400 (no carry-in over a missing hour)", got.UpBytes)
+	}
+}
+
+// TestRollupCarryInCounterReset: if the counter reset across the boundary
+// (15:00's first sample is BELOW 14:00's max — an Xray restart), the carry-in
+// floor must fall back to the in-hour MIN so the delta can't go negative.
+func TestRollupCarryInCounterReset(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+
+	insertUserSnap(t, g, 1, h14.Add(5*time.Minute), 100, 0, 100)
+	insertUserSnap(t, g, 1, h14.Add(55*time.Minute), 500, 0, 500)
+	insertUserSnap(t, g, 1, h15.Add(5*time.Minute), 50, 0, 50) // reset
+	insertUserSnap(t, g, 1, h15.Add(55*time.Minute), 200, 0, 200)
+
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	var got struct{ UpBytes int64 }
+	scanOne(t, g, &got, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
+	if got.UpBytes != 150 { // 200-50 (in-hour), prevMax=500 ignored as floor
+		t.Fatalf("15:00 bucket after reset up = %d, want 150", got.UpBytes)
+	}
+}
+
+// TestRollupRecentSkipsOldBuckets: RollupRecent (the per-poll pass) must emit
+// only buckets within rollupRecentEmitWindow of now, leaving older final
+// buckets to the hourly RollupOnce pass — that's what keeps the per-poll write
+// volume bounded instead of re-upserting the whole raw window every cycle.
+func TestRollupRecentSkipsOldBuckets(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+
+	// An old, long-closed hour…
+	insertUserSnap(t, g, 1, h14.Add(5*time.Minute), 100, 0, 100)
+	insertUserSnap(t, g, 1, h14.Add(55*time.Minute), 200, 0, 200)
+	// …and the current, still-open hour.
+	nowHour := hourFloor(time.Now())
+	insertUserSnap(t, g, 1, nowHour, 1000, 0, 1000)
+	insertUserSnap(t, g, 1, time.Now(), 1400, 0, 1400)
+
+	if err := svc.RollupRecent(ctx); err != nil {
+		t.Fatalf("rollup recent: %v", err)
+	}
+	if n := countRows(t, g, "SELECT COUNT(*) FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14); n != 0 {
+		t.Fatalf("RollupRecent must skip the old %v bucket, found %d", h14, n)
+	}
+	if n := countRows(t, g, "SELECT COUNT(*) FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, nowHour); n != 1 {
+		t.Fatalf("RollupRecent must emit the current-hour bucket, found %d", n)
+	}
+	// The full pass backfills the old bucket too.
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup once: %v", err)
+	}
+	if n := countRows(t, g, "SELECT COUNT(*) FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14); n != 1 {
+		t.Fatalf("RollupOnce must backfill the old %v bucket, found %d", h14, n)
+	}
+}
+
 // TestHourFloor exercises the bucket-boundary math: any timestamp within
 // a UTC hour truncates to the start of that hour, sub-second precision
 // is dropped, and non-UTC inputs convert to UTC before truncating.

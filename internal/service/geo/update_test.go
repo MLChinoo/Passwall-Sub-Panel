@@ -100,6 +100,45 @@ func TestCandidateURLs(t *testing.T) {
 	}
 }
 
+// TestUpdateSourcesNoDrift is the drift guard between the API whitelist
+// (IsValidUpdateSource, used by the settings handler) and the downloader
+// (candidateURLs). Every source the API accepts MUST be one the downloader can
+// actually fetch — the dbip regression (UI offered it, API 400'd it) was
+// exactly this drift. minCreds supplies the least input each source needs so we
+// assert candidateURLs returns NO error (not merely "not the unknown error").
+func TestUpdateSourcesNoDrift(t *testing.T) {
+	minCreds := map[string]ports.UISettings{
+		"maxmind": {GeoIPUpdateToken: "LIC"},
+		"ipinfo":  {GeoIPUpdateToken: "tok"},
+		"dbip":    {},
+		"custom":  {GeoIPUpdateURL: "https://x.test/geo.mmdb"},
+	}
+	for _, src := range knownUpdateSources {
+		if !IsValidUpdateSource(src) {
+			t.Errorf("knownUpdateSources has %q but IsValidUpdateSource rejects it", src)
+		}
+		set, ok := minCreds[src]
+		if !ok {
+			t.Fatalf("test missing minimal creds for source %q — add them", src)
+		}
+		set.GeoIPUpdateSource = src
+		if _, _, err := candidateURLs(set); err != nil {
+			t.Errorf("candidateURLs(%q) errored with minimal creds: %v — source in whitelist but downloader can't fetch it", src, err)
+		}
+	}
+	// Empty string is accepted (defaults to maxmind inside candidateURLs).
+	if !IsValidUpdateSource("") {
+		t.Error(`IsValidUpdateSource("") must be true (defaults to maxmind)`)
+	}
+	// A bogus source is rejected by BOTH the whitelist and the downloader.
+	if IsValidUpdateSource("bogus") {
+		t.Error("IsValidUpdateSource(bogus) must be false")
+	}
+	if _, _, err := candidateURLs(ports.UISettings{GeoIPUpdateSource: "bogus"}); err == nil {
+		t.Error("candidateURLs(bogus) must error")
+	}
+}
+
 func TestCustomTarget(t *testing.T) {
 	cases := map[string]string{
 		"https://x.test/foo.mmdb":          "foo.mmdb",
@@ -119,5 +158,23 @@ func TestDBIPURL(t *testing.T) {
 	got := dbipURL(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
 	if got != "https://download.db-ip.com/free/dbip-city-lite-2026-06.mmdb.gz" {
 		t.Fatalf("dbipURL = %q", got)
+	}
+}
+
+// TestPrevMonthOf locks the month-end fix: the DB-IP fallback must land in the
+// genuinely previous month even on a 29th/30th/31st, where t.AddDate(0,-1,0)
+// would normalise back into the current (or a wrong) month.
+func TestPrevMonthOf(t *testing.T) {
+	cases := map[time.Time]string{ // input → expected "2006-01" of the prev month
+		time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC): "2026-02", // 31st: AddDate would give "2026-03"
+		time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC): "2026-04",
+		time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC): "2025-12", // year rollover
+		time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC): "2026-05", // mid-month, easy case
+		time.Date(2024, 3, 30, 0, 0, 0, 0, time.UTC): "2024-02", // leap-year Feb
+	}
+	for in, want := range cases {
+		if got := prevMonthOf(in).Format("2006-01"); got != want {
+			t.Errorf("prevMonthOf(%s) = %s, want %s", in.Format("2006-01-02"), got, want)
+		}
 	}
 }
