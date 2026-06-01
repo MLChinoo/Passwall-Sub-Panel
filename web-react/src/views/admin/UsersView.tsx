@@ -72,6 +72,7 @@ import { runReconcile } from '@/api/reconcile'
 import { setUserTraffic, topTraffic, type TrafficRow } from '@/api/traffic'
 import type { Group, ResetPeriod, Role, User } from '@/api/types'
 import type { ReconcileReport } from '@/api/reconcile'
+import { UserActivity } from './UserActivity'
 import { useAuthStore } from '@/stores/auth'
 import { useCan } from '@/utils/permissions'
 import { useSiteStore } from '@/stores/site'
@@ -1648,6 +1649,7 @@ export default function UsersView() {
             })()}
             <TextField fullWidth label={t('admin:users.field.remark')}
               value={editForm.remark} onChange={e => setEditForm({ ...editForm, remark: e.target.value })} />
+            {editing && <UserActivity userId={editing.id} />}
             </Box>
           </Box>
         </DialogContent>

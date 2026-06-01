@@ -931,6 +931,7 @@
     "title": "Users",
     "create": "New user",
     "edit_title": "Edit user",
+    "activity": { "title": "Recent sign-ins", "empty": "No sign-in records", "ok": "OK", "fail": "Failed" },
     "result_title": "User created",
     "search_placeholder": "Search UPN / display name / email…",
     "filter_group_all": "All groups",
