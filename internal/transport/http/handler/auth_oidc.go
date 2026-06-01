@@ -87,7 +87,12 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/sso-error?error=sso_error&description=OIDC+not+enabled")
 		return
 	}
+	// Record the post-IdP terminal failures too (identity unknown → upn ""):
+	// an explicit IdP error (e.g. access_denied / consent declined) is a real
+	// failed login; state-mismatch / missing-code are rarer but worth a row for
+	// CSRF / misconfig forensics. Kept symmetric with the exchange-onward emits.
 	if errParam := c.Query("error"); errParam != "" {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, "", "oidc_idp_error")
 		desc := c.Query("error_description")
 		c.Redirect(http.StatusFound, "/sso-error?error=auth_failed&description="+url.QueryEscape(desc))
 		return
@@ -95,12 +100,14 @@ func (h *AuthOIDCHandler) Callback(c *gin.Context) {
 	state := c.Query("state")
 	wantState, _ := c.Cookie(cookieOIDCState)
 	if state == "" || state != wantState {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, "", "oidc_state_mismatch")
 		c.Redirect(http.StatusFound, "/sso-error?error=auth_failed&description=State+mismatch")
 		return
 	}
 	nonce, _ := c.Cookie(cookieOIDCNonce)
 	code := c.Query("code")
 	if code == "" {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodOIDC, domain.AuthOutcomeFailure, 0, "", "oidc_missing_code")
 		c.Redirect(http.StatusFound, "/sso-error?error=auth_failed&description=Missing+authorization+code")
 		return
 	}

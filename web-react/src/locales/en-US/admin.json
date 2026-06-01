@@ -603,6 +603,7 @@
     },
     "filter": {
       "audit_search": "Search actor / action / target",
+      "auth_search": "Search user / IP / reason",
       "sub_search": "Search user / IP / UA / client",
       "email_search": "Search user / recipient / kind"
     },
