@@ -10,6 +10,7 @@ import {
   DialogTitle,
   IconButton,
   InputBase,
+  MenuItem,
   Tab,
   Table,
   TableBody,
@@ -31,6 +32,7 @@ import { useTranslation } from 'react-i18next'
 import { useCan } from '@/utils/permissions'
 
 import { clearAudit, listAudit, type AuditEntry } from '@/api/audit'
+import { listAuthEvents, type AuthEvent } from '@/api/authEvents'
 import { clearSubLogs, getSubLogs, purgeSubLogs, type SubLog } from '@/api/subLogs'
 import { formatRegion } from '@/utils/geo'
 import { clearEmailLogs, getEmailLogs, purgeEmailLogs, type EmailLog } from '@/api/emailLogs'
@@ -85,7 +87,7 @@ export default function LogsView() {
   const canConfig = useCan('config.write')
   const panelTz = useSiteStore(s => s.timezone)
 
-  const [tab, setTab] = useTabParam<'sub' | 'audit' | 'email'>('tab', 'sub', ['sub', 'audit', 'email'])
+  const [tab, setTab] = useTabParam<'sub' | 'audit' | 'auth' | 'email'>('tab', 'sub', ['sub', 'audit', 'auth', 'email'])
 
   // Sub logs
   const [subItems, setSubItems] = useState<SubLog[]>([])
@@ -138,6 +140,18 @@ export default function LogsView() {
   const [auditDetailOpen, setAuditDetailOpen] = useState(false)
   const [auditDetail, setAuditDetail] = useState<AuditEntry | null>(null)
 
+  // Auth events — logins across local / saml / oidc, success + failure.
+  const [authItems, setAuthItems] = useState<AuthEvent[]>([])
+  const [authTotal, setAuthTotal] = useState(0)
+  const [authPage, setAuthPage] = useState(1)
+  const [authPageSize, setAuthPageSize] = useState<number>(initialPageSize)
+  function setAuthPageSizePersist(n: number) { setAuthPageSize(n); persistPageSize(n); setAuthPage(1) }
+  const [authLoading, setAuthLoading] = useState(false)
+  const [authSearch, setAuthSearch] = useState('')
+  const [authAppliedSearch, setAuthAppliedSearch] = useState('')
+  const [authMethod, setAuthMethod] = useState<'' | AuthEvent['method']>('')
+  const [authOutcome, setAuthOutcome] = useState<'' | AuthEvent['outcome']>('')
+
   // Email logs — successful outbound notifications recorded by the
   // mailer service (mail_sent table). Same pagination + clear/purge
   // pattern as sub logs; retention is admin-tunable separately under
@@ -178,11 +192,13 @@ export default function LogsView() {
   useEffect(() => {
     if (tab === 'sub') void loadSub()
     else if (tab === 'audit') void loadAudit()
+    else if (tab === 'auth') void loadAuth()
     else void loadEmail()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab,
     subPage, subPageSize, subAppliedSearch,
     auditPage, auditPageSize, auditAppliedSearch,
+    authPage, authPageSize, authAppliedSearch, authMethod, authOutcome,
     emailPage, emailPageSize, emailAppliedSearch,
   ])
 
@@ -190,6 +206,7 @@ export default function LogsView() {
   // loads within one tab; a slow earlier page must not overwrite the newer one.
   const subSeq = useRef(0)
   const auditSeq = useRef(0)
+  const authSeq = useRef(0)
   const emailSeq = useRef(0)
 
   async function loadSub() {
@@ -214,6 +231,22 @@ export default function LogsView() {
       setAuditItems(res.items); setAuditTotal(res.total)
     } finally { if (seq === auditSeq.current) setAuditLoading(false) }
   }
+
+  async function loadAuth() {
+    const seq = ++authSeq.current
+    setAuthLoading(true)
+    try {
+      const res = await listAuthEvents({
+        page: authPage, page_size: authPageSize,
+        search: authAppliedSearch || undefined,
+        method: authMethod || undefined,
+        outcome: authOutcome || undefined,
+      })
+      if (seq !== authSeq.current) return
+      setAuthItems(res.items); setAuthTotal(res.total)
+    } finally { if (seq === authSeq.current) setAuthLoading(false) }
+  }
+  function onAuthFilter(e: FormEvent) { e.preventDefault(); setAuthPage(1); setAuthAppliedSearch(authSearch) }
 
   async function clearSubAll() {
     const ok = await confirm({
@@ -288,6 +321,7 @@ export default function LogsView() {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2, borderBottom: `1px solid ${md.outlineVariant}` }}>
         <Tab value="sub" label={t('admin:logs.tab_sub')} />
         <Tab value="audit" label={t('admin:logs.tab_audit')} />
+        <Tab value="auth" label={t('admin:logs.tab_auth', { defaultValue: '认证日志' })} />
         <Tab value="email" label={t('admin:logs.tab_email')} />
       </Tabs>
 
@@ -452,6 +486,89 @@ export default function LogsView() {
             <PagedTableFooter
               total={auditTotal} page={auditPage} pageSize={auditPageSize}
               onPageChange={setAuditPage} onPageSizeChange={setAuditPageSizePersist}
+            />
+          </Card>
+        </>
+      )}
+
+      {tab === 'auth' && (
+        <>
+          <Box component="form" onSubmit={onAuthFilter} sx={{ display: 'flex', gap: 1.5, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, height: 40, px: 2, borderRadius: 9999,
+              bgcolor: md.surfaceContainer, color: md.onSurfaceVariant, width: 300, maxWidth: '100%' }}>
+              <SearchIcon sx={{ fontSize: 18 }} />
+              <InputBase placeholder={t('admin:logs.filter.auth_search', { defaultValue: '搜索 用户 / IP / 原因' })} value={authSearch}
+                onChange={e => setAuthSearch(e.target.value)}
+                sx={{ flex: 1, fontSize: 14, color: md.onSurface }} />
+            </Box>
+            <TextField select size="small" label={t('admin:logs.auth_table.method', { defaultValue: '方法' })}
+              value={authMethod} onChange={e => { setAuthPage(1); setAuthMethod(e.target.value as '' | AuthEvent['method']) }}
+              sx={{ width: 130 }}>
+              <MenuItem value="">{t('admin:logs.auth_filter_all', { defaultValue: '全部' })}</MenuItem>
+              <MenuItem value="local">Local</MenuItem>
+              <MenuItem value="saml">SAML</MenuItem>
+              <MenuItem value="oidc">OIDC</MenuItem>
+            </TextField>
+            <TextField select size="small" label={t('admin:logs.auth_table.outcome', { defaultValue: '结果' })}
+              value={authOutcome} onChange={e => { setAuthPage(1); setAuthOutcome(e.target.value as '' | AuthEvent['outcome']) }}
+              sx={{ width: 130 }}>
+              <MenuItem value="">{t('admin:logs.auth_filter_all', { defaultValue: '全部' })}</MenuItem>
+              <MenuItem value="success">{t('admin:logs.auth_outcome.success', { defaultValue: '成功' })}</MenuItem>
+              <MenuItem value="failure">{t('admin:logs.auth_outcome.failure', { defaultValue: '失败' })}</MenuItem>
+            </TextField>
+            <Button type="submit" variant="outlined">{t('common:search.placeholder')}</Button>
+          </Box>
+          <Card sx={{ bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', overflow: 'hidden' }}>
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow sx={{ '& th': { color: md.onSurfaceVariant, fontWeight: 500, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.5px', borderBottom: `1px solid ${md.outlineVariant}`, whiteSpace: 'nowrap' } }}>
+                    <TableCell>{t('admin:logs.auth_table.at', { defaultValue: '时间' })}</TableCell>
+                    <TableCell>{t('admin:logs.auth_table.upn', { defaultValue: '用户' })}</TableCell>
+                    <TableCell>{t('admin:logs.auth_table.method', { defaultValue: '方法' })}</TableCell>
+                    <TableCell>{t('admin:logs.auth_table.outcome', { defaultValue: '结果' })}</TableCell>
+                    <TableCell>{t('admin:logs.auth_table.ip', { defaultValue: 'IP / 地区' })}</TableCell>
+                    <TableCell>{t('admin:logs.auth_table.reason', { defaultValue: '原因' })}</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {authLoading && authItems.length === 0 && (
+                    <TableRow><TableCell colSpan={6} sx={{ textAlign: 'center', py: 6 }}><CircularProgress size={24} /></TableCell></TableRow>
+                  )}
+                  {!authLoading && authItems.length === 0 && (
+                    <TableRow><TableCell colSpan={6} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
+                  )}
+                  {authItems.map(r => (
+                    <TableRow key={r.id} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}>
+                      <TableCell sx={{ fontSize: 13, whiteSpace: 'nowrap' }}>{formatDualTz(r.at, panelTz)}</TableCell>
+                      <TableCell sx={{ fontWeight: 500 }} title={r.ua || ''}>{r.upn || '—'}</TableCell>
+                      <TableCell sx={{ fontSize: 13, textTransform: 'uppercase' }}>{r.method}</TableCell>
+                      <TableCell>
+                        <Box component="span" sx={{
+                          fontSize: 12, fontWeight: 600, px: 1, py: 0.25, borderRadius: 1,
+                          color: r.outcome === 'success' ? '#1b5e20' : '#b00020',
+                          bgcolor: r.outcome === 'success' ? 'rgba(46,125,50,0.12)' : 'rgba(176,0,32,0.12)',
+                        }}>
+                          {r.outcome === 'success'
+                            ? t('admin:logs.auth_outcome.success', { defaultValue: '成功' })
+                            : t('admin:logs.auth_outcome.failure', { defaultValue: '失败' })}
+                        </Box>
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 13 }}>
+                        {r.ip}
+                        {formatRegion(r.region) && (
+                          <Box sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}>{formatRegion(r.region)}</Box>
+                        )}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, color: md.onSurfaceVariant }}>{r.reason || '—'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <PagedTableFooter
+              total={authTotal} page={authPage} pageSize={authPageSize}
+              onPageChange={setAuthPage} onPageSizeChange={setAuthPageSizePersist}
             />
           </Card>
         </>

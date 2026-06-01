@@ -432,6 +432,10 @@ export default function SettingsView() {
               <NumField label={t('settings.general.sync_task_retention_days')} value={settings.sync_task_retention_days}
                 onChange={v => patch('sync_task_retention_days', v)} />
             </Pair>
+            <NumField label={t('settings.general.auth_event_retention_days', { defaultValue: '认证日志保留（天）' })}
+              value={settings.auth_event_retention_days}
+              onChange={v => patch('auth_event_retention_days', v)}
+              helperText={t('settings.general.auth_event_retention_days_hint', { defaultValue: '登录日志（含失败）的保留天数；最小 90。' })} />
             <NumField label={t('settings.general.traffic_history_days')}
               value={settings.traffic_history_days}
               onChange={v => patch('traffic_history_days', v)}
