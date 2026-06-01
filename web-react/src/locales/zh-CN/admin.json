@@ -100,7 +100,7 @@
       "emergency_access_quota_gb_hint": "0 表示不限制；超出后将提前结束本次紧急访问并重新自动停用"
     },
     "geo": {
-      "section": "IP 地区显示（访问日志）",
+      "section": "IP 地区显示（日志）",
       "enabled": "启用 IP 地区显示",
       "hint": "完全离线：用本地 .mmdb 库解析，不外呼第三方、不缓存。把库放进 ",
       "hint2": "，或在下方配置自动更新。国家/省较可靠，城市仅供参考。",
@@ -581,7 +581,7 @@
     "sub_table": {
       "id": "ID",
       "user": "用户",
-      "ip": "IP",
+      "ip": "IP / 地区",
       "client_type": "客户端",
       "ua": "User-Agent",
       "at": "时间"
@@ -591,7 +591,7 @@
       "actor": "操作者",
       "action": "动作",
       "target": "目标",
-      "ip": "IP",
+      "ip": "IP / 地区",
       "at": "时间"
     },
     "email_table": {

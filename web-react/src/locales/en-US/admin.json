@@ -100,7 +100,7 @@
       "emergency_access_quota_gb_hint": "0 = unlimited; once exceeded the panel ends the window early and re-disables the user"
     },
     "geo": {
-      "section": "IP region (access logs)",
+      "section": "IP region (logs)",
       "enabled": "Show IP region",
       "hint": "Fully offline: resolved from a local .mmdb database — no third-party calls, no caching. Drop the database into ",
       "hint2": ", or configure auto-update below. Country/region are reliable; city is approximate.",
@@ -581,7 +581,7 @@
     "sub_table": {
       "id": "ID",
       "user": "User",
-      "ip": "IP",
+      "ip": "IP / region",
       "client_type": "Client",
       "ua": "User-Agent",
       "at": "Time"
@@ -591,7 +591,7 @@
       "actor": "Actor",
       "action": "Action",
       "target": "Target",
-      "ip": "IP",
+      "ip": "IP / region",
       "at": "Time"
     },
     "email_table": {

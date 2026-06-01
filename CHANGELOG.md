@@ -4,7 +4,15 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
-## v3.6.3-beta.7 — 2026-06-01
+## v3.6.3-beta.8 — 2026-06-01
+
+### Fixed
+
+- **设置页「激活数据库」下拉框文字重叠** —— 该 `Select` 用了 `displayEmpty`(空值时显示「(自动：按文件名第一个)」占位项),但空值下 MUI 的浮动 label 不会自动收缩,直接压在占位文字上重叠成一团。强制 `InputLabelProps={{ shrink: true }}`,label 收进描边缺口。
+
+### Changed
+
+- **IP / 地区显示在各处统一** —— 订阅访问日志、审计日志的 IP 列其实早就在 IP 下方渲染了地区,但列头只写「IP」,而认证日志列头写的是「IP / 地区」。统一三处列头为「IP / 地区」;两个详情弹窗(订阅/审计)此前只显示 IP、补上地区行;认证日志的地区补上其余两处已有的「离线估算」tooltip。设置里该功能标题从「IP 地区显示（访问日志）」放宽为「（日志）」——地区现已覆盖 访问/审计/认证 三类日志。
 
 ### Changed
 

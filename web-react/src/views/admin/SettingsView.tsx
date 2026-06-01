@@ -488,6 +488,11 @@ export default function SettingsView() {
               value={settings.geo_ip_db_file ?? ''}
               onChange={e => patch('geo_ip_db_file', e.target.value)}
               SelectProps={{ displayEmpty: true }}
+              // displayEmpty renders the placeholder MenuItem when value="",
+              // but with an empty value the InputLabel won't auto-shrink and
+              // ends up overlapping that placeholder text. Force shrink so the
+              // label floats into the outline notch.
+              InputLabelProps={{ shrink: true }}
               helperText={t('settings.geo.active_db_hint', { defaultValue: '存在多个库时选用哪个（留空=按名取第一个）。只有一个激活源——不合并、无冲突。' })}>
               <MenuItem value="">{t('settings.geo.auto', { defaultValue: '（自动：按文件名第一个）' })}</MenuItem>
               {(geoStatus?.available || []).map(db => (

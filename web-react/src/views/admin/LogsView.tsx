@@ -557,7 +557,8 @@ export default function LogsView() {
                       <TableCell sx={{ fontSize: 13 }}>
                         {r.ip}
                         {formatRegion(r.region) && (
-                          <Box sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}>{formatRegion(r.region)}</Box>
+                          <Box sx={{ fontSize: 11, color: md.onSurfaceVariant, mt: 0.25 }}
+                            title={t('logs.region_hint', { defaultValue: '地区由离线 IP 库估算；城市级仅供参考' })}>{formatRegion(r.region)}</Box>
                         )}
                       </TableCell>
                       <TableCell sx={{ fontSize: 12, color: md.onSurfaceVariant }}>{r.reason || '—'}</TableCell>
@@ -691,6 +692,7 @@ export default function LogsView() {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, fontSize: 13 }}>
               <Row label="User" value={subDetail.user_upn || `#${subDetail.user_id}`} md={md} />
               <Row label="IP" value={subDetail.ip} mono md={md} />
+              {formatRegion(subDetail.region) && <Row label="Region" value={formatRegion(subDetail.region)} md={md} />}
               <Row label="Client" value={subDetail.client_type} md={md} />
               <Row label="UA" value={subDetail.ua} mono md={md} />
               <Row label="At" value={formatDualTz(subDetail.accessed_at, panelTz)} md={md} />
@@ -713,6 +715,7 @@ export default function LogsView() {
               <Row label="Action" value={auditDetail.action} mono md={md} />
               <Row label="Target" value={auditDetail.target} md={md} />
               <Row label="IP" value={auditDetail.ip} mono md={md} />
+              {formatRegion(auditDetail.region) && <Row label="Region" value={formatRegion(auditDetail.region)} md={md} />}
               <Row label="At" value={formatDualTz(auditDetail.at, panelTz)} md={md} />
               {auditDetail.before_json && (
                 <Box>
