@@ -4,6 +4,17 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.12 — 2026-06-01
+
+全量 review backlog 第三批(认证 / 邮件 / GeoIP 安全加固),全程 TDD。
+
+### Security
+
+- **邮件正文 HTML 注入** —— mailer 用 `text/template` 渲染正文,把 IdP 可控的 DisplayName/UPN 直接插进 HTML → SSO 显示名里带 `<script>` 可注入邮件。正文改用 `html/template` 上下文自动转义(主题仍 `text/template`,是纯文本表头);预渲染且已转义的 `AnnouncementBodyHTML` 标记为 `template.HTML` 直通;正文模板校验也改用 `html/template`。
+- **SAML 空 Assertion-ID 绕过防重放** —— 防重放检查被 `if assertion.ID != ""` 包着,空 ID 直接跳过 → ID 被剥空的断言可完全绕过重放保护。改为空 ID 硬拒(saml-core §2.3.3 要求断言必须有 ID)。
+- **GeoIP license key / token 进日志与 admin status** —— 下载失败时 `*url.Error` 带含密钥的完整 URL 进 `UpdateState.LastErr`(admin status JSON 可见)+ 日志。该 token 本是加密落库 + write-only。`download` 改为剥掉 URL query 再包错(`redactURL`/`redactURLErr`),host/path 保留、密钥不外泄。
+- **OIDC token 交换无 SSRF 防护** —— discovery 已走 loopback/元数据端点拦截的安全 client,但 token exchange 的 `Exchange()` 用了无防护的默认 transport。改为同样 `oidc.ClientContext` 包安全 client + 超时。另:OIDC 启用时强制 issuer 为 `https://`(admin 保存校验),挡降级 / 明文内网 SSRF。
+
 ## v3.6.3-beta.11 — 2026-06-01
 
 全量 review backlog 第二批(设置 / 认证 / 生命周期正确性),全程 TDD。

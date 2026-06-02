@@ -175,6 +175,12 @@ func (s *OIDCService) Exchange(ctx context.Context, code, expectedNonce, pkceVer
 	if pkceVerifier != "" {
 		exchangeOpts = append(exchangeOpts, oauth2.VerifierOption(pkceVerifier))
 	}
+	// SSRF defense-in-depth: the token endpoint comes from the admin-supplied
+	// issuer's discovery document, so route the exchange through the same
+	// loopback / link-local / metadata-endpoint-blocking client + timeout as
+	// discovery (which wraps ctx at NewProvider). Without this the exchange POST
+	// would use the default transport — no SSRF guard, no timeout.
+	ctx = oidc.ClientContext(ctx, newSafeHTTPClient(15*time.Second))
 	tok, err := oauthCfg.Exchange(ctx, code, exchangeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("oauth2 exchange: %w", err)

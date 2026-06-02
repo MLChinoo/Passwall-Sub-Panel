@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -259,15 +260,39 @@ func customTarget(rawURL string) string {
 	return base
 }
 
+// redactURL strips the query string from a download URL. The MaxMind
+// license_key and IPinfo token ride in the query (?…&license_key=…, ?token=…),
+// so the bare scheme://host/path is safe to log or surface in the admin status.
+func redactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "[geoip-url]"
+	}
+	u.RawQuery = ""
+	return u.String()
+}
+
+// redactURLErr rebuilds a download error without the secret-bearing URL.
+// net/http wraps transport failures in *url.Error, whose Error() embeds the
+// full request URL (token and all); that error is stored in UpdateState.LastErr
+// and shown in the admin status JSON + logs. Swap the URL for its redacted form.
+func redactURLErr(rawURL string, err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("geoip download %s: %w", redactURL(rawURL), ue.Err)
+	}
+	return fmt.Errorf("geoip download %s: %w", redactURL(rawURL), err)
+}
+
 func download(ctx context.Context, rawURL string) ([]byte, error) {
 	hc := safehttp.NewClient(geoDownloadTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, redactURLErr(rawURL, err)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactURLErr(rawURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

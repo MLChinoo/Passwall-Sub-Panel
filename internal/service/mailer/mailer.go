@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	htmltemplate "html/template"
 	"mime"
 	"net"
 	"net/mail"
@@ -371,7 +372,9 @@ func (s *Service) SaveTemplate(ctx context.Context, tpl *domain.MailTemplate) er
 	if _, err := template.New("subject").Parse(tpl.Subject); err != nil {
 		return fmt.Errorf("%w: subject template: %v", domain.ErrValidation, err)
 	}
-	if _, err := template.New("body").Parse(tpl.Body); err != nil {
+	// Body is rendered with html/template (see renderHTMLTemplate), so validate
+	// it with the same engine — catches html/template-specific parse errors.
+	if _, err := htmltemplate.New("body").Parse(tpl.Body); err != nil {
 		return fmt.Errorf("%w: body template: %v", domain.ErrValidation, err)
 	}
 	return s.repo.SaveTemplate(ctx, tpl)
@@ -399,7 +402,7 @@ func (s *Service) PreviewTemplate(ctx context.Context, tpl *domain.MailTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("%w: subject template: %v", domain.ErrValidation, err)
 	}
-	renderedBody, err := renderTemplate("preview_body", tpl.Body, data)
+	renderedBody, err := renderHTMLTemplate("preview_body", tpl.Body, data)
 	if err != nil {
 		return nil, fmt.Errorf("%w: body template: %v", domain.ErrValidation, err)
 	}
@@ -490,7 +493,7 @@ func (s *Service) SendAccountDisabledNotification(ctx context.Context, u *domain
 	if err != nil {
 		return err
 	}
-	body, err := renderTemplate("account_disabled_body", tpl.Body, data)
+	body, err := renderHTMLTemplate("account_disabled_body", tpl.Body, data)
 	if err != nil {
 		return err
 	}
@@ -567,7 +570,7 @@ func (s *Service) SendAccountEnabledNotification(ctx context.Context, u *domain.
 	if err != nil {
 		return err
 	}
-	body, err := renderTemplate("account_enabled_body", tpl.Body, data)
+	body, err := renderHTMLTemplate("account_enabled_body", tpl.Body, data)
 	if err != nil {
 		return err
 	}
@@ -657,7 +660,7 @@ func (s *Service) SendBlockedClientWarning(ctx context.Context, u *domain.User, 
 	if err != nil {
 		return err
 	}
-	body, err := renderTemplate("blocked_client_body", tpl.Body, data)
+	body, err := renderHTMLTemplate("blocked_client_body", tpl.Body, data)
 	if err != nil {
 		return err
 	}
@@ -745,14 +748,16 @@ func (s *Service) SendAnnouncement(ctx context.Context, in AnnouncementInput) (*
 			data := s.templateData(ctx, settings, uiCfg, u)
 			data["AnnouncementTitle"] = in.Subject
 			data["AnnouncementBody"] = in.Body
-			data["AnnouncementBodyHTML"] = announcementBodyHTML(in.Body)
+			// Pre-rendered + already escaped by announcementBodyHTML; mark it
+			// safe so the html/template body doesn't double-escape its <br>s.
+			data["AnnouncementBodyHTML"] = htmltemplate.HTML(announcementBodyHTML(in.Body))
 			subject, err := renderTemplate("announcement_subject", tpl.Subject, data)
 			if err != nil {
 				result.Failed++
 				result.Errors = append(result.Errors, announcementError(u, to, err))
 				continue
 			}
-			body, err := renderTemplate("announcement_body", tpl.Body, data)
+			body, err := renderHTMLTemplate("announcement_body", tpl.Body, data)
 			if err != nil {
 				result.Failed++
 				result.Errors = append(result.Errors, announcementError(u, to, err))
@@ -894,7 +899,7 @@ func (s *Service) maybeSend(ctx context.Context, settings domain.MailSettings, t
 	if err != nil {
 		return err
 	}
-	body, err := renderTemplate("body", tpl.Body, data)
+	body, err := renderHTMLTemplate("body", tpl.Body, data)
 	if err != nil {
 		return err
 	}
@@ -1054,7 +1059,7 @@ func (s *Service) previewTemplateData(ctx context.Context, settings domain.MailS
 		"EnableReason":         string(domain.DisabledNone),
 		"EnableDetail":         enableDetail,
 		"AnnouncementTitle":    announcementTitle,
-		"AnnouncementBodyHTML": announcementBody,
+		"AnnouncementBodyHTML": htmltemplate.HTML(announcementBody), // demo HTML — pass through unescaped, mirrors the real announcement path
 		"ClientName":           "Clash 示例客户端",
 	}
 	var configuredLogo, configuredLogoDark, base string
@@ -1152,8 +1157,29 @@ func reminderAddress(u *domain.User) string {
 	return ""
 }
 
+// renderTemplate renders a PLAIN-TEXT template (the email subject). No HTML
+// escaping — subjects are header text, and escaping would surface literal
+// &amp;/&lt; in them. Never use this for the HTML body (see renderHTMLTemplate).
 func renderTemplate(name, raw string, data map[string]any) (string, error) {
 	t, err := template.New(name).Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// renderHTMLTemplate renders the HTML email body with html/template, which
+// contextually escapes every data interpolation ({{.DisplayName}}, {{.UPN}}, …).
+// Those fields can carry IdP-controlled values (SSO display name / UPN), so a
+// text/template body let an attacker inject markup into the email. Fields that
+// are legitimately pre-rendered HTML (e.g. AnnouncementBodyHTML) must be passed
+// as html/template.HTML so they pass through unescaped.
+func renderHTMLTemplate(name, raw string, data map[string]any) (string, error) {
+	t, err := htmltemplate.New(name).Parse(raw)
 	if err != nil {
 		return "", err
 	}

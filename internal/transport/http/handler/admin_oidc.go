@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -9,6 +11,19 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
 )
+
+// oidcIssuerHTTPS reports whether the issuer URL is acceptable to save. When
+// OIDC is enabled the issuer drives discovery + token exchange, so require an
+// https:// URL — http:// invites credential-downgrade and plain-HTTP internal
+// SSRF (the safe-HTTP client already blocks loopback). A disabled config may
+// carry any/empty issuer.
+func oidcIssuerHTTPS(enabled bool, issuer string) bool {
+	if !enabled {
+		return true
+	}
+	u, err := url.Parse(strings.TrimSpace(issuer))
+	return err == nil && u.Scheme == "https" && u.Host != ""
+}
 
 // AdminOIDCHandler exposes /api/admin/settings/oidc — GET returns the
 // stored OIDC configuration, PUT replaces it and reloads the live
@@ -111,6 +126,11 @@ func (h *AdminOIDCHandler) Put(c *gin.Context) {
 		},
 	}
 	config.ApplyOIDCDefaults(cfg)
+
+	if !oidcIssuerHTTPS(cfg.Enabled, cfg.IssuerURL) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "issuer_url must be an https:// URL"})
+		return
+	}
 
 	if err := h.repo.Save(c.Request.Context(), cfg); err != nil {
 		respondError(c, err)

@@ -476,15 +476,19 @@ func (s *SAMLService) ParseACSResponse(r *http.Request, possibleRequestIDs []str
 	// already accepted within its NotOnOrAfter window. Done AFTER the
 	// signature/NotOnOrAfter check so we only spend the map slot on
 	// genuinely-valid assertions, never on attacker noise.
-	if assertion.ID != "" {
-		exp := assertion.IssueInstant.Add(10 * time.Minute) // generous fallback
-		if assertion.Conditions != nil && !assertion.Conditions.NotOnOrAfter.IsZero() {
-			exp = assertion.Conditions.NotOnOrAfter
-		}
-		if s.replay.SeenOrAdd(assertion.ID, exp, time.Now()) {
-			log.Warn("saml: assertion replay detected", "assertion_id", assertion.ID)
-			return nil, fmt.Errorf("SAML assertion already consumed")
-		}
+	// A SAML assertion MUST carry an ID (saml-core §2.3.3). Hard-reject an empty
+	// one instead of skipping the replay check — otherwise an assertion with a
+	// stripped/blank ID would bypass replay protection entirely.
+	if assertion.ID == "" {
+		return nil, fmt.Errorf("SAML assertion missing required ID")
+	}
+	exp := assertion.IssueInstant.Add(10 * time.Minute) // generous fallback
+	if assertion.Conditions != nil && !assertion.Conditions.NotOnOrAfter.IsZero() {
+		exp = assertion.Conditions.NotOnOrAfter
+	}
+	if s.replay.SeenOrAdd(assertion.ID, exp, time.Now()) {
+		log.Warn("saml: assertion replay detected", "assertion_id", assertion.ID)
+		return nil, fmt.Errorf("SAML assertion already consumed")
 	}
 
 	out := &SAMLAssertion{Attributes: map[string][]string{}}
