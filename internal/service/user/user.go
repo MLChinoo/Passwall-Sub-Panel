@@ -993,6 +993,17 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 		if !u.HasLocalPassword() {
 			return fmt.Errorf("%w: only local users can be assigned admin role here", domain.ErrValidation)
 		}
+		// Last-admin lockout guard: refuse to demote the only enabled admin, or
+		// the panel would be left with nobody able to manage it.
+		if u.Role == domain.RoleAdmin && *in.Role != domain.RoleAdmin {
+			n, err := s.users.CountEnabledAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			if n <= 1 {
+				return fmt.Errorf("%w: cannot demote the last enabled admin", domain.ErrValidation)
+			}
+		}
 		switch *in.Role {
 		case domain.RoleAdmin, domain.RoleUser:
 			u.Role = *in.Role
@@ -1059,79 +1070,96 @@ func (s *Service) WithEmergencyLock(fn func()) {
 }
 
 func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64, trafficLimitExceeded bool) (*EmergencyAccessResult, error) {
-	s.emergencyMu.Lock()
-	defer s.emergencyMu.Unlock()
+	var result *EmergencyAccessResult
+	var pushUser *domain.User
+	// Critical section: serialize the state mutation against the poll's
+	// emergency-clear (WithEmergencyLock) and concurrent grants. The 3X-UI push
+	// is deliberately done AFTER the lock is released — it's a slow per-panel
+	// network fan-out (xui ~30s timeout each), and holding emergencyMu across it
+	// would stall the traffic poll's emergency cleanup for that whole duration.
+	if err := func() error {
+		s.emergencyMu.Lock()
+		defer s.emergencyMu.Unlock()
 
-	settings, err := s.settings.Load(ctx, ports.UISettings{})
-	if err != nil {
-		return nil, err
-	}
-	if !settings.EmergencyAccessEnabled {
-		return nil, fmt.Errorf("%w: emergency access is disabled", domain.ErrForbidden)
-	}
-	if settings.EmergencyAccessHours <= 0 || settings.EmergencyAccessMaxCount <= 0 {
-		return nil, fmt.Errorf("%w: emergency access settings are invalid", domain.ErrValidation)
-	}
+		settings, err := s.settings.Load(ctx, ports.UISettings{})
+		if err != nil {
+			return err
+		}
+		if !settings.EmergencyAccessEnabled {
+			return fmt.Errorf("%w: emergency access is disabled", domain.ErrForbidden)
+		}
+		if settings.EmergencyAccessHours <= 0 || settings.EmergencyAccessMaxCount <= 0 {
+			return fmt.Errorf("%w: emergency access settings are invalid", domain.ErrValidation)
+		}
 
-	u, err := s.users.GetByID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	status := EmergencyAccessStatusForUserWithTrafficLimit(u, settings, now, trafficLimitExceeded)
-	if status.Remaining <= 0 {
-		return nil, fmt.Errorf("%w: emergency access limit reached", domain.ErrForbidden)
-	}
-	if !status.Available {
-		return nil, fmt.Errorf("%w: %s", domain.ErrValidation, status.Reason)
-	}
+		u, err := s.users.GetByID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		status := EmergencyAccessStatusForUserWithTrafficLimit(u, settings, now, trafficLimitExceeded)
+		if status.Remaining <= 0 {
+			return fmt.Errorf("%w: emergency access limit reached", domain.ErrForbidden)
+		}
+		if !status.Available {
+			return fmt.Errorf("%w: %s", domain.ErrValidation, status.Reason)
+		}
 
-	from := now
-	until := from.Add(time.Duration(settings.EmergencyAccessHours) * time.Hour)
-	// Do NOT mutate ExpireAt here. The effective expiry pushed to 3X-UI is
-	// MAX(ExpireAt, EmergencyUntil) via User.PushExpireTime, so the window below
-	// already extends access without touching the stored expiry. Overwriting a
-	// past ExpireAt with `until` permanently lost the user's real expiry date —
-	// after the window the poll clears EmergencyUntil and they'd appear to
-	// expire at the (long-gone) window end instead of re-expiring correctly.
-	if !u.Enabled && (u.AutoDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledExpired) {
-		u.Enabled = true
-		if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+		from := now
+		until := from.Add(time.Duration(settings.EmergencyAccessHours) * time.Hour)
+		// Do NOT mutate ExpireAt here. The effective expiry pushed to 3X-UI is
+		// MAX(ExpireAt, EmergencyUntil) via User.PushExpireTime, so the window
+		// below already extends access without touching the stored expiry.
+		// Overwriting a past ExpireAt with `until` permanently lost the user's
+		// real expiry date — after the window the poll clears EmergencyUntil and
+		// they'd appear to expire at the (long-gone) window end.
+		if !u.Enabled && (u.AutoDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledExpired) {
+			u.Enabled = true
+			if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+				u.AutoDisabledReason = domain.DisabledTrafficExceeded
+				u.DisableDetail = "emergency access active"
+			} else {
+				u.AutoDisabledReason = domain.DisabledNone
+				u.DisableDetail = ""
+			}
+		}
+		if trafficLimitExceeded && u.Enabled {
 			u.AutoDisabledReason = domain.DisabledTrafficExceeded
 			u.DisableDetail = "emergency access active"
-		} else {
-			u.AutoDisabledReason = domain.DisabledNone
-			u.DisableDetail = ""
 		}
-	}
-	if trafficLimitExceeded && u.Enabled {
-		u.AutoDisabledReason = domain.DisabledTrafficExceeded
-		u.DisableDetail = "emergency access active"
-	}
-	u.EmergencyUntil = &until
-	u.EmergencyUsedCount++
-	// Snapshot the lifetime counter so the traffic poll can compute how much
-	// the user consumes during this emergency window and end it early once
-	// EmergencyAccessQuotaGB is exhausted. Captured even when quota is 0 so
-	// admins can flip the cap on later without retroactively breaking the
-	// window's accounting.
-	u.EmergencyBaselineBytes = u.LifetimeTotalBytes
-	if err := s.users.Update(ctx, u); err != nil {
+		u.EmergencyUntil = &until
+		u.EmergencyUsedCount++
+		// Snapshot the lifetime counter so the traffic poll can compute how much
+		// the user consumes during this emergency window and end it early once
+		// EmergencyAccessQuotaGB is exhausted. Captured even when quota is 0 so
+		// admins can flip the cap on later without retroactively breaking the
+		// window's accounting.
+		u.EmergencyBaselineBytes = u.LifetimeTotalBytes
+		if err := s.users.Update(ctx, u); err != nil {
+			return err
+		}
+		pushUser = u
+		result = &EmergencyAccessResult{
+			User:          u,
+			ExtendedFrom:  from,
+			ExtendedUntil: until,
+			UsedCount:     u.EmergencyUsedCount,
+			MaxCount:      settings.EmergencyAccessMaxCount,
+			Remaining:     max(0, settings.EmergencyAccessMaxCount-u.EmergencyUsedCount),
+		}
+		return nil
+	}(); err != nil {
 		return nil, err
 	}
-	if err := s.pushClientConfigToAll(ctx, u); err != nil {
-		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync emergency access for user %s", u.UPN)); taskErr != nil {
+
+	// Outside the lock: slow per-panel network push. On failure, enqueue the
+	// retryable sync task so 3X-UI converges without blocking this call.
+	if err := s.pushClientConfigToAll(ctx, pushUser); err != nil {
+		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync emergency access for user %s", pushUser.UPN)); taskErr != nil {
 			log.Warn("enqueue emergency access sync failed", "user_id", userID, "err", taskErr)
 		}
 	}
-	return &EmergencyAccessResult{
-		User:          u,
-		ExtendedFrom:  from,
-		ExtendedUntil: until,
-		UsedCount:     u.EmergencyUsedCount,
-		MaxCount:      settings.EmergencyAccessMaxCount,
-		Remaining:     max(0, settings.EmergencyAccessMaxCount-u.EmergencyUsedCount),
-	}, nil
+	return result, nil
 }
 
 func EmergencyAccessStatusForUser(u *domain.User, settings ports.UISettings, now time.Time) EmergencyAccessStatus {

@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
@@ -84,6 +85,21 @@ func (s *Service) EnsureInboundDeletable(ctx context.Context, panelID int64, inb
 // This is the "missing client recovery" path — reconcile finds the client
 // missing in 3X-UI but ownership still claims it, and re-creates the
 // 3X-UI side while leaving the panel-side bookkeeping in place.
+// isDuplicateClientErr reports whether a 3X-UI AddClient error means the client
+// already exists (duplicate email). Substring match mirrors the adapter's
+// isPermanentPanelMsg — fragile across 3X-UI versions/locales (see the L42
+// backlog item), but it's the only signal the panel gives. A false negative
+// just means we keep the old "fail + retry" behaviour; a false positive would
+// adopt a client that wasn't really a duplicate, which the ownership upsert +
+// next push still reconcile.
+func isDuplicateClientErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "duplicate") || strings.Contains(m, "already exist")
+}
+
 func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panelID int64,
 	inboundID int, protocol domain.Protocol, ssMethod, userUUID, email, flow string, expireTime, totalGB int64) error {
 
@@ -93,7 +109,16 @@ func (s *Service) AddClientToInbound(ctx context.Context, userID int64, panelID 
 	}
 	spec := buildClientSpec(protocol, ssMethod, userUUID, email, flow, expireTime, totalGB)
 	if err := c.AddClient(ctx, inboundID, spec); err != nil {
-		return fmt.Errorf("xui addClient: %w", err)
+		// A duplicate-email error means the client already exists in 3X-UI. If
+		// we have no ownership row for it, that's an ORPHANED client — fall
+		// through to the ownership upsert below and ADOPT it instead of failing
+		// forever (reconcile would otherwise retry AddClient → duplicate → fail
+		// every cycle, and the (user,node) pair would stay unmanageable). The
+		// next config push aligns the adopted client's credentials. Any other
+		// error is fatal.
+		if !isDuplicateClientErr(err) {
+			return fmt.Errorf("xui addClient: %w", err)
+		}
 	}
 
 	exists, err := s.ownership.Exists(ctx, panelID, inboundID, email)

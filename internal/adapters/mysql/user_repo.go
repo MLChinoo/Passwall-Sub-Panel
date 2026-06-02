@@ -54,6 +54,15 @@ func (r *userRepo) Update(ctx context.Context, u *domain.User) error {
 	return r.db.WithContext(ctx).Omit(pollOwnedColumns...).Save(userFromDomain(u)).Error
 }
 
+// CountEnabledAdmins counts enabled admin accounts (last-admin lockout guard).
+func (r *userRepo) CountEnabledAdmins(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&userRow{}).
+		Where("role = ? AND enabled = ?", string(domain.RoleAdmin), true).
+		Count(&n).Error
+	return n, err
+}
+
 // AdvanceBlockViolation atomically advances the blocked-client violation count
 // (see the ports.UserRepo doc). The dedup window lives in the WHERE clause so
 // two concurrent /sub requests can't both advance: the first stamps

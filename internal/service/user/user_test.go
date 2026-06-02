@@ -164,6 +164,29 @@ func TestEmergencyStatus_UsedBytesZeroWhenNoActiveWindow(t *testing.T) {
 // (see internal/service/auth/role_test.go) because the policy moved
 // out of this package — user.EnsureSSO just calls auth.ResolveRoleForSSO.
 
+// TestUpdateProfile_BlocksDemotingLastAdmin pins the last-admin lockout guard:
+// demoting the only enabled admin is rejected; it's allowed once another
+// enabled admin exists.
+func TestUpdateProfile_BlocksDemotingLastAdmin(t *testing.T) {
+	admin := &domain.User{ID: 1, Role: domain.RoleAdmin, Enabled: true, PasswordHash: "x", GroupID: 1}
+	repo := &memoryUserRepo{byID: map[int64]*domain.User{1: admin}}
+	svc := &Service{users: repo}
+	roleUser := domain.RoleUser
+
+	if err := svc.UpdateProfile(context.Background(), 1, UpdateInput{Role: &roleUser}); err == nil {
+		t.Fatal("demoting the last enabled admin must be rejected")
+	}
+
+	// A second enabled admin makes the demotion safe.
+	repo.byID[2] = &domain.User{ID: 2, Role: domain.RoleAdmin, Enabled: true, PasswordHash: "y", GroupID: 1}
+	if err := svc.UpdateProfile(context.Background(), 1, UpdateInput{Role: &roleUser}); err != nil {
+		t.Fatalf("demotion should be allowed when another admin exists: %v", err)
+	}
+	if repo.byID[1].Role != domain.RoleUser {
+		t.Errorf("user 1 should now be a user, got %v", repo.byID[1].Role)
+	}
+}
+
 // TestRunUserResyncTask_DeletedUserIsDone pins that a resync task for a
 // since-deleted user completes (nil) instead of failing with ErrNotFound and
 // being retried ~100x by the task processor.
@@ -306,6 +329,16 @@ func (r *memoryUserRepo) ClearEmergencyAccess(ctx context.Context, userID int64)
 func (r *memoryUserRepo) Delete(ctx context.Context, id int64) error {
 	delete(r.byID, id)
 	return nil
+}
+
+func (r *memoryUserRepo) CountEnabledAdmins(ctx context.Context) (int64, error) {
+	var n int64
+	for _, u := range r.byID {
+		if u.Role == domain.RoleAdmin && u.Enabled {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (r *memoryUserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) {

@@ -3,11 +3,45 @@ package sync
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"testing"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
+
+// TestAddClientToInbound_AdoptsOrphanOnDuplicate pins the M5 fix: when 3X-UI
+// already has the client (duplicate email) but PSP has no ownership row, the
+// add must ADOPT it (create the ownership row) instead of failing forever.
+func TestAddClientToInbound_AdoptsOrphanOnDuplicate(t *testing.T) {
+	no := false
+	xui := &fakeXUIClient{addClientErr: fmt.Errorf("xui addClient: duplicate email")}
+	own := &fakeOwnership{existsVal: &no} // orphan: in 3X-UI, no ownership row
+	s := New(&fakePool{xui: xui}, own)
+
+	if err := s.AddClientToInbound(context.Background(), 1, 1, 100, domain.ProtoVLESS, "", "uuid-x", "u1-n1@x", "", 0, 0); err != nil {
+		t.Fatalf("duplicate client should be adopted, got: %v", err)
+	}
+	if !own.addCalled {
+		t.Error("expected the ownership row to be created (adopt), Add was never called")
+	}
+}
+
+// A non-duplicate AddClient failure must still propagate (and NOT create an
+// ownership row that doesn't match a real 3X-UI client).
+func TestAddClientToInbound_NonDuplicateErrorPropagates(t *testing.T) {
+	no := false
+	xui := &fakeXUIClient{addClientErr: fmt.Errorf("connection refused")}
+	own := &fakeOwnership{existsVal: &no}
+	s := New(&fakePool{xui: xui}, own)
+
+	if err := s.AddClientToInbound(context.Background(), 1, 1, 100, domain.ProtoVLESS, "", "uuid-x", "u1-n1@x", "", 0, 0); err == nil {
+		t.Fatal("non-duplicate AddClient error must propagate")
+	}
+	if own.addCalled {
+		t.Error("ownership must NOT be created when the add genuinely failed")
+	}
+}
 
 func TestDelOwnedClientDeletesSSClientWithEmptyIDByEmail(t *testing.T) {
 	xui := &fakeXUIClient{clients: []ports.ClientDetail{{Email: "u1@example.test"}}}
@@ -96,8 +130,11 @@ func (p *fakePool) Add(panel *domain.XUIPanel) error           { return nil }
 func (p *fakePool) Remove(panelID int64) error                 { return nil }
 
 type fakeOwnership struct {
-	entry   *domain.XUIClientEntry
-	removed bool
+	entry     *domain.XUIClientEntry
+	removed   bool
+	addCalled bool
+	// existsVal overrides Exists when non-nil (default behaviour stays "true").
+	existsVal *bool
 }
 
 func newFakeOwnership(email, uuid string) *fakeOwnership {
@@ -110,7 +147,10 @@ func newFakeOwnership(email, uuid string) *fakeOwnership {
 	}}
 }
 
-func (r *fakeOwnership) Add(ctx context.Context, e *domain.XUIClientEntry) error { return nil }
+func (r *fakeOwnership) Add(ctx context.Context, e *domain.XUIClientEntry) error {
+	r.addCalled = true
+	return nil
+}
 func (r *fakeOwnership) Remove(ctx context.Context, id int64) error              { return nil }
 func (r *fakeOwnership) RemoveByMatch(ctx context.Context, panelID int64, inboundID int, email string) error {
 	r.removed = true
@@ -129,6 +169,9 @@ func (r *fakeOwnership) ListByInbound(ctx context.Context, panelID int64, inboun
 	return nil, nil
 }
 func (r *fakeOwnership) Exists(ctx context.Context, panelID int64, inboundID int, email string) (bool, error) {
+	if r.existsVal != nil {
+		return *r.existsVal, nil
+	}
 	return true, nil
 }
 func (r *fakeOwnership) UpdateUUID(ctx context.Context, panelID int64, inboundID int, email, newUUID string) error {
@@ -147,6 +190,11 @@ type fakeXUIClient struct {
 	deletedID      string
 	deletedByEmail string
 	delClientErr   error // when set, DelClient (by id) fails with this
+	addClientErr   error // when set, AddClient fails with this
+}
+
+func (c *fakeXUIClient) AddClient(ctx context.Context, inboundID int, spec ports.ClientSpec) error {
+	return c.addClientErr
 }
 
 func (c *fakeXUIClient) GetInboundClients(ctx context.Context, inboundID int) ([]ports.ClientDetail, error) {

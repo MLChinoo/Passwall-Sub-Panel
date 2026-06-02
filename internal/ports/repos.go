@@ -97,6 +97,10 @@ type SyncTaskFilter struct {
 type UserRepo interface {
 	Create(ctx context.Context, u *domain.User) error
 	Update(ctx context.Context, u *domain.User) error
+	// CountEnabledAdmins returns how many ENABLED admin accounts exist. Used to
+	// block demoting / removing the last admin (an enabled admin is the only
+	// one who can manage the panel, so the count gates self-lockout).
+	CountEnabledAdmins(ctx context.Context) (int64, error)
 	// UpdateTrafficState persists ONLY the traffic-poll-owned columns
 	// (lifetime counters, period baseline/start). The traffic poll loads every
 	// user at cycle start and writes them back many seconds later; a full-row

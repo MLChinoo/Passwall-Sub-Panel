@@ -109,6 +109,16 @@ func (r *fakeUserRepo) BatchUpdateLastOnline(ctx context.Context, lastOnline map
 	return nil
 }
 
+func (r *fakeUserRepo) CountEnabledAdmins(ctx context.Context) (int64, error) {
+	var n int64
+	for _, u := range r.users {
+		if u.Role == domain.RoleAdmin && u.Enabled {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *fakeUserRepo) ClearEmergencyAccess(ctx context.Context, userID int64) error {
 	if cur, ok := r.users[userID]; ok {
 		cur.EmergencyUntil = nil

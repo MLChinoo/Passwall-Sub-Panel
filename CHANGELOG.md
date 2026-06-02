@@ -4,6 +4,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.13 — 2026-06-02
+
+全量 review backlog 第四批(同步 / 并发 / 越权防护),全程 TDD。
+
+### Fixed
+
+- **3X-UI 客户端永久孤立 → (用户,节点) 不可管理** —— `AddClientToInbound` 先 `AddClient` 再写 ownership;当 client 已在 3X-UI 但本地无 ownership 行时,`AddClient` 返回 duplicate 错误直接 return → ownership 永不写入,该 (用户,节点) 永久不可管,reconcile 每 15min 失败一次。改为 duplicate 错误时**收养**(落到下方 ownership upsert 创建归属行,下次配置推送对齐凭据);非 duplicate 错误仍照常失败。
+- **紧急访问持锁跨网络扇出阻塞流量轮询** —— `UseEmergencyAccess` 全程持 `emergencyMu`,包括 `pushClientConfigToAll`(逐面板网络推送,3X-UI 每个约 30s 超时)→ 期间流量轮询的紧急清理(同锁)被阻塞这么久。改为临界区(校验+改状态+落库)持锁、推送移到锁外。
+- **可把最后一个管理员降级、锁死后台** —— 编辑用户时可把唯一启用的 admin 降级为普通用户,导致无人能管理面板。新增 `CountEnabledAdmins`,`UpdateProfile` 降级前检查:若是最后一个启用 admin 则拒绝。
+
 ## v3.6.3-beta.12 — 2026-06-01
 
 全量 review backlog 第三批(认证 / 邮件 / GeoIP 安全加固),全程 TDD。
