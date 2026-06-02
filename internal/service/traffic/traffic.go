@@ -272,6 +272,10 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		ownershipUpdates: make([]*domain.XUIClientEntry, 0, len(users)*4),
 		userUpdates:      make(map[int64]*domain.User, len(users)),
 		lastOnlineMs:     make(map[int64]int64, len(users)),
+		clientDeltas:     make(map[int64]trafficDelta, len(users)*4),
+		rolledOver:       make(map[int64]bool),
+		clientsByUser:    make(map[int64][]*domain.XUIClientEntry, len(users)),
+		userCutoff:       make(map[int64]*time.Time, len(users)),
 	}
 
 	// Pre-fetch every user's latest snapshot in ONE batched read. Replaces
@@ -326,6 +330,9 @@ func (s *Service) PollOnce(ctx context.Context) error {
 			key := inboundKey{panelID: e.PanelID, inboundID: e.InboundID}
 			byInbound[key] = append(byInbound[key], ownershipRef{entry: e, userID: u.ID, email: e.ClientEmail, createdAt: e.CreatedAt})
 		}
+		// Same entry pointers — the post-loop period-baseline pass walks these
+		// at rollover (incl. clients 3X-UI didn't return this cycle).
+		sink.clientsByUser[u.ID] = entries
 	}
 	mark("ownership.ListByUsers batched read")
 
@@ -450,6 +457,12 @@ func (s *Service) PollOnce(ctx context.Context) error {
 							createdAt: ref.createdAt,
 						})
 					}
+					// Remember this client's delta so the rollover baseline pass
+					// can subtract it (this cycle's traffic belongs to the NEW
+					// period, exactly as the user-level rollover treats it).
+					if sink != nil {
+						sink.clientDeltas[ref.entry.ID] = delta
+					}
 				}
 				totals[ref.userID] = total
 			}
@@ -495,6 +508,40 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		}
 	}
 	mark("user loop (recordAndEnforceWith — push is async post-beta.12)")
+
+	// Per-client period-baseline reseed for users whose period rolled this
+	// cycle. Mirrors the user-level u.PeriodBaselineBytes write above, one tier
+	// down: each owned client's baseline becomes its current lifetime minus
+	// this cycle's own delta, so this cycle's traffic counts to the NEW period
+	// and Σ(client period usage) stays exactly equal to the user's period usage.
+	// Runs after the user loop so every client's Lifetime is already advanced.
+	for uid := range sink.rolledOver {
+		cutoff := sink.userCutoff[uid] // may be nil
+		for _, e := range sink.clientsByUser[uid] {
+			d := sink.clientDeltas[e.ID] // zero value when this client had no delta
+			// counted = the portion of d that the user-level path folded into
+			// the new period. hadPrev deltas always count; a bootstrap delta
+			// counts only when createdAt > cutoff (mirrors recordAndEnforceWith),
+			// so a long-idle client's first transmission doesn't inflate the
+			// per-node period beyond what the user-level period recorded.
+			counted := d
+			if !d.hadPrev && cutoff != nil && !(!e.CreatedAt.IsZero() && e.CreatedAt.After(*cutoff)) {
+				counted = trafficDelta{}
+			}
+			e.PeriodBaselineUpBytes = nonNeg(e.LifetimeUpBytes - counted.up)
+			e.PeriodBaselineDownBytes = nonNeg(e.LifetimeDownBytes - counted.down)
+			e.PeriodBaselineTotalBytes = nonNeg(e.LifetimeTotalBytes - counted.total)
+			// Persistence is keyed on the RAW delta, not counted: a client with a
+			// non-zero raw delta is already queued in ownershipUpdates
+			// (recordClientStats appended it) and its baseline rides that write
+			// via the shared pointer; a zero-raw-delta client isn't queued, so
+			// enqueue it now to persist the reseeded baseline.
+			if d.up == 0 && d.down == 0 && d.total == 0 {
+				sink.ownershipUpdates = append(sink.ownershipUpdates, e)
+			}
+		}
+	}
+	mark("period-baseline reseed (rolled-over users)")
 
 	// Drain the sink in three batched INSERTs. Order doesn't matter — the
 	// snapshots are independent — but client first so the most numerous
@@ -657,6 +704,31 @@ type pollSink struct {
 	// "never seen", which has no useful UI signal — the panel just shows
 	// "—" / "未活跃" in that case).
 	lastOnlineMs map[int64]int64
+	// clientDeltas records this cycle's per-client delta keyed by ownership
+	// row ID. Populated in Phase 2 from recordClientStats' return. Read by the
+	// end-of-cycle period-baseline pass so a rolled-over client's baseline is
+	// set to lifetime-minus-this-cycle's-delta (matching the user-level
+	// rollover, which subtracts totals.deltaTotal — keeps Σ per-client period
+	// usage equal to the user's period usage). Absent key = no delta this cycle.
+	clientDeltas map[int64]trafficDelta
+	// rolledOver flags users whose traffic period advanced this cycle (set in
+	// recordAndEnforceWith). The post-loop baseline pass reseeds those users'
+	// per-client period baselines. Keyed by user ID.
+	rolledOver map[int64]bool
+	// clientsByUser is every owned ownership row this cycle bucketed by user —
+	// the post-loop baseline pass needs all of a rolled-over user's clients,
+	// including ones 3X-UI didn't return this cycle. Built once before the
+	// user loop; entry pointers are shared with byInbound so their Lifetime
+	// fields are already current by the time the pass runs.
+	clientsByUser map[int64][]*domain.XUIClientEntry
+	// userCutoff captures the bootstrap-delta cutoff recordAndEnforceWith used
+	// this cycle (LifetimeBaselineAt-before-update, or the prev snapshot time),
+	// per user. The baseline reseed needs it to count a bootstrap client's delta
+	// toward the new period ONLY when the user-level path also counted it
+	// (createdAt > cutoff) — otherwise Σ(per-client period) drifts from the
+	// user's period for a long-provisioned-but-idle client's first transmission.
+	// A nil value (or absent key) means "no cutoff" (count every bootstrap).
+	userCutoff map[int64]*time.Time
 }
 
 // recordClientStats reconciles one client's raw 3X-UI counter against the
@@ -819,6 +891,18 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 			t := prev.CapturedAt
 			cutoff = &t
 		}
+		// Hand the cutoff to the post-loop baseline reseed so it counts a
+		// bootstrap client's delta toward the new period iff this same logic
+		// did (createdAt > cutoff). Copy the value — u.LifetimeBaselineAt is
+		// reassigned below, and we want the pre-update cutoff.
+		if sink != nil {
+			if cutoff != nil {
+				c := *cutoff
+				sink.userCutoff[u.ID] = &c
+			} else {
+				sink.userCutoff[u.ID] = nil
+			}
+		}
 		for _, b := range totals.bootstrap {
 			if cutoff == nil {
 				// Truly fresh user — count every cumulative read as new.
@@ -901,6 +985,13 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 		u.PeriodBaselineBytes = u.LifetimeTotalBytes - totals.deltaTotal
 		if u.PeriodBaselineBytes < 0 {
 			u.PeriodBaselineBytes = 0
+		}
+		// Flag this user so the post-loop pass reseeds each owned client's
+		// per-client period baseline in lockstep with the user-level one above.
+		// Done out-of-band (not here) because recordAndEnforceWith only has the
+		// user aggregate; the pass has every client entry + its cycle delta.
+		if sink != nil {
+			sink.rolledOver[u.ID] = true
 		}
 		clearedEmergency := u.AutoDisabledReason == domain.DisabledTrafficExceeded
 		if clearedEmergency {
@@ -1068,6 +1159,107 @@ func monotonicDelta(current, previous int64) int64 {
 		return current
 	}
 	return d
+}
+
+// nonNeg clamps a byte count at zero — guards the period-baseline subtraction
+// against a transient where a client's recorded delta exceeds its lifetime.
+func nonNeg(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// NodeUsageRow is one (user, node) usage line for the per-user node breakdown.
+// Each managed client is exactly one (user, node) pair (the email encodes
+// both), so a user's ownership rows map 1:1 to the nodes they're provisioned on.
+type NodeUsageRow struct {
+	NodeID      int64
+	DisplayName string
+	PanelID     int64
+	InboundID   int
+	Region      string
+	ClientEmail string
+
+	LifetimeUpBytes    int64
+	LifetimeDownBytes  int64
+	LifetimeTotalBytes int64
+	PeriodUpBytes      int64
+	PeriodDownBytes    int64
+	PeriodTotalBytes   int64
+	TodayUpBytes       int64
+	TodayDownBytes     int64
+	TodayTotalBytes    int64
+}
+
+// UserNodeUsage returns one row per node the user is provisioned on, each with
+// lifetime / current-period / today up+down usage.
+//
+//   - lifetime: straight off the ownership row's monotonic counters.
+//   - period:   lifetime − the per-client PeriodBaseline (reseeded at the
+//     user's rollover); summed across rows it equals the user's period usage.
+//   - today:    delta vs the last per-client snapshot before local midnight.
+//     When no such snapshot exists, a client created today shows its full
+//     lifetime (all of it IS today); a pre-existing client shows 0. The 0 is
+//     right for the common case (idle today). It under-reports one narrow edge:
+//     a client idle >= rawTrafficRetentionDays (snapshots all pruned) that
+//     resumes AND is viewed the same day reads 0 despite real bytes — it
+//     self-heals next day once today's snapshot becomes a valid pre-midnight
+//     baseline. Lifetime/period stay correct regardless.
+func (s *Service) UserNodeUsage(ctx context.Context, userID int64) ([]NodeUsageRow, error) {
+	entries, err := s.ownership.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return []NodeUsageRow{}, nil
+	}
+
+	now := s.panelNow(ctx)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Best-effort: a failure here degrades "today" to the no-baseline path,
+	// not the whole view. Nil-tolerant traffic repo (shouldn't be nil here).
+	var todayBase map[string]*domain.ClientTrafficSnapshot
+	if s.traffic != nil {
+		todayBase, _ = s.traffic.LastBeforeForUserClients(ctx, userID, todayStart)
+	}
+
+	rows := make([]NodeUsageRow, 0, len(entries))
+	for _, e := range entries {
+		row := NodeUsageRow{
+			PanelID:            e.PanelID,
+			InboundID:          e.InboundID,
+			ClientEmail:        e.ClientEmail,
+			LifetimeUpBytes:    e.LifetimeUpBytes,
+			LifetimeDownBytes:  e.LifetimeDownBytes,
+			LifetimeTotalBytes: e.LifetimeTotalBytes,
+			PeriodUpBytes:      nonNeg(e.LifetimeUpBytes - e.PeriodBaselineUpBytes),
+			PeriodDownBytes:    nonNeg(e.LifetimeDownBytes - e.PeriodBaselineDownBytes),
+			PeriodTotalBytes:   nonNeg(e.LifetimeTotalBytes - e.PeriodBaselineTotalBytes),
+		}
+		if s.nodes != nil {
+			if n, nerr := s.nodes.GetByPanelInbound(ctx, e.PanelID, e.InboundID); nerr == nil && n != nil {
+				row.NodeID = n.ID
+				row.DisplayName = n.DisplayName
+				row.Region = n.Region
+			}
+		}
+		if base := todayBase[domain.ClientMatchKey(e.PanelID, e.InboundID, e.ClientEmail)]; base != nil {
+			row.TodayUpBytes = monotonicDelta(e.LifetimeUpBytes, base.UpBytes)
+			row.TodayDownBytes = monotonicDelta(e.LifetimeDownBytes, base.DownBytes)
+			row.TodayTotalBytes = monotonicDelta(e.LifetimeTotalBytes, base.TotalBytes)
+		} else if !e.CreatedAt.IsZero() && e.CreatedAt.Before(todayStart) {
+			// Pre-existing client, no snapshot before today → idle today.
+			row.TodayUpBytes, row.TodayDownBytes, row.TodayTotalBytes = 0, 0, 0
+		} else {
+			// Born today (or unknown creation) → all lifetime counts as today.
+			row.TodayUpBytes = e.LifetimeUpBytes
+			row.TodayDownBytes = e.LifetimeDownBytes
+			row.TodayTotalBytes = e.LifetimeTotalBytes
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // recordNodeStats writes a per-node snapshot for the inbound on the given
@@ -1666,6 +1858,17 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
+	// Keep the per-node usage breakdown consistent with the period total we
+	// just set: a manual override is an aggregate with no real per-node split,
+	// so distribute it across the user's clients in proportion to each client's
+	// lifetime (the same baseline fraction f the user row got). Without this the
+	// per-node "this period" footer keeps summing Lifetime - stale baseline and
+	// visibly contradicts the user-level figure shown right above it until the
+	// next natural rollover. Best-effort + out-of-band: a failure only degrades
+	// the per-node display, not the override itself. Rewriting lifetime/last-raw
+	// to their loaded values alongside the new baseline is race-safe — they
+	// revert as a consistent pair, so a concurrent poll re-derives correctly.
+	s.reseedClientBaselines(ctx, userID, usedBytes)
 	if u.TrafficLimitBytes <= 0 {
 		return nil
 	}
@@ -1676,4 +1879,41 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 		return s.disabler.SetEnabledAndSync(ctx, u.ID, true, domain.DisabledNone, "")
 	}
 	return nil
+}
+
+// reseedClientBaselines redistributes a manual period-usage override across the
+// user's clients so Σ(per-client period usage) stays equal to the override.
+// Each client's baseline becomes the same fraction f = (Σlifetime - used)/Σlifetime
+// of its own lifetime, so its period usage = lifetime·(1-f) is its lifetime
+// share of `used`. float64 keeps the proportion overflow-safe (the byte-level
+// rounding is invisible in a display). No-op when the user owns nothing or has
+// zero lifetime. Best-effort: errors are logged, not surfaced.
+func (s *Service) reseedClientBaselines(ctx context.Context, userID, usedBytes int64) {
+	if s.ownership == nil {
+		return
+	}
+	entries, err := s.ownership.ListByUser(ctx, userID)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	var clientLifetime int64
+	for _, e := range entries {
+		clientLifetime += e.LifetimeTotalBytes
+	}
+	f := 0.0
+	if clientLifetime > 0 {
+		used := usedBytes
+		if used > clientLifetime {
+			used = clientLifetime // can't have used more this period than total
+		}
+		f = float64(clientLifetime-used) / float64(clientLifetime)
+	}
+	for _, e := range entries {
+		e.PeriodBaselineUpBytes = int64(float64(e.LifetimeUpBytes) * f)
+		e.PeriodBaselineDownBytes = int64(float64(e.LifetimeDownBytes) * f)
+		e.PeriodBaselineTotalBytes = int64(float64(e.LifetimeTotalBytes) * f)
+	}
+	if err := s.ownership.BatchUpdateCounters(ctx, entries); err != nil {
+		log.Warn("set period usage: per-client baseline reseed", "user_id", userID, "err", err)
+	}
 }

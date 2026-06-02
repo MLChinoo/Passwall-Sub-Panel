@@ -556,6 +556,18 @@ type XUIClientEntry struct {
 	LastRawUpBytes    int64
 	LastRawDownBytes  int64
 	LastRawTotalBytes int64
+	// PeriodBaselineXxx is LifetimeXxx as it stood when the owning user's
+	// TrafficPeriodStart last advanced — the per-client mirror of
+	// User.PeriodBaselineBytes. Per-client period usage is LifetimeXxx minus
+	// this; summed across a user's clients it equals the user's period usage
+	// (the rollover sets each client's baseline to lifetime minus that cycle's
+	// own delta, so the sum stays exact). Zero on a fresh ownership row and on
+	// existing rows after an upgrade — in both cases period usage reads as
+	// lifetime until the user's next rollover seeds it, which is correct for a
+	// client created in the current period and self-heals for upgrades.
+	PeriodBaselineUpBytes    int64
+	PeriodBaselineDownBytes  int64
+	PeriodBaselineTotalBytes int64
 }
 
 // TrafficSnapshot captures the monotonic lifetime traffic of a panel user at
@@ -594,6 +606,14 @@ type ClientTrafficSnapshot struct {
 	DownBytes   int64
 	TotalBytes  int64
 	CapturedAt  time.Time
+}
+
+// ClientMatchKey is the (panel, inbound, email) tuple that uniquely identifies
+// one managed 3X-UI client — i.e. one (user, node) pair, since the email
+// encodes both. Used as a map key when correlating ownership rows with
+// per-client snapshots (e.g. the per-node usage view's "today" baseline).
+func ClientMatchKey(panelID int64, inboundID int, email string) string {
+	return fmt.Sprintf("%d|%d|%s", panelID, inboundID, email)
 }
 
 // SubLog records one subscription URL fetch for diagnostics.

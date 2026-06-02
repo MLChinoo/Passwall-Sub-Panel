@@ -106,6 +106,31 @@ func (r *ownershipRepo) UpdateUUID(ctx context.Context, panelID int64, inboundID
 		Update("client_uuid", newUUID).Error
 }
 
+// ownershipCounterColumns is the explicit column set the traffic poll
+// rewrites per client per cycle: lifetime + last-raw, plus the per-client
+// period baselines. Listing columns explicitly (rather than a full-row Save)
+// keeps the write tight so the poll's N updates don't touch identity columns.
+//
+// The period baselines are only mutated by the poll at a user's period
+// rollover; on every other cycle the value here equals what was loaded, so
+// including them is an idempotent rewrite (no behaviour change for the common
+// path) while letting the rollover's new baseline land on the same batched
+// write the lifetime delta already rides.
+func ownershipCounterColumns(e *domain.XUIClientEntry) map[string]any {
+	return map[string]any{
+		"lifetime_up_bytes":    e.LifetimeUpBytes,
+		"lifetime_down_bytes":  e.LifetimeDownBytes,
+		"lifetime_total_bytes": e.LifetimeTotalBytes,
+		"last_raw_up_bytes":    e.LastRawUpBytes,
+		"last_raw_down_bytes":  e.LastRawDownBytes,
+		"last_raw_total_bytes": e.LastRawTotalBytes,
+
+		"period_baseline_up_bytes":    e.PeriodBaselineUpBytes,
+		"period_baseline_down_bytes":  e.PeriodBaselineDownBytes,
+		"period_baseline_total_bytes": e.PeriodBaselineTotalBytes,
+	}
+}
+
 // UpdateCounters narrow-updates the lifetime + last-raw fields for one
 // ownership row. Driven by the traffic poll once per cycle per client; using
 // Updates(...) with an explicit column list keeps the write tight so the
@@ -121,14 +146,7 @@ func (r *ownershipRepo) UpdateCounters(ctx context.Context, e *domain.XUIClientE
 	return r.db.WithContext(ctx).
 		Model(&ownershipRow{}).
 		Where("id = ?", e.ID).
-		Updates(map[string]any{
-			"lifetime_up_bytes":    e.LifetimeUpBytes,
-			"lifetime_down_bytes":  e.LifetimeDownBytes,
-			"lifetime_total_bytes": e.LifetimeTotalBytes,
-			"last_raw_up_bytes":    e.LastRawUpBytes,
-			"last_raw_down_bytes":  e.LastRawDownBytes,
-			"last_raw_total_bytes": e.LastRawTotalBytes,
-		}).Error
+		Updates(ownershipCounterColumns(e)).Error
 }
 
 // BatchUpdateCounters is the per-poll batched form of UpdateCounters: one
@@ -148,14 +166,7 @@ func (r *ownershipRepo) BatchUpdateCounters(ctx context.Context, items []*domain
 			}
 			err := tx.Model(&ownershipRow{}).
 				Where("id = ?", e.ID).
-				Updates(map[string]any{
-					"lifetime_up_bytes":    e.LifetimeUpBytes,
-					"lifetime_down_bytes":  e.LifetimeDownBytes,
-					"lifetime_total_bytes": e.LifetimeTotalBytes,
-					"last_raw_up_bytes":    e.LastRawUpBytes,
-					"last_raw_down_bytes":  e.LastRawDownBytes,
-					"last_raw_total_bytes": e.LastRawTotalBytes,
-				}).Error
+				Updates(ownershipCounterColumns(e)).Error
 			if err != nil {
 				return err
 			}

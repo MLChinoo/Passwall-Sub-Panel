@@ -316,6 +316,12 @@ type TrafficRepo interface {
 	// [since, until). This is the long-window source for the traffic chart —
 	// raw is kept only ~7 days, the hourly table out to TrafficHistoryDays.
 	ListHourlyByUser(ctx context.Context, userID int64, since, until time.Time) ([]domain.HourlyTraffic, error)
+	// LastBeforeForUserClients returns, for one user, the most recent client
+	// snapshot strictly before `before` per (panel, inbound, email) client —
+	// keyed by domain.ClientMatchKey. Backs the per-node usage view's "today"
+	// column (before = local start-of-day). Clients with no prior snapshot are
+	// absent from the map. Single SQL query over idx_client_time.
+	LastBeforeForUserClients(ctx context.Context, userID int64, before time.Time) (map[string]*domain.ClientTrafficSnapshot, error)
 	InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error
 	// InsertBatch / InsertClientBatch consolidate per-poll snapshot writes
 	// into a single SQL roundtrip (GORM CreateInBatches). Used by

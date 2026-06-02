@@ -39,6 +39,59 @@ func TestTrafficSnapshotsReturnNotFoundWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestLastBeforeForUserClients pins the per-node usage view's "today" source:
+// the most recent snapshot strictly before the cutoff, grouped per (panel,
+// inbound, email) client, for one user — keyed by ClientMatchKey.
+func TestLastBeforeForUserClients(t *testing.T) {
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	repo := NewRepos(db).Traffic
+	ctx := context.Background()
+	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	mk := func(uid, panel int64, inbound int, email string, total int64, at time.Time) *domain.ClientTrafficSnapshot {
+		return &domain.ClientTrafficSnapshot{UserID: uid, PanelID: panel, InboundID: inbound, ClientEmail: email, TotalBytes: total, CapturedAt: at}
+	}
+	seed := []*domain.ClientTrafficSnapshot{
+		// user 1, node A: two before cutoff (latest wins) + one after (ignored)
+		mk(1, 10, 20, "u1-nA@x", 100, cutoff.Add(-2*time.Hour)),
+		mk(1, 10, 20, "u1-nA@x", 150, cutoff.Add(-1*time.Hour)),
+		mk(1, 10, 20, "u1-nA@x", 999, cutoff.Add(1*time.Hour)),
+		// user 1, node B: one before cutoff
+		mk(1, 10, 21, "u1-nB@x", 70, cutoff.Add(-3*time.Hour)),
+		// user 2: different user, must not leak into user 1's result
+		mk(2, 10, 20, "u2-nA@x", 500, cutoff.Add(-1*time.Hour)),
+	}
+	if err := repo.InsertClientBatch(ctx, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := repo.LastBeforeForUserClients(ctx, 1, cutoff)
+	if err != nil {
+		t.Fatalf("LastBeforeForUserClients: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 client keys for user 1, got %d (%v)", len(got), got)
+	}
+	if a := got[domain.ClientMatchKey(10, 20, "u1-nA@x")]; a == nil || a.TotalBytes != 150 {
+		t.Errorf("node A latest-before = %v, want total 150 (not 100, not the post-cutoff 999)", a)
+	}
+	if b := got[domain.ClientMatchKey(10, 21, "u1-nB@x")]; b == nil || b.TotalBytes != 70 {
+		t.Errorf("node B latest-before = %v, want total 70", b)
+	}
+	if _, leaked := got[domain.ClientMatchKey(10, 20, "u2-nA@x")]; leaked {
+		t.Error("user 2's client leaked into user 1's result")
+	}
+}
+
 // TestLatestForUsers pins the v3.5.0-beta.9 batched read PollOnce now uses to
 // pre-fetch every user's most-recent snapshot in one SQL call instead of
 // N per-user LatestForUser SELECTs. Three properties matter:

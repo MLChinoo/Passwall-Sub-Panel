@@ -253,6 +253,20 @@ func (r *fakeTrafficRepo) InsertClient(ctx context.Context, s *domain.ClientTraf
 	return nil
 }
 
+func (r *fakeTrafficRepo) LastBeforeForUserClients(ctx context.Context, userID int64, before time.Time) (map[string]*domain.ClientTrafficSnapshot, error) {
+	out := make(map[string]*domain.ClientTrafficSnapshot)
+	for _, s := range r.clientSnapshots {
+		if s.UserID != userID || !s.CapturedAt.Before(before) {
+			continue
+		}
+		key := domain.ClientMatchKey(s.PanelID, s.InboundID, s.ClientEmail)
+		if prev, ok := out[key]; !ok || s.CapturedAt.After(prev.CapturedAt) {
+			out[key] = s
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeTrafficRepo) InsertBatch(ctx context.Context, snaps []*domain.TrafficSnapshot) error {
 	r.snapshots = append(r.snapshots, snaps...)
 	return nil

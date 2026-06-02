@@ -73,6 +73,7 @@ import { setUserTraffic, topTraffic, type TrafficRow } from '@/api/traffic'
 import type { Group, ResetPeriod, Role, User } from '@/api/types'
 import type { ReconcileReport } from '@/api/reconcile'
 import { UserActivity } from './UserActivity'
+import { UserNodeUsage } from './UserNodeUsage'
 import { useAuthStore } from '@/stores/auth'
 import { useCan } from '@/utils/permissions'
 import { useSiteStore } from '@/stores/site'
@@ -1435,6 +1436,7 @@ export default function UsersView() {
                   </Typography>
                 </Box>
               </Box>
+              {editing && <UserNodeUsage userId={editing.id} />}
               <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
                 {t('admin:users.detail.created_at', { defaultValue: '创建于' })} {editing?.created_at ? new Date(editing.created_at).toLocaleString() : '—'}
               </Typography>

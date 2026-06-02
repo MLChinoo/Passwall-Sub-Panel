@@ -284,6 +284,7 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.GET("/traffic/history", trafficH.History)
 		staffGroup.GET("/traffic/user/:id", trafficH.UserReport)
 		staffGroup.GET("/traffic/user/:id/history", trafficH.UserHistory)
+		staffGroup.GET("/traffic/user/:id/nodes", trafficH.UserNodeUsage)
 		staffGroup.PUT("/traffic/user/:id", trafficH.SetUserUsage)
 		staffGroup.GET("/traffic/nodes/top", trafficH.NodesTop)
 		staffGroup.GET("/traffic/nodes/history", trafficH.NodesHistory)

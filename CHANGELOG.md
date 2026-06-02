@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.9 — 2026-06-01
+
+新增「按节点用量」:用户编辑弹窗左侧只读栏新增一张表,展示该用户在每个节点的 **累计 / 本周期 / 今日** 用量(各拆 ↑上行 / ↓下行)。无破坏性变更——`user_xui_clients` 加 3 个 baseline 列,AutoMigrate 自动处理。
+
+### Added
+
+- **按用户→按节点的用量明细** —— 每个 (用户×节点) 恰好对应一个 3X-UI client(email = `u{用户}-n{节点}`),底层数据本就在采集,这次把它读出来展示。
+  - 累计来自归属行的 lifetime 计数器;**本周期**新增 per-client 周期 baseline(`period_baseline_{up,down,total}_bytes`),在用户周期翻篇时与用户级同步重置 —— 保证 **Σ每节点本周期 == 用户本周期**;今日为对"本地 0 点前最后一条快照"求 delta。
+  - 管理员手动改本周期用量(`SetPeriodUsage`)时,按各 client lifetime 占比把覆盖值分摊到 per-client baseline,使明细合计与上方用户级数字不再打架。
+  - 新只读端点 `GET /api/admin/traffic/user/:id/nodes`(staff,operator 越权防护同其余 traffic 接口)。
+  - **升级暂态**:已有部署升级后,旧 client 的 baseline 默认 0,在该用户**下一次周期翻篇前**,"本周期"列会暂时显示为等于"累计"(翻篇后自愈);"今日"列对"已空闲 ≥7 天后当天恢复且当天查看"的极窄场景会暂时显示 0(次日自愈)。两者均只影响展示,不影响计量/限额/封禁。
+
 ## v3.6.3-beta.8 — 2026-06-01
 
 ### Fixed

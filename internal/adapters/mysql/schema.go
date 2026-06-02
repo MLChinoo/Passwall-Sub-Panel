@@ -382,6 +382,13 @@ type ownershipRow struct {
 	LastRawUpBytes    int64 `gorm:"default:0"`
 	LastRawDownBytes  int64 `gorm:"default:0"`
 	LastRawTotalBytes int64 `gorm:"default:0"`
+	// PeriodBaselineXxx mirrors users.period_baseline_bytes at per-client
+	// granularity: LifetimeXxx at the owning user's last period rollover. The
+	// per-node "this period" usage view reads LifetimeXxx - this. AutoMigrate
+	// adds these columns (default 0) on upgrade; see XUIClientEntry doc.
+	PeriodBaselineUpBytes    int64 `gorm:"default:0"`
+	PeriodBaselineDownBytes  int64 `gorm:"default:0"`
+	PeriodBaselineTotalBytes int64 `gorm:"default:0"`
 }
 
 // user_xui_clients (renamed from xui_clients in v3): per-local-user ownership
@@ -405,6 +412,10 @@ func (r *ownershipRow) toDomain() *domain.XUIClientEntry {
 		LastRawUpBytes:     r.LastRawUpBytes,
 		LastRawDownBytes:   r.LastRawDownBytes,
 		LastRawTotalBytes:  r.LastRawTotalBytes,
+
+		PeriodBaselineUpBytes:    r.PeriodBaselineUpBytes,
+		PeriodBaselineDownBytes:  r.PeriodBaselineDownBytes,
+		PeriodBaselineTotalBytes: r.PeriodBaselineTotalBytes,
 	}
 }
 
@@ -423,6 +434,10 @@ func ownershipFromDomain(e *domain.XUIClientEntry) *ownershipRow {
 		LastRawUpBytes:     e.LastRawUpBytes,
 		LastRawDownBytes:   e.LastRawDownBytes,
 		LastRawTotalBytes:  e.LastRawTotalBytes,
+
+		PeriodBaselineUpBytes:    e.PeriodBaselineUpBytes,
+		PeriodBaselineDownBytes:  e.PeriodBaselineDownBytes,
+		PeriodBaselineTotalBytes: e.PeriodBaselineTotalBytes,
 	}
 }
 

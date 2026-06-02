@@ -119,6 +119,30 @@ export async function nodeTrafficHistory(params: TrafficHistoryParams & { node_i
   return data
 }
 
+// UserNodeUsageRow is one (user, node) usage line — lifetime / current-period
+// / today, each split up+down. Returned sorted by period usage desc.
+export interface UserNodeUsageRow {
+  node_id: number
+  display_name: string
+  panel_name: string
+  region: string
+  client_email: string
+  lifetime_up_bytes: number
+  lifetime_down_bytes: number
+  lifetime_total_bytes: number
+  period_up_bytes: number
+  period_down_bytes: number
+  period_total_bytes: number
+  today_up_bytes: number
+  today_down_bytes: number
+  today_total_bytes: number
+}
+
+export async function getUserNodeUsage(userId: number) {
+  const { data } = await client.get<{ items: UserNodeUsageRow[] }>(`/admin/traffic/user/${userId}/nodes`)
+  return data.items ?? []
+}
+
 export async function getMyUsage() {
   const { data } = await client.get<UsageReport>('/user/me/traffic')
   return data

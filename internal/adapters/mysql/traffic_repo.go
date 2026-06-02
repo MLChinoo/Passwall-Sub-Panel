@@ -164,6 +164,43 @@ func (r *trafficRepo) LastBeforeForUsers(ctx context.Context, userIDs []int64, b
 	return out, nil
 }
 
+// LastBeforeForUserClients returns the most recent per-client snapshot before
+// `before` for every client owned by one user, keyed by ClientMatchKey. Same
+// MAX(id) pattern as LastBeforeForUsers, grouped by the client tuple instead
+// of user_id; idx_client_time (user_id, panel_id, inbound_id, client_email,
+// captured_at) covers both the WHERE and the GROUP BY.
+func (r *trafficRepo) LastBeforeForUserClients(ctx context.Context, userID int64, before time.Time) (map[string]*domain.ClientTrafficSnapshot, error) {
+	var rows []clientTrafficRow
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT t.* FROM client_traffic_snapshots t
+		INNER JOIN (
+			SELECT panel_id, inbound_id, client_email, MAX(id) AS mid
+			FROM client_traffic_snapshots
+			WHERE user_id = ? AND captured_at < ?
+			GROUP BY panel_id, inbound_id, client_email
+		) m ON t.id = m.mid
+	`, userID, before).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*domain.ClientTrafficSnapshot, len(rows))
+	for i := range rows {
+		row := rows[i]
+		out[domain.ClientMatchKey(row.PanelID, row.InboundID, row.ClientEmail)] = &domain.ClientTrafficSnapshot{
+			ID:          row.ID,
+			UserID:      row.UserID,
+			PanelID:     row.PanelID,
+			InboundID:   row.InboundID,
+			ClientEmail: row.ClientEmail,
+			UpBytes:     row.UpBytes,
+			DownBytes:   row.DownBytes,
+			TotalBytes:  row.TotalBytes,
+			CapturedAt:  row.CapturedAt,
+		}
+	}
+	return out, nil
+}
+
 func (r *trafficRepo) LastBefore(ctx context.Context, userID int64, before time.Time) (*domain.TrafficSnapshot, error) {
 	var row trafficRow
 	tx := r.db.WithContext(ctx).
