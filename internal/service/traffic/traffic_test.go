@@ -900,6 +900,10 @@ type fakeNodeKey struct {
 type fakeNodeRepo struct {
 	nodes   map[int64]*domain.Node
 	byMatch map[fakeNodeKey]int64
+	// call counters — let tests assert no N+1 (one List, not a per-node
+	// GetByPanelInbound).
+	listCalls    int
+	getByPICalls int
 }
 
 func (r *fakeNodeRepo) Create(ctx context.Context, n *domain.Node) error { return nil }
@@ -960,6 +964,7 @@ func (r *fakeNodeRepo) GetByID(ctx context.Context, id int64) (*domain.Node, err
 	return &cp, nil
 }
 func (r *fakeNodeRepo) GetByPanelInbound(ctx context.Context, panelID int64, inboundID int) (*domain.Node, error) {
+	r.getByPICalls++
 	id, ok := r.byMatch[fakeNodeKey{panelID: panelID, inboundID: inboundID}]
 	if !ok {
 		return nil, domain.ErrNotFound
@@ -967,6 +972,7 @@ func (r *fakeNodeRepo) GetByPanelInbound(ctx context.Context, panelID int64, inb
 	return r.GetByID(ctx, id)
 }
 func (r *fakeNodeRepo) List(ctx context.Context) ([]*domain.Node, error) {
+	r.listCalls++
 	out := make([]*domain.Node, 0, len(r.nodes))
 	for _, n := range r.nodes {
 		cp := *n

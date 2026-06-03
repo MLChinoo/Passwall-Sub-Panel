@@ -104,6 +104,54 @@ func TestUserNodeUsage(t *testing.T) {
 	}
 }
 
+// TestUserNodeUsageBatchesNodeLookup pins that the per-node breakdown resolves
+// node identity with ONE List call, not a GetByPanelInbound per owned node (the
+// N+1 that made DB round-trips grow with a user's node count). Pagination can't
+// fix this — the always-shown grand total forces aggregating every node — so
+// the fix is batching, verified here: zero per-node lookups, exactly one List.
+func TestUserNodeUsageBatchesNodeLookup(t *testing.T) {
+	ownership := &fakeOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{
+		1: {
+			{ID: 1, UserID: 1, PanelID: 10, InboundID: 20, ClientEmail: "a", CreatedAt: time.Now()},
+			{ID: 2, UserID: 1, PanelID: 10, InboundID: 21, ClientEmail: "b", CreatedAt: time.Now()},
+			{ID: 3, UserID: 1, PanelID: 11, InboundID: 22, ClientEmail: "c", CreatedAt: time.Now()},
+		},
+	}}
+	nodes := &fakeNodeRepo{
+		nodes: map[int64]*domain.Node{
+			101: {ID: 101, PanelID: 10, InboundID: 20, DisplayName: "N1"},
+			102: {ID: 102, PanelID: 10, InboundID: 21, DisplayName: "N2"},
+			103: {ID: 103, PanelID: 11, InboundID: 22, DisplayName: "N3"},
+		},
+		byMatch: map[fakeNodeKey]int64{
+			{panelID: 10, inboundID: 20}: 101,
+			{panelID: 10, inboundID: 21}: 102,
+			{panelID: 11, inboundID: 22}: 103,
+		},
+	}
+	svc := New(nil, ownership, &fakeTrafficRepo{}, nodes, nil, nil, nil)
+	rows, err := svc.UserNodeUsage(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d", len(rows))
+	}
+	byNode := map[int64]string{}
+	for _, r := range rows {
+		byNode[r.NodeID] = r.DisplayName
+	}
+	if byNode[101] != "N1" || byNode[102] != "N2" || byNode[103] != "N3" {
+		t.Fatalf("node names not resolved after batching: %#v", byNode)
+	}
+	if nodes.getByPICalls != 0 {
+		t.Errorf("GetByPanelInbound called %d times — must be 0 (N+1 not batched)", nodes.getByPICalls)
+	}
+	if nodes.listCalls != 1 {
+		t.Errorf("List called %d times — must be exactly 1 regardless of node count", nodes.listCalls)
+	}
+}
+
 // TestUserNodeUsageTodayIdleFallback pins the pre-existing-but-no-snapshot
 // branch: a client created before today whose pre-today snapshot has aged out
 // reads as 0 today (idle), NOT its whole lifetime.

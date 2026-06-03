@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.17 — 2026-06-03
+
+「按节点用量」表加分页 / 搜索 / 排序,并修掉它的 N+1 查询。
+
+### Improved
+
+- **「按节点用量」表加客户端分页 + 搜索 + 排序** —— 用户挂很多节点时,`Traffic → Trend` 那张 per-node 表(beta.16 从编辑弹窗搬来的)一长串没法看。改成正式表格:按 节点名 / 地区 实时搜索、点列头按 累计 / 本周期 / 今日 排序(默认本周期降序)、MUI 分页(10 / 25 / 50 每页)。表脚「合计」**始终 = 全部节点之和**,不随搜索 / 翻页变,永远和用户级数字对得上。数据一次拉全、纯前端分页(一个用户的节点数有界),零额外 DB 往返。
+
+### Fixed
+
+- **`UserNodeUsage` 的 N+1 查询,后端 TDD** —— 该接口循环里**每个节点单独查一次** `GetByPanelInbound`,用户挂 N 个节点就打 N+1 次 DB 查询。改为循环前一次 `List` 建 (panel,inbound)→node map、O(1) 查 —— **固定 2 次查询(`ListByUser` + `List`),不随节点数涨**。注意:服务端分页**修不了**这个(「合计始终显示」要聚合全部节点、绕不开全量扫描),批量化才是正解。新增 `TestUserNodeUsageBatchesNodeLookup`(钉住 GetByPanelInbound 调 0 次、List 调 1 次)。
+
 ## v3.6.3-beta.16 — 2026-06-02
 
 认证日志保留改为自由可配;「按节点用量」从用户编辑弹窗搬到 Traffic 页。

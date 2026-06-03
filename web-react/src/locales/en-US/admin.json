@@ -932,7 +932,7 @@
     "create": "New user",
     "edit_title": "Edit user",
     "activity": { "title": "Recent sign-ins", "empty": "No sign-in records", "ok": "OK", "fail": "Failed" },
-    "nodeusage": { "title": "Usage by node", "empty": "No nodes for this user", "lifetime": "Lifetime", "period": "Period", "today": "Today", "total": "Total" },
+    "nodeusage": { "title": "Usage by node", "empty": "No nodes for this user", "lifetime": "Lifetime", "period": "Period", "today": "Today", "total": "Total", "node": "Node", "search": "Search node / region", "no_match": "No matching node" },
     "result_title": "User created",
     "search_placeholder": "Search UPN / display name / email…",
     "filter_group_all": "All groups",

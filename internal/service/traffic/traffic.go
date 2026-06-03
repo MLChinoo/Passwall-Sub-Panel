@@ -1227,6 +1227,25 @@ func (s *Service) UserNodeUsage(ctx context.Context, userID int64) ([]NodeUsageR
 		todayBase, _ = s.traffic.LastBeforeForUserClients(ctx, userID, todayStart)
 	}
 
+	// Batch-load nodes once and index by (panel, inbound). Previously this loop
+	// did a GetByPanelInbound per entry — an N+1 whose DB round-trips grew with
+	// the user's node count. One List keeps it at 2 queries total (ListByUser +
+	// List) no matter how many nodes the user is on; a List failure degrades
+	// node identity to empty (same as the old per-call error path), not the
+	// whole view.
+	type nodePI struct {
+		panelID   int64
+		inboundID int
+	}
+	nodeByPI := map[nodePI]*domain.Node{}
+	if s.nodes != nil {
+		if all, lerr := s.nodes.List(ctx); lerr == nil {
+			for _, n := range all {
+				nodeByPI[nodePI{panelID: n.PanelID, inboundID: n.InboundID}] = n
+			}
+		}
+	}
+
 	rows := make([]NodeUsageRow, 0, len(entries))
 	for _, e := range entries {
 		row := NodeUsageRow{
@@ -1240,12 +1259,10 @@ func (s *Service) UserNodeUsage(ctx context.Context, userID int64) ([]NodeUsageR
 			PeriodDownBytes:    nonNeg(e.LifetimeDownBytes - e.PeriodBaselineDownBytes),
 			PeriodTotalBytes:   nonNeg(e.LifetimeTotalBytes - e.PeriodBaselineTotalBytes),
 		}
-		if s.nodes != nil {
-			if n, nerr := s.nodes.GetByPanelInbound(ctx, e.PanelID, e.InboundID); nerr == nil && n != nil {
-				row.NodeID = n.ID
-				row.DisplayName = n.DisplayName
-				row.Region = n.Region
-			}
+		if n := nodeByPI[nodePI{panelID: e.PanelID, inboundID: e.InboundID}]; n != nil {
+			row.NodeID = n.ID
+			row.DisplayName = n.DisplayName
+			row.Region = n.Region
 		}
 		if base := todayBase[domain.ClientMatchKey(e.PanelID, e.InboundID, e.ClientEmail)]; base != nil {
 			row.TodayUpBytes = monotonicDelta(e.LifetimeUpBytes, base.UpBytes)
