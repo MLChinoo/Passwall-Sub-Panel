@@ -638,16 +638,20 @@ type subLogRow struct {
 type syncTaskRow struct {
 	ID         int64  `gorm:"primaryKey;autoIncrement"`
 	Type       string `gorm:"size:64;not null;index:idx_task_due,priority:1"`
-	Status     string `gorm:"size:32;not null;index:idx_task_due,priority:2"`
+	Status     string `gorm:"size:32;not null;index:idx_task_due,priority:2;index:idx_task_due_run,priority:1"`
 	TargetType string `gorm:"size:64;not null;index:idx_task_target,priority:1"`
 	TargetID   int64  `gorm:"not null;index:idx_task_target,priority:2"`
 	Summary    string `gorm:"size:255"`
 	Payload    string `gorm:"type:text"`
 	LastError  string `gorm:"type:text"`
 	Attempts   int
-	NextRunAt  time.Time `gorm:"index:idx_task_due,priority:3"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// idx_task_due_run (status, next_run_at) serves the 30s/hourly ListDue scan
+	// (WHERE status=? AND next_run_at<=? ORDER BY next_run_at): idx_task_due
+	// leads with `type`, which ListDue never predicates, so leftmost-prefix made
+	// it unusable and the query degenerated to a full scan + filesort.
+	NextRunAt time.Time `gorm:"index:idx_task_due,priority:3;index:idx_task_due_run,priority:2"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 	// idx_task_finished covers the hourly cleanup paths
 	// (DeleteSucceededBefore + DeleteFinished) which filter on
 	// finished_at. Neither idx_task_due (type, status, next_run_at)

@@ -601,17 +601,26 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 		// source of truth and reflects the latest admin edit even if multiple
 		// edits stacked between enqueue and run (or if dedup collapsed them
 		// onto this one task). Pushing the captured-at-enqueue payload could
-		// regress 3X-UI to a superseded spec.
+		// regress 3X-UI to a superseded spec. Capture the version stamp we're
+		// about to push so the post-push state flip can detect a concurrent edit.
+		stamp := n.ConfigSyncedAt
 		if err := c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n)); err != nil {
 			return err
 		}
-		// Push succeeded — clear any "pending" the original enqueue set so the
-		// UI flips back to synced. The local snapshot already matches what we
-		// just pushed (built via SpecFromNode), so a column-only state write is
-		// all that's needed.
-		if n.ConfigSyncState != "synced" {
-			n.ConfigSyncState = "synced"
-			_ = s.nodes.UpdateInboundConfig(ctx, n)
+		// The push is a multi-second round-trip that may straddle an admin
+		// UpdateInboundConfig (S2). Re-read and only flip config_sync_state when
+		// the snapshot we pushed is still current: on a stamp mismatch a newer
+		// edit owns the row (its own task / reconcile converges it), and writing
+		// our stale snapshot back would revert S2 in the DB. Writing the freshly
+		// re-read node (not the load-time one) also keeps the success write from
+		// reverting the health pass's port/protocol to a stale value.
+		fresh, err := s.nodes.GetByID(ctx, n.ID)
+		if err != nil || fresh == nil || !sameSyncStamp(stamp, fresh.ConfigSyncedAt) {
+			return nil
+		}
+		if fresh.ConfigSyncState != "synced" {
+			fresh.ConfigSyncState = "synced"
+			_ = s.nodes.UpdateInboundConfig(ctx, fresh)
 		}
 		return nil
 	default:
@@ -820,7 +829,26 @@ func isInboundGoneError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "not found")
+	// Match 3X-UI's specific absent-inbound/client phrasings (GORM's "record not
+	// found" sentinel, "not found in inbound") or an explicit HTTP 404 — NOT a
+	// bare "not found", which a reverse-proxy or localized "404 Not Found" HTML
+	// error body would also satisfy. A false positive here is destructive: the
+	// delete branch would UnclaimAllForInbound + drop the node row while the live
+	// inbound (and its PSP-created clients) still exist upstream.
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "record not found") ||
+		strings.Contains(m, "not found in inbound") ||
+		strings.Contains(m, "http 404")
+}
+
+// sameSyncStamp reports whether two ConfigSyncedAt stamps are equal (both nil,
+// or equal times). Used by the SyncTaskNodeUpdate success path to detect an
+// admin edit that landed during the push before flipping config_sync_state.
+func sameSyncStamp(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // ---- New-node user sync ----
@@ -1077,6 +1105,17 @@ func (s *Service) ListClientsOfInbound(ctx context.Context, nodeID int64, owners
 	if err != nil {
 		return nil, err
 	}
+	// Load every ownership row for this inbound in ONE query and index by email,
+	// instead of a per-client GetByMatch (N+1: one SELECT per client in the
+	// inbound). ListByInbound is the same set GetByMatch would resolve one at a
+	// time. Tolerate a load error by falling back to "no rows" (all unmanaged)
+	// so the listing still renders.
+	ownedByEmail := make(map[string]*domain.XUIClientEntry)
+	if entries, err := ownership.ListByInbound(ctx, n.PanelID, n.InboundID); err == nil {
+		for _, e := range entries {
+			ownedByEmail[e.ClientEmail] = e
+		}
+	}
 	out := make([]*InboundClientView, 0, len(inb.ClientStats))
 	for _, cs := range inb.ClientStats {
 		view := &InboundClientView{
@@ -1086,8 +1125,7 @@ func (s *Service) ListClientsOfInbound(ctx context.Context, nodeID int64, owners
 			Enable:     cs.Enable,
 			ExpiryTime: cs.ExpiryTime,
 		}
-		entry, err := ownership.GetByMatch(ctx, n.PanelID, n.InboundID, cs.Email)
-		if err == nil {
+		if entry, ok := ownedByEmail[cs.Email]; ok {
 			view.Managed = true
 			view.OwnerUserID = entry.UserID
 		}

@@ -81,6 +81,14 @@ func Open(kind, dsn string) (*gorm.DB, error) {
 	} else {
 		sqlDB.SetMaxIdleConns(10)
 		sqlDB.SetMaxOpenConns(50)
+		// Recycle connections so a fronting proxy (RDS Proxy, PgBouncer,
+		// ProxySQL, a cloud LB) or the server's own wait_timeout closing an idle
+		// socket doesn't leave database/sql handing a dead connection to the next
+		// query — the background loops fire only every few minutes on quiet
+		// panels, so idle windows easily exceed common server timeouts. Lifetime
+		// below typical wait_timeout; idle cap reaps unused sockets sooner.
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	}
 	return db, nil
 }

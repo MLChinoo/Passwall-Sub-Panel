@@ -61,46 +61,30 @@ type dashboardNodeAlert struct {
 }
 
 type dashboardSummaryResponse struct {
-	UserTotal       int                    `json:"user_total"`
-	UserEnabled     int                    `json:"user_enabled"`
-	UserDisabled    int                    `json:"user_disabled"`
-	UserEmergency   int                    `json:"user_emergency"`
-	NodeTotal       int                    `json:"node_total"`
-	NodeEnabled     int                    `json:"node_enabled"`
-	NodeHealthy     int                    `json:"node_healthy"`
-	GroupCount      int                    `json:"group_count"`
-	ExpiringUsers   []dashboardExpiringRow `json:"expiring_users"`
-	NodeAlerts      []dashboardNodeAlert   `json:"node_alerts"`
+	UserTotal     int                    `json:"user_total"`
+	UserEnabled   int                    `json:"user_enabled"`
+	UserDisabled  int                    `json:"user_disabled"`
+	UserEmergency int                    `json:"user_emergency"`
+	NodeTotal     int                    `json:"node_total"`
+	NodeEnabled   int                    `json:"node_enabled"`
+	NodeHealthy   int                    `json:"node_healthy"`
+	GroupCount    int                    `json:"group_count"`
+	ExpiringUsers []dashboardExpiringRow `json:"expiring_users"`
+	NodeAlerts    []dashboardNodeAlert   `json:"node_alerts"`
 }
 
 // Summary returns the aggregate values the admin dashboard renders.
 func (h *AdminDashboardHandler) Summary(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Walk every user in pages — applyPagination clamps PageSize to
-	// 200, so a single fat call silently truncated counts + the
-	// expiring list on installs with >200 users (v3.6.1-beta.6 +
-	// beta.7 both shipped with that bug). Loop in 200-row chunks
-	// instead. A dedicated count-query path would scale better; for
-	// the panel's typical self-use scale this is correct and simple.
-	var allUsers []*domain.User
-	var userTotal int64
-	page := 1
-	const pageSize = 200
-	for {
-		items, total, err := h.users.List(ctx, ports.UserFilter{
-			Pagination: ports.Pagination{Page: page, PageSize: pageSize},
-		})
-		if err != nil {
-			respondError(c, err)
-			return
-		}
-		userTotal = total
-		allUsers = append(allUsers, items...)
-		if int64(len(allUsers)) >= total || len(items) == 0 {
-			break
-		}
-		page++
+	// Summary counters come from COUNT queries, and the "expiring soon" list from
+	// one bounded ExpiringBetween query — instead of paging the ENTIRE users table
+	// into memory just to tally four numbers and pick five rows.
+	now := time.Now()
+	counts, err := h.users.CountByStatus(ctx, now)
+	if err != nil {
+		respondError(c, err)
+		return
 	}
 	nodes, err := h.nodes.List(ctx)
 	if err != nil {
@@ -114,30 +98,17 @@ func (h *AdminDashboardHandler) Summary(c *gin.Context) {
 	}
 
 	resp := dashboardSummaryResponse{
-		UserTotal:  int(userTotal),
-		GroupCount: len(groups),
+		UserTotal:     int(counts.Total),
+		UserEnabled:   int(counts.Enabled),
+		UserDisabled:  int(counts.Disabled),
+		UserEmergency: int(counts.Emergency),
+		GroupCount:    len(groups),
 	}
-	now := time.Now()
 	windowEnd := now.Add(expiringWindowDays * 24 * time.Hour)
-	expiring := make([]*domain.User, 0)
-	for _, u := range allUsers {
-		if u.Enabled {
-			resp.UserEnabled++
-		} else {
-			resp.UserDisabled++
-		}
-		if u.EmergencyUntil != nil && u.EmergencyUntil.After(now) {
-			resp.UserEmergency++
-		}
-		if u.ExpireAt != nil && !u.ExpireAt.Before(now) && !u.ExpireAt.After(windowEnd) {
-			expiring = append(expiring, u)
-		}
-	}
-	sort.Slice(expiring, func(i, j int) bool {
-		return expiring[i].ExpireAt.Before(*expiring[j].ExpireAt)
-	})
-	if len(expiring) > 5 {
-		expiring = expiring[:5]
+	expiring, err := h.users.ListExpiringBetween(ctx, now, windowEnd, 5)
+	if err != nil {
+		respondError(c, err)
+		return
 	}
 	resp.ExpiringUsers = make([]dashboardExpiringRow, 0, len(expiring))
 	for _, u := range expiring {

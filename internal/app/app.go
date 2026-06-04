@@ -284,6 +284,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// floor-push + quota-event email goroutines (`safego.GoTracked`)
 	// now register with bgWG so App.Shutdown drains them before exit.
 	trafficSvc.SetBgWG(&a.bgWG)
+	// Link the geo updater's background download to the app lifecycle so
+	// Shutdown cancels + drains an in-flight DB download instead of leaking it.
+	geoSvc.SetBackground(bgCtx, &a.bgWG)
 
 	// --- transport layer ---
 	httpHandler := httptransport.NewRouter(httptransport.Deps{
@@ -330,11 +333,13 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	a.syncTasks = repos.SyncTask
 	a.trafficRepo = repos.Traffic
 	a.nodeTraffic = repos.NodeTraffic
-	a.rollup = rollup.New(db)
+	a.trafficInterval = time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute
+	// Rollup's gap heartbeat is derived from the poll cadence so a coarse poll
+	// interval doesn't make every segment exceed a fixed heartbeat (blank charts).
+	a.rollup = rollup.New(db, a.trafficInterval)
 	a.repos = repos
 	a.saml = samlSvc
 	a.xuiPool = pool
-	a.trafficInterval = time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute
 	a.reconcileInterval = time.Duration(sysSettings.CronReconcileMinutes) * time.Minute
 	a.healthInterval = healthInterval
 	a.server = &http.Server{

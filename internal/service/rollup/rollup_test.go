@@ -30,7 +30,7 @@ func newServiceFromTest(t *testing.T) (*Service, *gorm.DB) {
 			_ = sqlDB.Close()
 		}
 	})
-	return New(g), g
+	return New(g, 0), g
 }
 
 func insertUserSnap(t *testing.T, g *gorm.DB, userID int64, ts time.Time, up, down, total int64) {
@@ -209,13 +209,14 @@ func TestRollupNodeAndSkipsClient(t *testing.T) {
 	}
 }
 
-// TestRollupCarryInAcrossHourBoundary: a monotonic ramp that crosses the
-// 14:00→15:00 boundary. The 15:00 bucket must include the traffic that accrued
-// between 14:00's last sample (200) and 15:00's first (260) — i.e. delta =
-// 400-200 = 200, NOT the plain in-hour MAX-MIN of 400-260 = 140 (the ~8% the
-// old rollup dropped at every hour boundary). The 14:00 bucket has no preceding
-// hour, so it stays MAX-MIN = 100.
-func TestRollupCarryInAcrossHourBoundary(t *testing.T) {
+// TestRollupSplitsTrafficAcrossHourBoundary: the segment that straddles the
+// 14:00→15:00 boundary (14:55 reading 200 → 15:05 reading 260, +60 over 10min)
+// is split by time fraction: half its 10min is in 14:00, half in 15:00, so +30
+// to each. So 14:00 = 100 (in-hour) + 30 (boundary half) = 130, and 15:00 = 30
+// (boundary half) + 140 (in-hour) = 170. Total 300 is conserved (= 400-100).
+// This is the proportional/interpolation model (RRDtool-style), replacing the
+// old carry-in that dumped the whole 60 into the later hour (15:00=200).
+func TestRollupSplitsTrafficAcrossHourBoundary(t *testing.T) {
 	svc, g := newServiceFromTest(t)
 	ctx := context.Background()
 
@@ -231,19 +232,47 @@ func TestRollupCarryInAcrossHourBoundary(t *testing.T) {
 	var first, second struct{ UpBytes int64 }
 	scanOne(t, g, &first, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14)
 	scanOne(t, g, &second, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
-	if first.UpBytes != 100 {
-		t.Fatalf("14:00 bucket (no carry-in) up = %d, want 100", first.UpBytes)
+	if first.UpBytes != 130 {
+		t.Fatalf("14:00 bucket up = %d, want 130 (100 in-hour + 30 boundary half)", first.UpBytes)
 	}
-	if second.UpBytes != 200 {
-		t.Fatalf("15:00 bucket (carry-in from 14:00 max=200) up = %d, want 200", second.UpBytes)
+	if second.UpBytes != 170 {
+		t.Fatalf("15:00 bucket up = %d, want 170 (30 boundary half + 140 in-hour)", second.UpBytes)
+	}
+	if first.UpBytes+second.UpBytes != 300 {
+		t.Fatalf("total must be conserved at 300, got %d", first.UpBytes+second.UpBytes)
 	}
 }
 
-// TestRollupNoCarryInAcrossGap: when an hour is missing (panel was down), the
-// next present hour must NOT carry-in from a non-adjacent earlier hour — we
-// can't know when the gap's traffic happened, so the bucket stays in-hour
-// MAX-MIN rather than dumping the whole gap into one hour.
-func TestRollupNoCarryInAcrossGap(t *testing.T) {
+// TestRollupProportionalSplitFraction: a single 20-min segment 14:45→15:05 with
+// +200 bytes splits by TIME — 15min (75%) in 14:00, 5min (25%) in 15:00 — so
+// 14:00 gets 150 and 15:00 gets 50. Locks that the boundary split is
+// time-proportional (interpolation), not a flat 50/50 or all-to-one-hour.
+func TestRollupProportionalSplitFraction(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+
+	insertUserSnap(t, g, 1, h14.Add(45*time.Minute), 0, 0, 0)
+	insertUserSnap(t, g, 1, h15.Add(5*time.Minute), 200, 0, 200)
+
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	var a, b struct{ UpBytes int64 }
+	scanOne(t, g, &a, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14)
+	scanOne(t, g, &b, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
+	if a.UpBytes != 150 {
+		t.Fatalf("14:00 = %d, want 150 (75%% of 200)", a.UpBytes)
+	}
+	if b.UpBytes != 50 {
+		t.Fatalf("15:00 = %d, want 50 (25%% of 200)", b.UpBytes)
+	}
+}
+
+// TestRollupDropsTrafficAcrossLargeGap: when an hour is missing (panel was
+// down), the segment spanning the gap (14:55 → 16:05, 70min > maxInterpGap) is
+// DROPPED, not smeared across the missing 15:00 hour — we can't know when within
+// the gap the traffic flowed. So 16:00 only counts its in-hour segment (900-500).
+func TestRollupDropsTrafficAcrossLargeGap(t *testing.T) {
 	svc, g := newServiceFromTest(t)
 	ctx := context.Background()
 	h16 := h14.Add(2 * time.Hour) // 15:00 deliberately absent
@@ -258,15 +287,16 @@ func TestRollupNoCarryInAcrossGap(t *testing.T) {
 	}
 	var got struct{ UpBytes int64 }
 	scanOne(t, g, &got, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h16)
-	if got.UpBytes != 400 { // 900-500, NOT 900-200=700
-		t.Fatalf("16:00 bucket across a gap up = %d, want 400 (no carry-in over a missing hour)", got.UpBytes)
+	if got.UpBytes != 400 { // 900-500 in-hour; the cross-gap segment is dropped
+		t.Fatalf("16:00 bucket across a gap up = %d, want 400 (gap segment dropped, not smeared)", got.UpBytes)
 	}
 }
 
-// TestRollupCarryInCounterReset: if the counter reset across the boundary
-// (15:00's first sample is BELOW 14:00's max — an Xray restart), the carry-in
-// floor must fall back to the in-hour MIN so the delta can't go negative.
-func TestRollupCarryInCounterReset(t *testing.T) {
+// TestRollupCounterResetClampsToZero: if the counter reset across a segment
+// (15:05's reading 50 is BELOW 14:55's 500 — an Xray restart), that segment's
+// delta is negative and clamps to 0, so it contributes nothing and no bucket
+// goes negative. The next clean segment (50→200) is counted normally.
+func TestRollupCounterResetClampsToZero(t *testing.T) {
 	svc, g := newServiceFromTest(t)
 	ctx := context.Background()
 
@@ -280,8 +310,47 @@ func TestRollupCarryInCounterReset(t *testing.T) {
 	}
 	var got struct{ UpBytes int64 }
 	scanOne(t, g, &got, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
-	if got.UpBytes != 150 { // 200-50 (in-hour), prevMax=500 ignored as floor
+	if got.UpBytes != 150 { // 50→200 clean segment; the 500→50 reset segment clamps to 0
 		t.Fatalf("15:00 bucket after reset up = %d, want 150", got.UpBytes)
+	}
+}
+
+// TestRollupBoundaryBucketSurvivesRawPrune: once the sample before an hour's :00
+// ages off the 7-day prune frontier, that hour is no longer left-complete and a
+// re-run would recompute it SHORT (missing its boundary segment). The persisted
+// value must be preserved (keepIfNew / DO NOTHING), not overwritten. The 15:00
+// bucket keeps its full 170 even after the 14:00 raw rows are gone.
+func TestRollupBoundaryBucketSurvivesRawPrune(t *testing.T) {
+	svc, g := newServiceFromTest(t)
+	ctx := context.Background()
+
+	insertUserSnap(t, g, 1, h14.Add(5*time.Minute), 100, 0, 100)
+	insertUserSnap(t, g, 1, h14.Add(55*time.Minute), 200, 0, 200)
+	insertUserSnap(t, g, 1, h15.Add(5*time.Minute), 260, 0, 260)
+	insertUserSnap(t, g, 1, h15.Add(55*time.Minute), 400, 0, 400)
+
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	var second struct{ UpBytes int64 }
+	scanOne(t, g, &second, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
+	if second.UpBytes != 170 {
+		t.Fatalf("15:00 delta = %d, want 170", second.UpBytes)
+	}
+
+	// Simulate the raw prune frontier advancing past the 14:00 hour.
+	if err := g.Exec("DELETE FROM traffic_snapshots WHERE captured_at < ?", h15).Error; err != nil {
+		t.Fatalf("prune raw: %v", err)
+	}
+
+	// Re-running the full rollup must not shrink the persisted 15:00 row even
+	// though the sample before 15:00 (its boundary segment's left end) is gone.
+	if err := svc.RollupOnce(ctx); err != nil {
+		t.Fatalf("rollup after prune: %v", err)
+	}
+	scanOne(t, g, &second, "SELECT up_bytes FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h15)
+	if second.UpBytes != 170 {
+		t.Fatalf("15:00 bucket shrank after raw prune: up = %d, want 170 (preserved)", second.UpBytes)
 	}
 }
 
@@ -316,6 +385,27 @@ func TestRollupRecentSkipsOldBuckets(t *testing.T) {
 	}
 	if n := countRows(t, g, "SELECT COUNT(*) FROM traffic_snapshots_hourly WHERE user_id=? AND bucket_start=?", 1, h14); n != 1 {
 		t.Fatalf("RollupOnce must backfill the old %v bucket, found %d", h14, n)
+	}
+}
+
+// TestHeartbeatFor: the gap heartbeat is max(1h floor, 2.5x poll interval), so a
+// coarse poll cadence doesn't make every normal segment exceed the heartbeat and
+// blank the chart, while small intervals keep the 1h floor.
+func TestHeartbeatFor(t *testing.T) {
+	cases := []struct {
+		poll time.Duration
+		want time.Duration
+	}{
+		{0, time.Hour},                       // unset → floor
+		{5 * time.Minute, time.Hour},         // 2.5*5=12.5m < 1h → floor
+		{24 * time.Minute, time.Hour},        // 2.5*24=60m == floor
+		{30 * time.Minute, 75 * time.Minute}, // above the floor, scales 2.5x
+		{90 * time.Minute, 225 * time.Minute},
+	}
+	for _, c := range cases {
+		if got := heartbeatFor(c.poll); got != c.want {
+			t.Errorf("heartbeatFor(%v) = %v, want %v", c.poll, got, c.want)
+		}
 	}
 }
 

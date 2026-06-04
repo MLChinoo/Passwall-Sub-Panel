@@ -104,6 +104,10 @@ func NewRouter(d Deps) *gin.Engine {
 	// Referrer-Policy / CSP). Mounted early so every later handler — SPA
 	// fallback, SAML metadata, sub render — picks them up by default.
 	g.Use(middleware.SecurityHeaders())
+	// Stash the trusted-proxy decision into each request's context so handler
+	// helpers holding only an *http.Request (sub-URL inference, SAML SP entity
+	// URLs) can refuse to honour an attacker-supplied X-Forwarded-Host.
+	g.Use(middleware.ProxyTrust())
 	// 1 MiB body cap. Covers every admin write + the typical SAMLResponse
 	// (which is ~80 KiB). Audit middleware later does io.ReadAll(body) —
 	// without this cap that's a memory-exhaustion vector.

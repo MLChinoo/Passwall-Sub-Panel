@@ -90,11 +90,11 @@ func TestUpdateTrafficStatePreservesEmergency(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Simulate UseEmergencyAccess granting a window (full-row Update).
+	// Simulate UseEmergencyAccess granting a window via the dedicated writer.
+	// (The broad Update now OMITS the emergency columns — see pollOwnedColumns —
+	// so emergency state is set only through GrantEmergencyAccess.)
 	until := timeNowUTCPlusHour()
-	u.EmergencyUntil = &until
-	u.EmergencyBaselineBytes = 5 << 30
-	if err := repo.Update(ctx, u); err != nil {
+	if err := repo.GrantEmergencyAccess(ctx, u.ID, until, 1, 5<<30); err != nil {
 		t.Fatalf("grant emergency: %v", err)
 	}
 
@@ -135,12 +135,12 @@ func timeNowUTCPlusHour() time.Time { return time.Now().UTC().Add(time.Hour) }
 
 // TestBatchUpdateTrafficState pins three properties of the v3.5.0-beta.9
 // batched write that PollOnce now uses end-of-cycle:
-//   1. happy path: every row's traffic-owned columns land
-//   2. emergency columns are preserved (mirrors TestUpdateTrafficStatePreservesEmergency
-//      — the batch path must honor the same column scope, otherwise the
-//      "stale poll snapshot revokes a live emergency grant" race comes back)
-//   3. failure path: a zero-ID row aborts the batch (transaction rolls back,
-//      no partial writes)
+//  1. happy path: every row's traffic-owned columns land
+//  2. emergency columns are preserved (mirrors TestUpdateTrafficStatePreservesEmergency
+//     — the batch path must honor the same column scope, otherwise the
+//     "stale poll snapshot revokes a live emergency grant" race comes back)
+//  3. failure path: a zero-ID row aborts the batch (transaction rolls back,
+//     no partial writes)
 func TestBatchUpdateTrafficState(t *testing.T) {
 	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
@@ -175,10 +175,10 @@ func TestBatchUpdateTrafficState(t *testing.T) {
 			t.Fatalf("create %s: %v", u.UPN, err)
 		}
 	}
+	// Grant via the dedicated writer; the broad Update no longer writes the
+	// emergency columns (pollOwnedColumns).
 	until := timeNowUTCPlusHour()
-	b.EmergencyUntil = &until
-	b.EmergencyBaselineBytes = 5 << 30
-	if err := repo.Update(ctx, b); err != nil {
+	if err := repo.GrantEmergencyAccess(ctx, b.ID, until, 1, 5<<30); err != nil {
 		t.Fatalf("grant emergency on b: %v", err)
 	}
 

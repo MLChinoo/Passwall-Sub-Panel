@@ -119,10 +119,49 @@ func (r *fakeUserRepo) CountEnabledAdmins(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+func (r *fakeUserRepo) CountByStatus(ctx context.Context, now time.Time) (ports.UserStatusCounts, error) {
+	var c ports.UserStatusCounts
+	for _, u := range r.users {
+		c.Total++
+		if u.Enabled {
+			c.Enabled++
+		} else {
+			c.Disabled++
+		}
+		if u.EmergencyUntil != nil && u.EmergencyUntil.After(now) {
+			c.Emergency++
+		}
+	}
+	return c, nil
+}
+
+func (r *fakeUserRepo) ListExpiringBetween(ctx context.Context, from, to time.Time, limit int) ([]*domain.User, error) {
+	var out []*domain.User
+	for _, u := range r.users {
+		if u.ExpireAt != nil && !u.ExpireAt.Before(from) && !u.ExpireAt.After(to) {
+			out = append(out, u)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeUserRepo) ClearEmergencyAccess(ctx context.Context, userID int64) error {
 	if cur, ok := r.users[userID]; ok {
 		cur.EmergencyUntil = nil
 		cur.EmergencyBaselineBytes = 0
+	}
+	return nil
+}
+
+func (r *fakeUserRepo) GrantEmergencyAccess(ctx context.Context, userID int64, until time.Time, usedCount int, baselineBytes int64) error {
+	if cur, ok := r.users[userID]; ok {
+		u := until
+		cur.EmergencyUntil = &u
+		cur.EmergencyUsedCount = usedCount
+		cur.EmergencyBaselineBytes = baselineBytes
 	}
 	return nil
 }
@@ -258,6 +297,28 @@ func (r *fakeTrafficRepo) ListHourlyByUser(ctx context.Context, userID int64, si
 		if !h.BucketStart.Before(since.UTC()) && h.BucketStart.Before(until.UTC()) {
 			out = append(out, h)
 		}
+	}
+	return out, nil
+}
+
+func (r *fakeTrafficRepo) SumHourlyAllUsers(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error) {
+	byBucket := map[time.Time]*domain.HourlyTraffic{}
+	for _, h := range r.hourly {
+		if h.BucketStart.Before(since.UTC()) || !h.BucketStart.Before(until.UTC()) {
+			continue
+		}
+		b := byBucket[h.BucketStart]
+		if b == nil {
+			b = &domain.HourlyTraffic{BucketStart: h.BucketStart}
+			byBucket[h.BucketStart] = b
+		}
+		b.UpBytes += h.UpBytes
+		b.DownBytes += h.DownBytes
+		b.TotalBytes += h.TotalBytes
+	}
+	out := make([]domain.HourlyTraffic, 0, len(byBucket))
+	for _, b := range byBucket {
+		out = append(out, *b)
 	}
 	return out, nil
 }
@@ -801,6 +862,28 @@ func (r *fakeNodeTrafficRepo) ListHourlyByNode(ctx context.Context, nodeID int64
 	return out, nil
 }
 
+func (r *fakeNodeTrafficRepo) SumHourlyAllNodes(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error) {
+	byBucket := map[time.Time]*domain.HourlyTraffic{}
+	for _, h := range r.hourly {
+		if h.BucketStart.Before(since.UTC()) || !h.BucketStart.Before(until.UTC()) {
+			continue
+		}
+		b := byBucket[h.BucketStart]
+		if b == nil {
+			b = &domain.HourlyTraffic{BucketStart: h.BucketStart}
+			byBucket[h.BucketStart] = b
+		}
+		b.UpBytes += h.UpBytes
+		b.DownBytes += h.DownBytes
+		b.TotalBytes += h.TotalBytes
+	}
+	out := make([]domain.HourlyTraffic, 0, len(byBucket))
+	for _, b := range byBucket {
+		out = append(out, *b)
+	}
+	return out, nil
+}
+
 func (r *fakeNodeTrafficRepo) Insert(ctx context.Context, s *domain.NodeTrafficSnapshot) error {
 	r.snapshots = append(r.snapshots, s)
 	return nil
@@ -926,6 +1009,14 @@ func (r *fakeNodeRepo) UpdateTrafficCounters(ctx context.Context, n *domain.Node
 	cur.LastTrafficUpBytes = n.LastTrafficUpBytes
 	cur.LastTrafficDownBytes = n.LastTrafficDownBytes
 	cur.LastTrafficTotalBytes = n.LastTrafficTotalBytes
+	return nil
+}
+func (r *fakeNodeRepo) BatchUpdateTrafficCounters(ctx context.Context, nodes []*domain.Node) error {
+	for _, n := range nodes {
+		if err := r.UpdateTrafficCounters(ctx, n); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 func (r *fakeNodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {

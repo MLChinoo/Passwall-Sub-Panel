@@ -309,7 +309,11 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 	preloadedEntries []*domain.XUIClientEntry,
 	batchOK bool,
 ) {
-	if !u.Enabled {
+	// Gate on the EFFECTIVE state, not raw Enabled: an expired-but-Enabled user
+	// inside a live emergency window must have missing clients recreated (with
+	// the emergency push-expiry below), and a genuinely-expired user must not get
+	// a client recreated only for 3X-UI to disable it instantly. Mirrors checkOne.
+	if !u.EffectiveEnabled(time.Now()) {
 		return
 	}
 	if g == nil {
@@ -360,10 +364,11 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 		}
 
 		email := u.ClientEmail(n.ID, rules)
-		var expireTime int64
-		if u.ExpireAt != nil {
-			expireTime = u.ExpireAt.UnixMilli()
-		}
+		// PushExpireTime = MAX(ExpireAt, EmergencyUntil) in ms, so an emergency
+		// window's future expiry wins over a past real expiry — recreating the
+		// client with the raw ExpireAt would let 3X-UI's expiry cron disable it
+		// immediately. Mirrors checkOne / the user provisioning path.
+		expireTime := u.PushExpireTime()
 
 		// AddClientToInbound recreates a missing client (best-effort drift
 		// recovery). It does NOT dedup/adopt an already-present client: if the

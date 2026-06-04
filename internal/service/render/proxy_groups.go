@@ -67,7 +67,11 @@ func withRequiredProxyGroupDependencies(targets []string) []string {
 	hasNodeSelector := false
 	needsNodeSelector := false
 	for _, target := range targets {
-		if strings.Contains(target, "节点选择") {
+		// Exact match, not substring: a custom group merely CONTAINING the phrase
+		// (e.g. "美国节点选择") must not suppress the canonical "🚀 节点选择"
+		// selector other emitted groups still reference, which would leave a
+		// dangling reference Clash-family clients reject.
+		if target == "🚀 节点选择" {
 			hasNodeSelector = true
 			continue
 		}

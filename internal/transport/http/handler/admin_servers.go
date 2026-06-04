@@ -182,11 +182,23 @@ func (h *AdminServersHandler) Update(c *gin.Context) {
 	// the panel_name columns were dropped in v3. The pool refresh below
 	// makes every subsequent name lookup return the new value automatically.
 	//
-	// Re-register in the pool: remove old client, add fresh one with updated creds.
-	_ = h.pool.Remove(id)
-	if err := h.pool.Add(existing); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Re-register in pool: " + err.Error()})
-		return
+	// Re-register in the pool. Prefer an atomic Replace (production *xui.Pool) so
+	// a concurrent Get from traffic/reconcile/render/sync never hits the brief
+	// "not registered" gap a Remove()+Add() pair exposes; fall back to the pair
+	// for pools that don't implement it (test fakes).
+	if rp, ok := h.pool.(interface {
+		Replace(*domain.XUIPanel) error
+	}); ok {
+		if err := rp.Replace(existing); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Re-register in pool: " + err.Error()})
+			return
+		}
+	} else {
+		_ = h.pool.Remove(id)
+		if err := h.pool.Add(existing); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Re-register in pool: " + err.Error()})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, toServerDTO(existing))
 }

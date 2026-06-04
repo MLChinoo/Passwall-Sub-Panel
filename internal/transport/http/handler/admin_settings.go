@@ -60,6 +60,7 @@ type settingsDTO struct {
 	SubImportTutorialURL       string                   `json:"sub_import_tutorial_url"`
 	SubLogRetentionDays        int                      `json:"sub_log_retention_days"`
 	MailSentRetentionDays      int                      `json:"mail_sent_retention_days"`
+	AuthEventRetentionDays     int                      `json:"auth_event_retention_days"`
 	SubBlockAutoDisable        bool                     `json:"sub_block_auto_disable"`
 	SubBlockAutoDisableCount   int                      `json:"sub_block_auto_disable_count"`
 	SubBlockNotifyUser         bool                     `json:"sub_block_notify_user"`
@@ -142,6 +143,7 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		SubImportTutorialURL:       s.SubImportTutorialURL,
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		MailSentRetentionDays:      s.MailSentRetentionDays,
+		AuthEventRetentionDays:     s.AuthEventRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
 		SubBlockNotifyUser:         s.SubBlockNotifyUser,
@@ -221,6 +223,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		SubImportTutorialURL:       strings.TrimSpace(req.SubImportTutorialURL),
 		SubLogRetentionDays:        req.SubLogRetentionDays,
 		MailSentRetentionDays:      req.MailSentRetentionDays,
+		AuthEventRetentionDays:     req.AuthEventRetentionDays,
 		SubBlockAutoDisable:        req.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   req.SubBlockAutoDisableCount,
 		SubBlockNotifyUser:         req.SubBlockNotifyUser,
@@ -260,7 +263,9 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Geo_ip_update_source must be maxmind, dbip, ipinfo, or custom"})
 		return
 	}
-	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 {
+	if s.AuditRetentionDays < 0 || s.SyncTaskRetentionDays < 0 || s.AuthEventRetentionDays < 0 {
+		// 0 = keep forever (never prune) for AuthEventRetentionDays, matching the
+		// repo's freely-editable semantics; only negative is rejected.
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Retention days must be >= 0"})
 		return
 	}
@@ -343,6 +348,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		SubImportTutorialURL:       s.SubImportTutorialURL,
 		SubLogRetentionDays:        s.SubLogRetentionDays,
 		MailSentRetentionDays:      s.MailSentRetentionDays,
+		AuthEventRetentionDays:     s.AuthEventRetentionDays,
 		SubBlockAutoDisable:        s.SubBlockAutoDisable,
 		SubBlockAutoDisableCount:   s.SubBlockAutoDisableCount,
 		SubBlockNotifyUser:         s.SubBlockNotifyUser,

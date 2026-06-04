@@ -34,14 +34,36 @@ func (h *AdminUserHandler) ensureOperatorAllowed(c *gin.Context, targetID int64)
 	}
 	target, err := h.user.Get(c.Request.Context(), targetID)
 	if err != nil {
-		// Let the caller handle 404/500 via its own service call.
-		return true
+		// Fail CLOSED on anything other than a genuine not-found. The old "let the
+		// caller handle it" returned true on ANY error, so a transient DB fault
+		// (pool exhaustion, deadlock retry, context deadline) against a real admin
+		// target made this privilege gate pass and the destructive op run. A
+		// missing target is safe to wave through — the caller's own service call
+		// surfaces the 404.
+		if errors.Is(err, domain.ErrNotFound) {
+			return true
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not verify target account; try again"})
+		return false
 	}
 	if target.Role == domain.RoleAdmin || target.Role == domain.RoleOperator {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Operators cannot modify admin or operator accounts"})
 		return false
 	}
 	return true
+}
+
+// shouldRedactPrivilegedSecrets reports whether the per-user UUID (the root all
+// of a user's protocol secrets derive from) and the working sub URL must be
+// hidden from the caller. Operators are semi-trusted staff who manage regular
+// users but must not read an admin/operator account's credential material —
+// mirroring redactInboundForRole on the node side.
+func (h *AdminUserHandler) shouldRedactPrivilegedSecrets(c *gin.Context, target *domain.User) bool {
+	claims := middleware.ClaimsFrom(c)
+	if claims == nil || claims.Role != domain.RoleOperator {
+		return false
+	}
+	return target.Role == domain.RoleAdmin || target.Role == domain.RoleOperator
 }
 
 // guardOperatorRoleAssignment rejects operator callers that try to
@@ -75,28 +97,28 @@ func NewAdminUserHandler(userSvc *user.Service, settings ports.SettingsRepo, mai
 // ---- DTOs ----
 
 type userDTO struct {
-	ID                 int64                     `json:"id"`
-	DisplayName        string                    `json:"display_name,omitempty"`
-	UPN                string                    `json:"upn"`
-	Email              string                    `json:"email,omitempty"`
+	ID          int64  `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	UPN         string `json:"upn"`
+	Email       string `json:"email,omitempty"`
 	// SSOProvider + SSOSubject expose the SSO identity binding so the
 	// admin UI can show "this account signs in via saml:default with
 	// NameID=alice@example.com" and offer an Unlink action. Read-only —
 	// /unlink-sso is the only path to mutate them, and successful SSO
 	// logins overwrite them.
-	SSOProvider        string                    `json:"sso_provider"`
-	SSOSubject         string                    `json:"sso_subject,omitempty"`
-	Role               domain.Role               `json:"role"`
-	GroupID            int64                     `json:"group_id"`
-	UUID               string                    `json:"uuid"`
-	SubURL             string                    `json:"sub_url"`
-	ExpireAt           *time.Time                `json:"expire_at,omitempty"`
+	SSOProvider string      `json:"sso_provider"`
+	SSOSubject  string      `json:"sso_subject,omitempty"`
+	Role        domain.Role `json:"role"`
+	GroupID     int64       `json:"group_id"`
+	UUID        string      `json:"uuid"`
+	SubURL      string      `json:"sub_url"`
+	ExpireAt    *time.Time  `json:"expire_at,omitempty"`
 	// ExpireDate is ExpireAt rendered as the YYYY-MM-DD calendar day it
 	// falls on in the *panel* timezone. The UI uses this for the date
 	// picker and table so the displayed day matches what was set, free of
 	// the browser's or 3X-UI server's timezone. Empty for permanent users.
-	ExpireDate string `json:"expire_date,omitempty"`
-	TrafficLimitBytes  int64                     `json:"traffic_limit_bytes"`
+	ExpireDate        string `json:"expire_date,omitempty"`
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes"`
 	// Lifetime counters (never reset by period rolls) — surfaced read-only in
 	// the admin edit dialog's detail block.
 	LifetimeUpBytes    int64                     `json:"lifetime_up_bytes"`
@@ -126,19 +148,19 @@ type userDTO struct {
 }
 
 type createUserRequest struct {
-	UPN                string     `json:"upn" binding:"required"`
-	Email              string     `json:"email"`
-	DisplayName        string     `json:"display_name"`
-	Password           string     `json:"password"`
-	GroupID            int64      `json:"group_id" binding:"required"`
-	ExpireAt           *time.Time `json:"expire_at"`
+	UPN         string     `json:"upn" binding:"required"`
+	Email       string     `json:"email"`
+	DisplayName string     `json:"display_name"`
+	Password    string     `json:"password"`
+	GroupID     int64      `json:"group_id" binding:"required"`
+	ExpireAt    *time.Time `json:"expire_at"`
 	// ExpireDate ("YYYY-MM-DD"), when set, is interpreted as end-of-day in
 	// the panel timezone and wins over ExpireAt. Preferred over ExpireAt for
 	// calendar-date expiry so the day can't drift with the caller's timezone.
-	ExpireDate         string     `json:"expire_date"`
-	TrafficLimitGB     float64    `json:"traffic_limit_gb"` // fractional GB allowed (e.g. 0.3)
-	TrafficResetPeriod string     `json:"traffic_reset_period"`
-	Remark             string     `json:"remark"`
+	ExpireDate         string  `json:"expire_date"`
+	TrafficLimitGB     float64 `json:"traffic_limit_gb"` // fractional GB allowed (e.g. 0.3)
+	TrafficResetPeriod string  `json:"traffic_reset_period"`
+	Remark             string  `json:"remark"`
 }
 
 type createUserResponse struct {
@@ -189,7 +211,7 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 	subBase := strings.TrimRight(resolveSubBaseForRequest(c.Request.Context(), h.settings, c.Request), "/")
 	out := make([]userDTO, len(items))
 	for i, u := range items {
-		out[i] = h.toDTOWith(u, settings, loc, subBase)
+		out[i] = h.toDTOWith(u, settings, loc, subBase, h.shouldRedactPrivilegedSecrets(c, u))
 	}
 	c.JSON(http.StatusOK, pagedEnvelope(out, total, p))
 }
@@ -221,7 +243,7 @@ func (h *AdminUserHandler) Get(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, h.toDTO(c.Request, u))
+	c.JSON(http.StatusOK, h.toDTO(c.Request, u, h.shouldRedactPrivilegedSecrets(c, u)))
 }
 
 func (h *AdminUserHandler) Create(c *gin.Context) {
@@ -281,7 +303,7 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		c.Header("X-Sync-Pending", "1")
 	}
 	c.JSON(http.StatusCreated, createUserResponse{
-		User:            h.toDTO(c.Request, res.User),
+		User:            h.toDTO(c.Request, res.User, h.shouldRedactPrivilegedSecrets(c, res.User)),
 		InitialPassword: res.InitialPassword,
 		SyncedInbounds:  res.SyncedInbounds,
 	})
@@ -533,19 +555,19 @@ func (h *AdminUserHandler) PutRules(c *gin.Context) {
 }
 
 type updateUserRequest struct {
-	GroupID            *int64     `json:"group_id,omitempty"`
-	Role               *string    `json:"role,omitempty"`
-	Email              *string    `json:"email,omitempty"`
-	ExpireAt           *time.Time `json:"expire_at,omitempty"`
+	GroupID  *int64     `json:"group_id,omitempty"`
+	Role     *string    `json:"role,omitempty"`
+	Email    *string    `json:"email,omitempty"`
+	ExpireAt *time.Time `json:"expire_at,omitempty"`
 	// ExpireDate ("YYYY-MM-DD"), when non-nil, is interpreted as end-of-day
 	// in the panel timezone and wins over ExpireAt. The date-mode UI sends
 	// this; permanent-mode sends ClearExpire instead.
-	ExpireDate         *string    `json:"expire_date,omitempty"`
-	ClearExpire        bool       `json:"clear_expire,omitempty"`
-	TrafficLimitGB     *float64   `json:"traffic_limit_gb,omitempty"` // fractional GB allowed
-	TrafficResetPeriod *string    `json:"traffic_reset_period,omitempty"`
-	Remark             *string    `json:"remark,omitempty"`
-	DisplayName        *string    `json:"display_name,omitempty"`
+	ExpireDate         *string  `json:"expire_date,omitempty"`
+	ClearExpire        bool     `json:"clear_expire,omitempty"`
+	TrafficLimitGB     *float64 `json:"traffic_limit_gb,omitempty"` // fractional GB allowed
+	TrafficResetPeriod *string  `json:"traffic_reset_period,omitempty"`
+	Remark             *string  `json:"remark,omitempty"`
+	DisplayName        *string  `json:"display_name,omitempty"`
 }
 
 func (h *AdminUserHandler) Update(c *gin.Context) {
@@ -631,7 +653,7 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 	if h.user.HasPendingSync(c.Request.Context(), id) {
 		c.Header("X-Sync-Pending", "1")
 	}
-	c.JSON(http.StatusOK, h.toDTO(c.Request, u))
+	c.JSON(http.StatusOK, h.toDTO(c.Request, u, h.shouldRedactPrivilegedSecrets(c, u)))
 }
 
 // ---- helpers ----
@@ -655,16 +677,16 @@ func (h *AdminUserHandler) panelDateToInstant(ctx context.Context, dateStr strin
 // pure mapping to toDTOWith. List-style callers should bypass this and
 // call toDTOWith directly with shared state to avoid per-row Load /
 // per-row sub-base recompute (see List).
-func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User) userDTO {
+func (h *AdminUserHandler) toDTO(r *http.Request, u *domain.User, redactSecrets bool) userDTO {
 	st := h.loadSettingsForRequest(r)
 	loc := paneltz.LocationOf(st.Timezone)
 	subBase := strings.TrimRight(resolveSubBaseForRequest(r.Context(), h.settings, r), "/")
-	return h.toDTOWith(u, st, loc, subBase)
+	return h.toDTOWith(u, st, loc, subBase, redactSecrets)
 }
 
 // toDTOWith is the pure mapping — no I/O, no Load — so list endpoints
 // can call it inside a tight loop with caller-supplied shared state.
-func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *time.Location, subBase string) userDTO {
+func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *time.Location, subBase string, redactSecrets bool) userDTO {
 	// Only fill EmergencyUsedBytes when a window is actually active — a stale
 	// baseline from a closed window is meaningless and would mislead the UI.
 	var usedBytes int64
@@ -682,6 +704,14 @@ func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *t
 	if u.ExpireAt != nil {
 		expireDate = paneltz.DateString(*u.ExpireAt, loc)
 	}
+	uuid := u.UUID
+	subURL := joinSubURL(subBase, resolveSubPathFromSettings(st, u.SubToken))
+	if redactSecrets {
+		// Hide the credential root + working sub URL from an operator viewing a
+		// privileged account (see shouldRedactPrivilegedSecrets).
+		uuid = ""
+		subURL = ""
+	}
 	return userDTO{
 		ID:                  u.ID,
 		DisplayName:         u.DisplayName,
@@ -691,8 +721,8 @@ func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *t
 		SSOSubject:          u.SSOSubject,
 		Role:                u.Role,
 		GroupID:             u.GroupID,
-		UUID:                u.UUID,
-		SubURL:              joinSubURL(subBase, resolveSubPathFromSettings(st, u.SubToken)),
+		UUID:                uuid,
+		SubURL:              subURL,
 		ExpireAt:            u.ExpireAt,
 		ExpireDate:          expireDate,
 		TrafficLimitBytes:   u.TrafficLimitBytes,

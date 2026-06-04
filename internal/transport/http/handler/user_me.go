@@ -64,36 +64,36 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		emergencyStatus = user.EmergencyAccessStatusForUserWithTrafficLimit(u, settings, time.Now(), h.trafficLimitExceeded(c.Request.Context(), u))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"id":                      u.ID,
-		"display_name":            u.DisplayName,
-		"upn":                     u.UPN,
-		"sub_url":                 h.subURL(c.Request, u.SubToken),
+		"id":           u.ID,
+		"display_name": u.DisplayName,
+		"upn":          u.UPN,
+		"sub_url":      h.subURL(c.Request, u.SubToken),
 		// profile_name is the server-resolved SubProfileNameTemplate.
 		// Exposing it pre-rendered means the frontend's buildImportURL
 		// can drop {{ profile_name_encoded }} into deep links exactly
 		// matching the Content-Disposition / Profile-Title strings the
 		// subscription response itself carries — no client-side template
 		// engine, no risk of the two surfaces drifting.
-		"profile_name":              render.RenderProfileName(settings, u),
+		"profile_name": render.RenderProfileName(settings, u),
 		// sub_update_interval_hours surfaces the admin-configured value so
 		// import-URL templates can embed it (CMfA reads `update-interval`
 		// from the intent URI in minutes; the frontend converts on render).
 		"sub_update_interval_hours": settings.SubUpdateIntervalHours,
 		"sub_import_clients":        enabledImportApps(settings.SubClients),
 		"sub_import_tutorial_url":   settings.SubImportTutorialURL,
-		"quick_links":             enabledQuickLinks(settings.QuickLinks),
-		"global_announcement":     visibleGlobalAnnouncement(settings.GlobalAnnouncement),
-		"expire_at":               u.ExpireAt,
-		"traffic_limit_bytes":     u.TrafficLimitBytes,
-		"traffic_reset_period":    u.TrafficResetPeriod,
+		"quick_links":               enabledQuickLinks(settings.QuickLinks),
+		"global_announcement":       visibleGlobalAnnouncement(settings.GlobalAnnouncement),
+		"expire_at":                 u.ExpireAt,
+		"traffic_limit_bytes":       u.TrafficLimitBytes,
+		"traffic_reset_period":      u.TrafficResetPeriod,
 		// Exposed so the user portal's traffic chart can hide range options
 		// that exceed retention (e.g. don't offer "last 1 year" when the
 		// admin has set TrafficHistoryDays to 90). Mirrors the admin chart's
 		// rangeOptions filter; 0 means "no retention cap" (chart treats it
 		// as unlimited).
-		"traffic_history_days":    settings.TrafficHistoryDays,
-		"enabled":                 u.Enabled,
-		"can_change_password":     canChangePassword,
+		"traffic_history_days": settings.TrafficHistoryDays,
+		"enabled":              u.Enabled,
+		"can_change_password":  canChangePassword,
 		// can_edit_personal_rules drives the portal's rules dialog: when
 		// false the textarea renders read-only and the Save button hides.
 		// Admins always can; for non-admins it follows the global flag.
@@ -263,7 +263,10 @@ func (h *UserMeHandler) EmergencyAccess(c *gin.Context) {
 		}
 		return
 	}
-	if h.user.HasPendingSync(c.Request.Context(), claims.UserID) {
+	// Single HasPendingSync query reused for both the header and the JSON field —
+	// nothing writes sync_tasks between them.
+	pendingSync := h.user.HasPendingSync(c.Request.Context(), claims.UserID)
+	if pendingSync {
 		c.Header("X-Sync-Pending", "1")
 	}
 	settings, _ := h.settings.Load(c.Request.Context(), ports.UISettings{})
@@ -277,7 +280,7 @@ func (h *UserMeHandler) EmergencyAccess(c *gin.Context) {
 		"remaining":       res.Remaining,
 		"quota_bytes":     int64(settings.EmergencyAccessQuotaGB * 1024 * 1024 * 1024),
 		"used_bytes":      int64(0), // window just opened — UsedBytes is always 0 right after grant
-		"sync_pending":    h.user.HasPendingSync(c.Request.Context(), claims.UserID),
+		"sync_pending":    pendingSync,
 	})
 }
 
@@ -495,7 +498,15 @@ func inferRequestBaseURL(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	scheme := firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+	// Only honour X-Forwarded-* when a trusted proxy set them (ProxyTrust
+	// middleware). Otherwise an attacker could inject X-Forwarded-Host to poison
+	// the sub URL handed to any user, and the SAML SP EntityID/ACSURL written on
+	// an admin save in auto mode — fall back to the actual request host/scheme.
+	trusted := middleware.ProxyHeadersTrusted(r.Context())
+	var scheme string
+	if trusted {
+		scheme = firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+	}
 	if scheme != "http" && scheme != "https" {
 		if r.TLS != nil {
 			scheme = "https"
@@ -503,7 +514,10 @@ func inferRequestBaseURL(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	var host string
+	if trusted {
+		host = firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	}
 	if host == "" {
 		host = strings.TrimSpace(r.Host)
 	}

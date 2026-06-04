@@ -78,6 +78,37 @@ func (r *nodeRepo) UpdateTrafficCounters(ctx context.Context, n *domain.Node) er
 		}).Error
 }
 
+// BatchUpdateTrafficCounters applies UpdateTrafficCounters to every node in one
+// transaction — the end-of-cycle flush for the traffic poll's per-node lifetime
+// accounting, collapsing what used to be one inline UPDATE per inbound into a
+// single batched round-trip (see ports.NodeRepo). Column-scoped, so it never
+// clobbers the concurrent health pass.
+func (r *nodeRepo) BatchUpdateTrafficCounters(ctx context.Context, nodes []*domain.Node) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, n := range nodes {
+			if n == nil || n.ID == 0 {
+				return fmt.Errorf("BatchUpdateTrafficCounters requires a non-zero node ID; got %+v", n)
+			}
+			if err := tx.Model(&nodeRow{}).
+				Where("id = ?", n.ID).
+				Updates(map[string]any{
+					"lifetime_up_bytes":        n.LifetimeUpBytes,
+					"lifetime_down_bytes":      n.LifetimeDownBytes,
+					"lifetime_total_bytes":     n.LifetimeTotalBytes,
+					"last_traffic_up_bytes":    n.LastTrafficUpBytes,
+					"last_traffic_down_bytes":  n.LastTrafficDownBytes,
+					"last_traffic_total_bytes": n.LastTrafficTotalBytes,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // UpdateHealth writes only the health-probe columns (see UpdateTrafficCounters
 // for why this is column-scoped rather than a full-row Save).
 func (r *nodeRepo) UpdateHealth(ctx context.Context, n *domain.Node) error {

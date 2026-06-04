@@ -318,7 +318,13 @@ export default function MeView() {
       if (stored === (a.updated_at || a.title)) return
     } catch { /* localStorage unavailable — fall through and show */ }
     setAnnounceOpen(true)
-  }, [profile])
+    // Depend on the announcement's IDENTITY, not the whole profile object:
+    // load() (tryEmergency / reset) replaces `profile` with a fresh object every
+    // call, which would otherwise re-fire this effect and re-pop a session-only
+    // (non-persisted) dismissal. A genuine announcement edit changes updated_at /
+    // title and still re-opens correctly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.global_announcement?.updated_at, profile?.global_announcement?.title])
 
   function closeAnnounce(persist: boolean) {
     if (persist) {

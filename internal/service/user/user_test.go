@@ -326,6 +326,16 @@ func (r *memoryUserRepo) ClearEmergencyAccess(ctx context.Context, userID int64)
 	return nil
 }
 
+func (r *memoryUserRepo) GrantEmergencyAccess(ctx context.Context, userID int64, until time.Time, usedCount int, baselineBytes int64) error {
+	if cur, ok := r.byID[userID]; ok {
+		u := until
+		cur.EmergencyUntil = &u
+		cur.EmergencyUsedCount = usedCount
+		cur.EmergencyBaselineBytes = baselineBytes
+	}
+	return nil
+}
+
 func (r *memoryUserRepo) Delete(ctx context.Context, id int64) error {
 	delete(r.byID, id)
 	return nil
@@ -339,6 +349,35 @@ func (r *memoryUserRepo) CountEnabledAdmins(ctx context.Context) (int64, error) 
 		}
 	}
 	return n, nil
+}
+
+func (r *memoryUserRepo) CountByStatus(ctx context.Context, now time.Time) (ports.UserStatusCounts, error) {
+	var c ports.UserStatusCounts
+	for _, u := range r.byID {
+		c.Total++
+		if u.Enabled {
+			c.Enabled++
+		} else {
+			c.Disabled++
+		}
+		if u.EmergencyUntil != nil && u.EmergencyUntil.After(now) {
+			c.Emergency++
+		}
+	}
+	return c, nil
+}
+
+func (r *memoryUserRepo) ListExpiringBetween(ctx context.Context, from, to time.Time, limit int) ([]*domain.User, error) {
+	var out []*domain.User
+	for _, u := range r.byID {
+		if u.ExpireAt != nil && !u.ExpireAt.Before(from) && !u.ExpireAt.After(to) {
+			out = append(out, u)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (r *memoryUserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) {

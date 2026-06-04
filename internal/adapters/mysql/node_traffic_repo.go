@@ -177,6 +177,33 @@ func (r *nodeTrafficRepo) ListHourlyByNode(ctx context.Context, nodeID int64, si
 	return out, nil
 }
 
+// SumHourlyAllNodes sums every node's hourly buckets per bucket_start in one
+// GROUP BY query (the all-scope node chart's single-query source). UTC bounds for
+// the same TZ-string-ordering reason as ListHourlyByNode.
+func (r *nodeTrafficRepo) SumHourlyAllNodes(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error) {
+	var rows []nodeTrafficHourlyRow
+	err := r.db.WithContext(ctx).
+		Model(&nodeTrafficHourlyRow{}).
+		Select("bucket_start, SUM(up_bytes) AS up_bytes, SUM(down_bytes) AS down_bytes, SUM(total_bytes) AS total_bytes").
+		Where("bucket_start >= ? AND bucket_start < ?", since.UTC(), until.UTC()).
+		Group("bucket_start").
+		Order("bucket_start ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.HourlyTraffic, len(rows))
+	for i := range rows {
+		out[i] = domain.HourlyTraffic{
+			BucketStart: rows[i].BucketStart,
+			UpBytes:     rows[i].UpBytes,
+			DownBytes:   rows[i].DownBytes,
+			TotalBytes:  rows[i].TotalBytes,
+		}
+	}
+	return out, nil
+}
+
 // PruneBefore deletes node_traffic_snapshots rows captured strictly before
 // cutoff. Idx_node_time supports the range delete. See trafficRepo.PruneBefore
 // for the retention rationale.

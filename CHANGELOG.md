@@ -4,6 +4,26 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.3-beta.19 — 2026-06-03
+
+全代码库审计后的修复批次(31 项,0 critical),外加流量「每小时」统计改用时间比例分摊(RRDtool 式插值)。本地 `go build` / `go vet` / `go test ./...` / `go test -race` / `npm run build` 全通过。
+
+### Fixed
+
+- **全代码库审计:31 项修复(0 critical / 5 high / 9 medium / 17 low),逐项本地回归** —— 多 agent 对抗式审计 + 验证后逐条修复。HIGH:① 设置保存会静默把 `auth_event_retention_days` 清零导致认证日志永不清理(`settingsDTO` 漏接 GET/PUT,beta.16 只接了 repo+前端,名存实亡);② 最后一个启用管理员可被停用/删除导致永久锁死(`DeleteAndSync` / `SetEnabledAndSync` 补 `CountEnabledAdmins` 守卫);③ 邮件重试任务无上限产生不死僵尸 `sync_task`(补 max-attempts + 永久错误立即 Cancel + backoff int64 溢出钳制);④ `RollupRecent` 每轮全表扫 7 天 raw(加 `captured_at` 窗口,索引可用);⑤ `inferRequestBaseURL` 无条件信任 `X-Forwarded-Host` 可污染 sub_url / SAML SP URL(新增 `ProxyTrust` middleware,仅信任可信代理)。MEDIUM / LOW:operator 越权 `ensureOperatorAllowed` 出错时 fail-open → 改 fail-closed;emergency 列纳入 `pollOwnedColumns` + 专用 `GrantEmergencyAccess` 写入器(防并发 Update 回滚授权);设置缓存 fill-during-invalidate 竞态加代次计数器;停用/启用通知改原子 `ReserveSentSlot`(防重复发信);DB 连接池补 `SetConnMaxLifetime`(防代理空闲断连后的坏连接);新增 `idx_task_due_run(status,next_run_at)` 索引(`ListDue` 不再全扫 + filesort);全局 traffic / Nodes History 改单条 `GROUP BY SUM`(消 N+1);ruleset slug→path 自愈索引(避免每次 /sub 渲染 ReadDir 全扫);NodeUpdate 重读快照 + stamp 守卫防覆盖并发配置编辑;reconcile 漏 ownership 重建用 `EffectiveEnabled` / `PushExpireTime`;`isInboundGoneError` 严格匹配(防裸 "not found" 误删 ownership);SAML replay 缓存加 `MaxClockSkew`;operator 看不到 admin/operator 的 UUID / SubURL;`Pool.Replace` 原子替换(消除编辑面板时 Get 失败窗口);自定义代理组名精确匹配 `🚀 节点选择`;geo 下载挂 bgCtx / bgWG + PID 临时文件;dashboard 用 COUNT 查询替代全表拉取;`ListClientsOfInbound` / `ResyncMembership` 等批量化;前端公告弹窗依赖 `updated_at` 而非整个 profile 等。
+
+### Changed
+
+- **流量「每小时」统计改用时间比例分摊(RRDtool / MRTG 式计数器归一化)** —— 原「桶内 MAX-MIN + carry-in」把跨整点那段流量**整块**算给后一小时(≤ 一个拉取间隔的相位误差)。改为:相邻两样本的累计增量,按它跨越各小时的**时间比例**摊入(等价于把累计计数器线性插值到每个 :00 边界再相邻相减)—— 小时值精确到自然小时、**总量守恒、不丢不重**,且**不改拉取时机、不依赖 :00 正好有样本**。边界全处理:计数器重置(xray 重启)钳零、跨 heartbeat(由拉取节奏推导 `max(1h, 2.5×间隔)`,避免粗拉取间隔白屏)的大空洞丢弃不涂抹、当前未满小时实时增长、7 天裁剪边界用 left-complete 保住已持久化值。顺带修了 SQLite 下 `captured_at` 的 SQL 窗口被 `.UTC()` 误排除的 TZ bug(改用进程时区 bound;生产钉 UTC 不受影响)。rollup 测试按新模型更新并新增(比例拆分 130/170、守恒、`heartbeatFor`、重置钳零、跨洞丢弃、裁剪存活)+ 真库 `SumHourlyAllUsers/AllNodes` 聚合测试。
+
+## v3.6.3-beta.18 — 2026-06-03
+
+3X-UI 兼容测试范围复核到 3.2.7。
+
+### Changed
+
+- **3X-UI 兼容范围 3.2.6 → 3.2.7(源码级复核)** —— 对照 v3.2.6→v3.2.7 的 44 个提交逐一核对 PSP 调用的全部端点:无一被改动。`web/controller/inbound.go` 不在改动集(7 个 inbound 路由字节不变),client / server 控制器变更纯属新增(`onlinesByNode` / `activeInbounds` / `getWebCertFiles`)或仅注释,`model.Client/ClientTraffic/Inbound` 结构未变。3.2.7 把 API token 改为落库 SHA-256,但 `Match()` 会对呈递的 token 先哈希、且 `ApiTokensHash` 升级迁移就地改写旧明文行,故 PSP 已粘贴的明文 bearer token 升级后仍透明可用。仅 `docs/compat/v3.json` 数据变更(运行时拉取),`min_xui` 仍 3.2.0,无需改 PSP 代码。标注为源码级复核(尚未真机验证)。
+
 ## v3.6.3-beta.17 — 2026-06-03
 
 「按节点用量」表加分页 / 搜索 / 排序,并修掉它的 N+1 查询。

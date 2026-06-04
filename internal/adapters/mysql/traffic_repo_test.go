@@ -311,3 +311,87 @@ func TestListHourlyByUserAndNode(t *testing.T) {
 		t.Fatalf("node hourly = %+v, want 1 row total 100 (range filter excludes May-20)", ngot)
 	}
 }
+
+// TestSumHourlyAllUsersAndNodes covers the all-scope chart's single-query SUM
+// (the N+1 fix): per-bucket SUM(up/down/total) across EVERY user/node, range-
+// filtered, one row per bucket_start ascending. Verifies the GORM GROUP BY +
+// aggregate-alias mapping actually works against the real driver.
+func TestSumHourlyAllUsersAndNodes(t *testing.T) {
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	sqlDB, _ := db.DB()
+	defer sqlDB.Close()
+
+	ctx := context.Background()
+	h := func(s string) time.Time {
+		ts, perr := time.Parse(time.RFC3339, s)
+		if perr != nil {
+			t.Fatalf("parse %q: %v", s, perr)
+		}
+		return ts.UTC()
+	}
+	// Users 1 and 2 share the 08:00 bucket (must sum); user 1 also has 12:00; one
+	// row is outside the query range.
+	for _, r := range []struct {
+		uid             int64
+		at              string
+		up, down, total int64
+	}{
+		{1, "2026-05-10T08:00:00Z", 10, 20, 30},
+		{2, "2026-05-10T08:00:00Z", 5, 5, 10},
+		{1, "2026-05-10T12:00:00Z", 7, 3, 10},
+		{2, "2026-05-12T00:00:00Z", 99, 99, 198}, // out of range
+	} {
+		if err := db.Table("traffic_snapshots_hourly").Create(map[string]any{
+			"user_id": r.uid, "bucket_start": h(r.at), "up_bytes": r.up, "down_bytes": r.down, "total_bytes": r.total,
+		}).Error; err != nil {
+			t.Fatalf("seed user hourly: %v", err)
+		}
+	}
+	repo := NewRepos(db).Traffic
+	got, err := repo.SumHourlyAllUsers(ctx, h("2026-05-10T00:00:00Z"), h("2026-05-11T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("SumHourlyAllUsers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("buckets = %d, want 2 (one row per bucket_start, range-filtered)", len(got))
+	}
+	if !got[0].BucketStart.Before(got[1].BucketStart) {
+		t.Fatalf("not ascending by bucket_start: %v", got)
+	}
+	if got[0].UpBytes != 15 || got[0].DownBytes != 25 || got[0].TotalBytes != 40 {
+		t.Fatalf("08:00 summed up/down/total = %d/%d/%d, want 15/25/40 (user1+user2)",
+			got[0].UpBytes, got[0].DownBytes, got[0].TotalBytes)
+	}
+	if got[1].TotalBytes != 10 {
+		t.Fatalf("12:00 total = %d, want 10", got[1].TotalBytes)
+	}
+
+	nrepo := NewRepos(db).NodeTraffic
+	for _, r := range []struct {
+		nid             int64
+		at              string
+		up, down, total int64
+	}{
+		{7, "2026-05-10T08:00:00Z", 40, 60, 100},
+		{8, "2026-05-10T08:00:00Z", 1, 2, 3},
+	} {
+		if err := db.Table("node_traffic_snapshots_hourly").Create(map[string]any{
+			"node_id": r.nid, "bucket_start": h(r.at), "up_bytes": r.up, "down_bytes": r.down, "total_bytes": r.total,
+		}).Error; err != nil {
+			t.Fatalf("seed node hourly: %v", err)
+		}
+	}
+	ngot, err := nrepo.SumHourlyAllNodes(ctx, h("2026-05-10T00:00:00Z"), h("2026-05-11T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("SumHourlyAllNodes: %v", err)
+	}
+	if len(ngot) != 1 || ngot[0].TotalBytes != 103 {
+		t.Fatalf("node summed = %+v, want 1 bucket total 103 (node7+node8)", ngot)
+	}
+}

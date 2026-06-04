@@ -42,6 +42,25 @@ type Service struct {
 	lastErr  string    // last completed update's error ("" on success)
 	lastFile string    // last successfully written database filename
 	lastAt   time.Time // when the last update completed (zero = never run)
+
+	// bgCtx / bgWG link the background download to the app lifecycle (set via
+	// SetBackground at wiring time). The download derives its context from bgCtx
+	// so Shutdown cancels it, and registers on bgWG so Shutdown drains it. Nil
+	// when unset (tests / ad-hoc): StartUpdate falls back to a standalone
+	// background context + an untracked goroutine.
+	bgCtx context.Context
+	bgWG  *sync.WaitGroup
+}
+
+// SetBackground links the geo updater to the app's background lifecycle so a
+// download in flight is cancelled and drained on Shutdown instead of leaking
+// (~3.5 min past exit). Called once at wiring time, before any StartUpdate.
+func (s *Service) SetBackground(ctx context.Context, wg *sync.WaitGroup) {
+	if s == nil {
+		return
+	}
+	s.bgCtx = ctx
+	s.bgWG = wg
 }
 
 // New creates the service and ensures the geoip dir exists so admins have a

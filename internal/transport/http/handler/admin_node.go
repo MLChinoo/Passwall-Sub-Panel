@@ -36,21 +36,21 @@ func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, owners
 // ---- DTOs ----
 
 type nodeDTO struct {
-	ID            int64    `json:"id"`
-	PanelID       int64    `json:"panel_id"`
-	PanelName     string   `json:"panel_name"`
-	InboundID     int      `json:"inbound_id"`
-	DisplayName   string   `json:"display_name"`
-	ServerAddress string   `json:"server_address"`
-	Flow          string   `json:"flow,omitempty"`
+	ID            int64  `json:"id"`
+	PanelID       int64  `json:"panel_id"`
+	PanelName     string `json:"panel_name"`
+	InboundID     int    `json:"inbound_id"`
+	DisplayName   string `json:"display_name"`
+	ServerAddress string `json:"server_address"`
+	Flow          string `json:"flow,omitempty"`
 	// Protocol caches the upstream inbound protocol so the UI can gate
 	// protocol-specific fields (e.g. Flow is VLESS-only). Empty for rows
 	// imported before this column existed.
-	Protocol      string   `json:"protocol,omitempty"`
-	Region        string   `json:"region"`
-	Tags          []string `json:"tags"`
-	SortOrder     int      `json:"sort_order"`
-	Enabled       bool     `json:"enabled"`
+	Protocol  string   `json:"protocol,omitempty"`
+	Region    string   `json:"region"`
+	Tags      []string `json:"tags"`
+	SortOrder int      `json:"sort_order"`
+	Enabled   bool     `json:"enabled"`
 	// Kind is "real" for 3X-UI-backed nodes (default for legacy rows) and
 	// "separator" for layout-only entries the admin uses to group the
 	// subscription list. Frontend uses it to style separator rows and
@@ -79,17 +79,17 @@ type inboundDTO struct {
 }
 
 type importNodeRequest struct {
-	PanelID       int64    `json:"panel_id" binding:"required"`
-	InboundID     int      `json:"inbound_id" binding:"required"`
-	DisplayName   string   `json:"display_name" binding:"required"`
-	ServerAddress string   `json:"server_address" binding:"required"`
-	Flow          string   `json:"flow"`
+	PanelID       int64  `json:"panel_id" binding:"required"`
+	InboundID     int    `json:"inbound_id" binding:"required"`
+	DisplayName   string `json:"display_name" binding:"required"`
+	ServerAddress string `json:"server_address" binding:"required"`
+	Flow          string `json:"flow"`
 	// Protocol of the source inbound (lowercased), cached on the node so the
 	// UI can gate protocol-specific fields. Optional for backward compat.
-	Protocol      string   `json:"protocol"`
-	Region        string   `json:"region" binding:"required"`
-	Tags          []string `json:"tags"`
-	SortOrder     int      `json:"sort_order"`
+	Protocol  string   `json:"protocol"`
+	Region    string   `json:"region" binding:"required"`
+	Tags      []string `json:"tags"`
+	SortOrder int      `json:"sort_order"`
 }
 
 type createNodeRequest struct {
@@ -185,8 +185,9 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 	// StreamSettings (client creds + Reality privateKey) — strip them unless admin.
 	isAdmin := callerIsAdmin(c)
 
-	// Load panel name for this node.
-	panelNames := h.loadPanelNames(c.Request.Context())
+	// Resolve only this node's panel name (one GetByID) instead of listing every
+	// panel just to look up a single entry.
+	panelNames := h.panelNameOf(c.Request.Context(), n.PanelID)
 
 	// Bundle the inbound clients so the detail page only needs one round-trip.
 	clients, err := h.node.ListClientsOfInbound(c.Request.Context(), id, h.ownership)
@@ -227,9 +228,9 @@ func (h *AdminNodeHandler) Get(c *gin.Context) {
 // node.Service's separator methods.
 
 type separatorRequest struct {
-	DisplayName string  `json:"display_name" binding:"required"`
-	SortOrder   int     `json:"sort_order"`
-	Enabled     *bool   `json:"enabled"` // nil → true (create default)
+	DisplayName string `json:"display_name" binding:"required"`
+	SortOrder   int    `json:"sort_order"`
+	Enabled     *bool  `json:"enabled"` // nil → true (create default)
 	// Mode is the visibility model: "global" (default) makes the row
 	// visible in every group; "node_bound" gates it on NodeIDs ∩
 	// (group's node set). Anything else falls back to "global" at
@@ -684,6 +685,20 @@ func (h *AdminNodeHandler) alignClaimedUserUUID(ctx context.Context, userID, pan
 // ---- helpers ----
 
 // loadPanelNames fetches all panels and returns a map of panelID -> panelName.
+// panelNameOf resolves only the named node's panel, for the single-node detail
+// view — avoiding loadPanelNames' full List() when toNodeDTO needs just one
+// name. Returns a one-entry map so it drops straight into toNodeDTO.
+func (h *AdminNodeHandler) panelNameOf(ctx context.Context, panelID int64) map[int64]string {
+	names := make(map[int64]string, 1)
+	if h.panels == nil {
+		return names
+	}
+	if p, err := h.panels.GetByID(ctx, panelID); err == nil && p != nil {
+		names[panelID] = p.Name
+	}
+	return names
+}
+
 func (h *AdminNodeHandler) loadPanelNames(ctx context.Context) map[int64]string {
 	names := make(map[int64]string)
 	if h.panels == nil {

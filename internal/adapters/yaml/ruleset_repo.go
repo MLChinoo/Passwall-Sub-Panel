@@ -26,6 +26,12 @@ type RuleSetRepo struct {
 	dir   string
 	mu    sync.RWMutex
 	cache sync.Map // map[string]ruleSetCacheEntry — key = absolute file path
+	// slugIndex memoizes slug -> abs path for files whose filename doesn't match
+	// their slug (notably the seeded default-rules.yaml with slug default_rules),
+	// so /sub renders skip the full ReadDir scan. Self-healing: an entry is
+	// re-verified against the (mtime-cached) file on read and dropped if stale,
+	// so no explicit invalidation on Save/Delete is required.
+	slugIndex sync.Map // map[string]string — key = slug, value = abs path
 }
 
 type ruleSetCacheEntry struct {
@@ -179,6 +185,16 @@ func (r *RuleSetRepo) pathForSlug(slug string) (string, error) {
 		return "", err
 	}
 
+	// Cached slug->path from a prior scan, re-verified against the (mtime-cached)
+	// file so a vanished/renamed-slug entry self-heals via the scan below.
+	if v, ok := r.slugIndex.Load(slug); ok {
+		cached, _ := v.(string)
+		if rs, err := r.readFile(cached); err == nil && rs.Slug == slug {
+			return cached, nil
+		}
+		r.slugIndex.Delete(slug)
+	}
+
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
 		return "", err
@@ -193,6 +209,7 @@ func (r *RuleSetRepo) pathForSlug(slug string) (string, error) {
 			return "", fmt.Errorf("read %s: %w", e.Name(), err)
 		}
 		if rs.Slug == slug {
+			r.slugIndex.Store(slug, candidate)
 			return candidate, nil
 		}
 	}

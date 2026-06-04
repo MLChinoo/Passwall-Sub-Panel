@@ -46,6 +46,11 @@ type cachingSettingsRepo struct {
 	// caller's struct, so a caller mutating the returned value can't
 	// race the cache.
 	cached *ports.UISettings
+	// gen is bumped on every Save (under Lock). A miss-path Load snapshots it
+	// before the inner read and only populates the cache if it's unchanged —
+	// otherwise a Save that committed NEW state between the inner read (which saw
+	// OLD) and the populate would durably cache the stale value (no TTL).
+	gen uint64
 }
 
 // NewCachingSettingsRepo wraps inner with the in-process cache.
@@ -66,6 +71,7 @@ func (r *cachingSettingsRepo) Load(ctx context.Context, defaults ports.UISetting
 		// fills the 5 caller-controlled string fields.
 		return applyUISettingsDefaults(out, defaults), nil
 	}
+	gen := r.gen
 	r.mu.RUnlock()
 
 	// Miss. Inner Load runs with EMPTY defaults so the cached value is
@@ -76,10 +82,13 @@ func (r *cachingSettingsRepo) Load(ctx context.Context, defaults ports.UISetting
 		return defaults, err
 	}
 	r.mu.Lock()
-	// Double-check: another concurrent Load may have populated while
-	// we were on the inner call. Either wins; both produce the same
-	// canonical value (deterministic given the DB state at fetch time).
-	if r.cached == nil {
+	// Populate only if (a) no other Load already did, and (b) no Save landed
+	// since our gen snapshot. Without the gen check, a Save that committed NEW
+	// state and nilled the cache between our inner read (which saw OLD) and here
+	// would let us store OLD durably — there's no TTL, so cache=OLD/DB=NEW would
+	// persist until the next Save. On a gen mismatch we skip caching and let the
+	// next Load re-fetch the post-Save truth.
+	if r.cached == nil && r.gen == gen {
 		cp := loaded
 		r.cached = &cp
 	}
@@ -104,6 +113,7 @@ func (r *cachingSettingsRepo) Save(ctx context.Context, s ports.UISettings) erro
 	// is rare and Load is the path we want fast.
 	r.mu.Lock()
 	r.cached = nil
+	r.gen++
 	r.mu.Unlock()
 	return nil
 }

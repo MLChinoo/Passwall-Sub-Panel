@@ -94,6 +94,15 @@ type SyncTaskFilter struct {
 
 // ---- Repository interfaces ----
 
+// UserStatusCounts holds the admin-dashboard summary counters, computed via
+// COUNT queries instead of materialising the whole users table.
+type UserStatusCounts struct {
+	Total     int64
+	Enabled   int64
+	Disabled  int64
+	Emergency int64 // users with an emergency window still active at the query time
+}
+
 type UserRepo interface {
 	Create(ctx context.Context, u *domain.User) error
 	Update(ctx context.Context, u *domain.User) error
@@ -101,6 +110,14 @@ type UserRepo interface {
 	// block demoting / removing the last admin (an enabled admin is the only
 	// one who can manage the panel, so the count gates self-lockout).
 	CountEnabledAdmins(ctx context.Context) (int64, error)
+	// CountByStatus returns total / enabled / disabled / active-emergency user
+	// counts via COUNT queries — the admin dashboard's summary tiles, which used
+	// to page the entire users table just to tally these.
+	CountByStatus(ctx context.Context, now time.Time) (UserStatusCounts, error)
+	// ListExpiringBetween returns up to limit users whose ExpireAt falls in
+	// [from, to], soonest first — the dashboard's "expiring soon" list, replacing
+	// a full-table scan + in-memory sort/slice.
+	ListExpiringBetween(ctx context.Context, from, to time.Time, limit int) ([]*domain.User, error)
 	// UpdateTrafficState persists ONLY the traffic-poll-owned columns
 	// (lifetime counters, period baseline/start). The traffic poll loads every
 	// user at cycle start and writes them back many seconds later; a full-row
@@ -152,6 +169,13 @@ type UserRepo interface {
 	// rollover or quota-exhaustion ends the window, so it doesn't have to go
 	// through UpdateTrafficState (which no longer owns those columns).
 	ClearEmergencyAccess(ctx context.Context, userID int64) error
+	// GrantEmergencyAccess writes emergency_until / emergency_used_count /
+	// emergency_baseline_bytes for one user via a targeted write — the grant
+	// counterpart of ClearEmergencyAccess. UseEmergencyAccess calls it (under
+	// the emergency lock) so the broad Update, which omits the emergency
+	// columns, can never revert a just-granted window from a concurrent admin
+	// edit's stale snapshot.
+	GrantEmergencyAccess(ctx context.Context, userID int64, until time.Time, usedCount int, baselineBytes int64) error
 	Delete(ctx context.Context, id int64) error
 	GetByID(ctx context.Context, id int64) (*domain.User, error)
 	GetByUPN(ctx context.Context, upn string) (*domain.User, error)
@@ -203,6 +227,14 @@ type NodeRepo interface {
 	// separate goroutines against the same row, so each must touch only its
 	// own columns instead of a full-row Save that would clobber the other.
 	UpdateTrafficCounters(ctx context.Context, n *domain.Node) error
+	// BatchUpdateTrafficCounters runs N UpdateTrafficCounters writes in one
+	// transaction. The traffic poll's per-inbound node accounting used to issue
+	// one inline counter UPDATE per inbound mid-cycle, bypassing the pollSink
+	// batch-flush design (each its own WAL commit / round-trip). The poll now
+	// buffers the touched node rows and flushes them here once at end-of-cycle,
+	// mirroring BatchUpdateTrafficState on the user side. Same column-scoped
+	// write as UpdateTrafficCounters, so it never clobbers the health pass.
+	BatchUpdateTrafficCounters(ctx context.Context, nodes []*domain.Node) error
 	UpdateHealth(ctx context.Context, n *domain.Node) error
 	// UpdateInboundConfig writes only the v3.5 inbound-config snapshot
 	// columns (and the cached port/protocol the snapshot also bears). Same
@@ -326,6 +358,10 @@ type TrafficRepo interface {
 	// [since, until). This is the long-window source for the traffic chart —
 	// raw is kept only ~7 days, the hourly table out to TrafficHistoryDays.
 	ListHourlyByUser(ctx context.Context, userID int64, since, until time.Time) ([]domain.HourlyTraffic, error)
+	// SumHourlyAllUsers returns the per-bucket SUM of EVERY user's hourly rows in
+	// [since, until), one row per bucket_start. Backs the all-scope traffic chart
+	// in a single GROUP BY query instead of a per-user ListHourlyByUser N+1.
+	SumHourlyAllUsers(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error)
 	// LastBeforeForUserClients returns, for one user, the most recent client
 	// snapshot strictly before `before` per (panel, inbound, email) client —
 	// keyed by domain.ClientMatchKey. Backs the per-node usage view's "today"
@@ -365,6 +401,10 @@ type NodeTrafficRepo interface {
 	// ListHourlyByNode returns the node's rolled-up hourly delta buckets in
 	// [since, until) — the long-window source for NodeHistoryFor.
 	ListHourlyByNode(ctx context.Context, nodeID int64, since, until time.Time) ([]domain.HourlyTraffic, error)
+	// SumHourlyAllNodes returns the per-bucket SUM of EVERY node's hourly rows in
+	// [since, until), one row per bucket_start. Backs the all-scope node traffic
+	// chart in a single GROUP BY query instead of a per-node ListHourlyByNode N+1.
+	SumHourlyAllNodes(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error)
 	// InsertBatch consolidates per-poll node snapshot writes; mirrors the
 	// TrafficRepo equivalent.
 	InsertBatch(ctx context.Context, snaps []*domain.NodeTrafficSnapshot) error

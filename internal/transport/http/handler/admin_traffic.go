@@ -164,44 +164,29 @@ func (h *AdminTrafficHandler) History(c *gin.Context) {
 		return
 	}
 
-	items := []trafficHistoryItem{}
-	usersCount := 0
-	page := 1
-	const pageSize = 100
-	for {
-		users, total, err := h.users.List(c.Request.Context(), ports.UserFilter{
-			Pagination: ports.Pagination{Page: page, PageSize: pageSize},
-		})
-		if err != nil {
-			respondError(c, err)
-			return
+	// All-scope: ONE GROUP BY query that sums every user's hourly buckets, instead
+	// of walking the user list and calling HistoryFor per user (an N+1 — one SELECT
+	// per user). users_count comes from a single paged count call.
+	_, usersCount, err := h.users.List(c.Request.Context(), ports.UserFilter{
+		Pagination: ports.Pagination{Page: 1, PageSize: 1},
+	})
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	report, err := h.traffic.HistoryForAll(c.Request.Context(), period, since, until)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	items := make([]trafficHistoryItem, len(report.Items))
+	for i, item := range report.Items {
+		items[i] = trafficHistoryItem{
+			Date:       item.Date,
+			UpBytes:    item.UpBytes,
+			DownBytes:  item.DownBytes,
+			TotalBytes: item.TotalBytes,
 		}
-		for _, u := range users {
-			report, err := h.traffic.HistoryFor(c.Request.Context(), u.ID, period, since, until)
-			if err != nil {
-				respondError(c, err)
-				return
-			}
-			if len(items) == 0 {
-				items = make([]trafficHistoryItem, len(report.Items))
-				for i, item := range report.Items {
-					items[i].Date = item.Date
-				}
-			}
-			for i, item := range report.Items {
-				if i >= len(items) {
-					break
-				}
-				items[i].UpBytes += item.UpBytes
-				items[i].DownBytes += item.DownBytes
-				items[i].TotalBytes += item.TotalBytes
-			}
-			usersCount++
-		}
-		if int64(page*pageSize) >= total {
-			break
-		}
-		page++
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"scope":       "all",
@@ -559,37 +544,33 @@ func (h *AdminTrafficHandler) NodesHistory(c *gin.Context) {
 		return
 	}
 
+	// nodes_count from one List (also the only place separators are excluded);
+	// the traffic data is one GROUP BY SUM across all nodes instead of a per-node
+	// NodeHistoryFor N+1.
 	nodes, err := h.nodes.List(c.Request.Context())
 	if err != nil {
 		respondError(c, err)
 		return
 	}
-	items := []trafficHistoryItem{}
 	nodesCount := 0
 	for _, node := range nodes {
-		if node.IsSeparator() {
-			continue // layout-only rows have no traffic
+		if !node.IsSeparator() {
+			nodesCount++
 		}
-		report, herr := h.traffic.NodeHistoryFor(c.Request.Context(), node.ID, period, since, until)
-		if herr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": herr.Error()})
-			return
+	}
+	report, herr := h.traffic.NodesHistoryForAll(c.Request.Context(), period, since, until)
+	if herr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": herr.Error()})
+		return
+	}
+	items := make([]trafficHistoryItem, len(report.Items))
+	for i, item := range report.Items {
+		items[i] = trafficHistoryItem{
+			Date:       item.Date,
+			UpBytes:    item.UpBytes,
+			DownBytes:  item.DownBytes,
+			TotalBytes: item.TotalBytes,
 		}
-		if len(items) == 0 {
-			items = make([]trafficHistoryItem, len(report.Items))
-			for i, item := range report.Items {
-				items[i].Date = item.Date
-			}
-		}
-		for i, item := range report.Items {
-			if i >= len(items) {
-				break
-			}
-			items[i].UpBytes += item.UpBytes
-			items[i].DownBytes += item.DownBytes
-			items[i].TotalBytes += item.TotalBytes
-		}
-		nodesCount++
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"scope":       "all",

@@ -118,6 +118,19 @@ func (s *Service) ProcessDueMailTasks(ctx context.Context, limit int) error {
 			continue
 		}
 		if err := s.processMailTask(ctx, task); err != nil {
+			// Terminal failures stop re-running forever (the pre-fix bug: MarkRetry
+			// never set a terminal status, so a broken SMTP relay / bad payload
+			// produced an immortal sync_task re-attempted every hourly loop). Cancel
+			// on a permanent error (bad payload / unknown template kind) or once the
+			// retry cap is hit, mirroring the user/node processors.
+			if errors.Is(err, domain.ErrValidation) || task.Attempts+1 >= maxMailTaskAttempts {
+				log.Warn("mail task gave up",
+					"task_id", task.ID, "attempts", task.Attempts+1, "last_err", err.Error())
+				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
+					log.Warn("mail task cancel", "task_id", task.ID, "err", markErr)
+				}
+				continue
+			}
 			next := time.Now().Add(mailTaskBackoff(task.Attempts + 1))
 			if markErr := s.tasks.MarkRetry(ctx, task.ID, err.Error(), next); markErr != nil {
 				log.Warn("mail task mark-retry", "task_id", task.ID, "err", markErr)
@@ -134,7 +147,9 @@ func (s *Service) ProcessDueMailTasks(ctx context.Context, limit int) error {
 func (s *Service) processMailTask(ctx context.Context, task *domain.SyncTask) error {
 	var payload MailNotifyPayload
 	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
-		return fmt.Errorf("invalid mail payload: %w", err)
+		// Permanent: a payload that won't unmarshal now never will. Classify as
+		// validation so ProcessDueMailTasks cancels instead of retrying forever.
+		return fmt.Errorf("%w: invalid mail payload: %v", domain.ErrValidation, err)
 	}
 	u, err := s.users.GetByID(ctx, payload.UserID)
 	if err != nil {
@@ -149,14 +164,32 @@ func (s *Service) processMailTask(ctx context.Context, task *domain.SyncTask) er
 	case "account_enabled":
 		return s.SendAccountEnabledNotification(ctx, u, payload.Reason, payload.Detail)
 	default:
-		return fmt.Errorf("unknown template kind: %s", payload.TemplateKind)
+		// Permanent: an unknown template kind is a code/enqueue bug, never
+		// recoverable by retrying. Classify as validation so it's cancelled.
+		return fmt.Errorf("%w: unknown template kind: %s", domain.ErrValidation, payload.TemplateKind)
 	}
 }
 
+// maxMailTaskAttempts caps mail-notification retries, mirroring
+// maxUserTaskAttempts / maxNodeTaskAttempts. Without it a permanently-failing
+// SMTP relay produces an immortal sync_task that re-runs every hourly loop and
+// is never pruned (MarkRetry never sets a terminal status).
+const maxMailTaskAttempts = 100
+
 // mailTaskBackoff returns retry interval for mail tasks.
 func mailTaskBackoff(attempt int) time.Duration {
-	// Exponential backoff: 1m, 2m, 4m, 8m, max 30m.
-	interval := time.Minute * time.Duration(1<<(attempt-1))
+	// Exponential backoff: 1m, 2m, 4m, 8m, 16m, capped at 30m. Clamp the shift
+	// so a large attempt count can't overflow int64 (1<<(attempt-1) wraps
+	// negative around attempt 29+, making the cap check false and the task
+	// immediately-due forever). attempt>=6 already saturates the 30m cap.
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 5 {
+		shift = 5
+	}
+	interval := time.Minute * time.Duration(int64(1)<<uint(shift))
 	if interval > 30*time.Minute {
 		interval = 30 * time.Minute
 	}
@@ -476,9 +509,6 @@ func (s *Service) SendAccountDisabledNotification(ctx context.Context, u *domain
 	// later state changes still notify but accidental duplicates don't. Window
 	// is minute-grained so an SMTP-failure retry (minutes later) still sends.
 	windowKey := eventWindowKey(disableReason)
-	if already, _ := s.repo.HasSent(ctx, u.ID, domain.MailReminderAccountDisable, windowKey); already {
-		return nil
-	}
 	uiCfg, uiErr := s.settings.Load(ctx, ports.UISettings{})
 	if uiErr != nil {
 		// Log and proceed with zero-value uiCfg — templateData has
@@ -497,16 +527,24 @@ func (s *Service) SendAccountDisabledNotification(ctx context.Context, u *domain
 	if err != nil {
 		return err
 	}
-	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
-		// Enqueue for retry.
-		s.enqueueMailNotify(ctx, u.ID, "account_disabled", disableReason, disableDetail)
+	// Atomically claim the per-(user, reason, minute) slot BEFORE sending. A
+	// disable can fire concurrently from the traffic poll and the retry
+	// processor within the same minute; the old HasSent-then-RecordSent pair
+	// was racy (both observe HasSent=false → double-send). Render-first (above)
+	// so a broken template can't consume the slot. Mirrors maybeSend /
+	// SendBlockedClientWarning.
+	won, err := s.repo.ReserveSentSlot(ctx, u.ID, domain.MailReminderAccountDisable, windowKey, to)
+	if err != nil {
 		return err
 	}
-	// Log a RecordSent failure instead of swallowing it: the HasSent dedup guard
-	// keys off this row, so a silent failure lets the same disable/enable mail
-	// resend within the dedup window.
-	if err := s.repo.RecordSent(ctx, u.ID, domain.MailReminderAccountDisable, windowKey, to); err != nil {
-		log.Warn("mail record-sent", "user_id", u.ID, "kind", domain.MailReminderAccountDisable, "err", err)
+	if !won {
+		return nil
+	}
+	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
+		// Enqueue for retry. The retry recomputes a fresh minute-grained
+		// windowKey, so it reserves a new slot and sends once SMTP recovers.
+		s.enqueueMailNotify(ctx, u.ID, "account_disabled", disableReason, disableDetail)
+		return err
 	}
 	return nil
 }
@@ -558,9 +596,6 @@ func (s *Service) SendAccountEnabledNotification(ctx context.Context, u *domain.
 	}
 	// Same per-minute dedup as the disable path (see eventWindowKey).
 	windowKey := eventWindowKey(enableReason)
-	if already, _ := s.repo.HasSent(ctx, u.ID, domain.MailReminderAccountEnable, windowKey); already {
-		return nil
-	}
 	uiCfg, uiErr := s.settings.Load(ctx, ports.UISettings{})
 	if uiErr != nil {
 		// Log and proceed with zero-value uiCfg — templateData has
@@ -579,13 +614,20 @@ func (s *Service) SendAccountEnabledNotification(ctx context.Context, u *domain.
 	if err != nil {
 		return err
 	}
-	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
-		// Enqueue for retry.
-		s.enqueueMailNotify(ctx, u.ID, "account_enabled", enableReason, enableDetail)
+	// Atomically claim the slot BEFORE sending (see SendAccountDisabledNotification
+	// for the double-send race this closes). Render-first so a broken template
+	// can't consume the slot.
+	won, err := s.repo.ReserveSentSlot(ctx, u.ID, domain.MailReminderAccountEnable, windowKey, to)
+	if err != nil {
 		return err
 	}
-	if err := s.repo.RecordSent(ctx, u.ID, domain.MailReminderAccountEnable, windowKey, to); err != nil {
-		log.Warn("mail record-sent", "user_id", u.ID, "kind", domain.MailReminderAccountEnable, "err", err)
+	if !won {
+		return nil
+	}
+	if err := sendSMTP(ctx, settings, to, subject, body); err != nil {
+		// Enqueue for retry (a fresh minute-grained windowKey reserves anew).
+		s.enqueueMailNotify(ctx, u.ID, "account_enabled", enableReason, enableDetail)
+		return err
 	}
 	return nil
 }
@@ -721,6 +763,13 @@ func (s *Service) SendAnnouncement(ctx context.Context, in AnnouncementInput) (*
 	if tpl == nil || !tpl.Enabled {
 		return nil, fmt.Errorf("%w: announcement template is disabled", domain.ErrValidation)
 	}
+
+	// Decouple the broadcast from the request context. A fan-out to thousands of
+	// users takes minutes; if it rode the request ctx, the admin's browser timing
+	// out or navigating away would cancel it mid-list — every remaining sendSMTP
+	// fails on the cancelled ctx, half the users go un-notified, and the result is
+	// lost. WithoutCancel keeps request-scoped values but drops the cancellation.
+	ctx = context.WithoutCancel(ctx)
 
 	// Hoist the UISettings load out of the per-user loop — broadcast can
 	// fan out to thousands of users and the settings KV is N row reads each

@@ -890,6 +890,18 @@ func (s *Service) DeleteAndSync(ctx context.Context, userID int64) error {
 	if err != nil {
 		return err
 	}
+	// Last-admin lockout guard: deleting the only enabled admin would leave
+	// nobody able to manage the panel (recoverable only via the out-of-band
+	// reset-admin-password binary). Mirrors UpdateProfile's demotion guard.
+	if u.Role == domain.RoleAdmin && u.Enabled {
+		n, err := s.users.CountEnabledAdmins(ctx)
+		if err != nil {
+			return err
+		}
+		if n <= 1 {
+			return fmt.Errorf("%w: cannot delete the last enabled admin", domain.ErrValidation)
+		}
+	}
 	u.Enabled = false
 	u.AutoDisabledReason = domain.DisabledPendingDelete
 	if err := s.users.Update(ctx, u); err != nil {
@@ -1138,6 +1150,12 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64, trafficL
 		if err := s.users.Update(ctx, u); err != nil {
 			return err
 		}
+		// The broad Update above omits the emergency columns (pollOwnedColumns)
+		// so a concurrent admin edit can't revert this grant; write them through
+		// the targeted writer under the same lock.
+		if err := s.users.GrantEmergencyAccess(ctx, u.ID, until, u.EmergencyUsedCount, u.EmergencyBaselineBytes); err != nil {
+			return err
+		}
 		pushUser = u
 		result = &EmergencyAccessResult{
 			User:          u,
@@ -1361,12 +1379,74 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	floor := s.trafficFloor(ctx, u)
 	var firstErr error
 
+	// Prefetch ListInbounds once per unique panel referenced by the desired
+	// nodes (parallel, capped by the shared fan-out concurrency), instead of a
+	// serial per-inbound GetInbound inside each ADD/UPDATE iteration. inboundInfo
+	// is then resolved from this in-memory index. Mirrors pushClientConfigToAll's
+	// Phase-1 prefetch.
+	cfg, _ := s.settings.Load(ctx, ports.UISettings{})
+	concurrency := paneltz.ResolveMaxPanelConcurrency(cfg.MaxPanelConcurrency)
+	uniquePanels := make(map[int64]struct{})
+	for k := range desired {
+		uniquePanels[k.panelID] = struct{}{}
+	}
+	type panelData struct {
+		byInbound map[int]*ports.Inbound
+		err       error
+	}
+	panelMap := make(map[int64]panelData, len(uniquePanels))
+	var prefetchMu sync.Mutex
+	var prefetchWG sync.WaitGroup
+	prefetchSem := make(chan struct{}, concurrency)
+	for pid := range uniquePanels {
+		prefetchWG.Add(1)
+		go func(p int64) {
+			defer safego.Recover("user.ResyncMembership.prefetch")
+			defer prefetchWG.Done()
+			prefetchSem <- struct{}{}
+			defer func() { <-prefetchSem }()
+			c, err := s.pool.Get(p)
+			if err != nil {
+				prefetchMu.Lock()
+				panelMap[p] = panelData{err: err}
+				prefetchMu.Unlock()
+				return
+			}
+			list, lerr := c.ListInbounds(ctx)
+			idx := make(map[int]*ports.Inbound, len(list))
+			for i := range list {
+				idx[list[i].ID] = &list[i]
+			}
+			prefetchMu.Lock()
+			panelMap[p] = panelData{byInbound: idx, err: lerr}
+			prefetchMu.Unlock()
+		}(pid)
+	}
+	prefetchWG.Wait()
+
+	// resolveInfo reads the prefetched inbound and builds inboundInfo, mirroring
+	// inspectInbound's failure modes (panel unreachable / inbound gone).
+	resolveInfo := func(n *domain.Node) (*inboundInfo, error) {
+		pd, ok := panelMap[n.PanelID]
+		if !ok || pd.err != nil {
+			if ok && pd.err != nil {
+				return nil, pd.err
+			}
+			return nil, fmt.Errorf("panel %d not reachable", n.PanelID)
+		}
+		inb, found := pd.byInbound[n.InboundID]
+		if !found {
+			return nil, fmt.Errorf("inbound %d not found on panel %d", n.InboundID, n.PanelID)
+		}
+		return inboundInfoFromInbound(inb, n.Flow), nil
+	}
+
 	// ADD: desired but not currently owned
 	for k, n := range desired {
 		if _, ok := have[k]; ok {
 			continue
 		}
-		info, err := s.inspectInbound(ctx, n)
+		info, err := resolveInfo(n)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("inspect %d/%d: %w", k.panelID, k.inboundID, err)
@@ -1394,7 +1474,7 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 		if !ok {
 			continue
 		}
-		info, err := s.inspectInbound(ctx, n)
+		info, err := resolveInfo(n)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("inspect %d/%d: %w", k.panelID, k.inboundID, err)
@@ -1438,6 +1518,19 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 	u, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	// Last-admin lockout guard: disabling the only enabled admin — whether by an
+	// admin action or an auto-disable path (quota/expiry) — would lock everyone
+	// out. Availability of panel management beats quota enforcement for the sole
+	// admin (who normally has no quota anyway). Mirrors UpdateProfile/DeleteAndSync.
+	if !enabled && u.Role == domain.RoleAdmin && u.Enabled {
+		n, err := s.users.CountEnabledAdmins(ctx)
+		if err != nil {
+			return err
+		}
+		if n <= 1 {
+			return fmt.Errorf("%w: cannot disable the last enabled admin", domain.ErrValidation)
+		}
 	}
 	u.Enabled = enabled
 	u.AutoDisabledReason = reason
@@ -1895,15 +1988,22 @@ func (s *Service) inspectInbound(ctx context.Context, n *domain.Node) (*inboundI
 	if err != nil {
 		return nil, err
 	}
+	return inboundInfoFromInbound(inb, n.Flow), nil
+}
+
+// inboundInfoFromInbound extracts protocol / flow / ss-method from an
+// already-fetched inbound, applying the node's flow as a fallback (the shared
+// core of inspectInbound and ResyncMembership's prefetched-inbound path).
+func inboundInfoFromInbound(inb *ports.Inbound, nodeFlow string) *inboundInfo {
 	info := &inboundInfo{
 		ssMethod: extractSSMethod(inb.Settings),
 		flow:     extractDefaultFlow(inb.Settings),
 	}
 	info.protocol = crypto.DetectProtocol(inb.Protocol, info.ssMethod)
 	if info.flow == "" {
-		info.flow = n.Flow
+		info.flow = nodeFlow
 	}
-	return info, nil
+	return info
 }
 
 func extractSSMethod(settingsJSON string) string {

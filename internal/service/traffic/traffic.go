@@ -266,16 +266,17 @@ func (s *Service) PollOnce(ctx context.Context) error {
 	// needed on the sink fields — they're just append targets owned by
 	// this poll.
 	sink := &pollSink{
-		userSnaps:        make([]*domain.TrafficSnapshot, 0, len(users)),
-		clientSnaps:      make([]*domain.ClientTrafficSnapshot, 0, len(users)*4),
-		nodeSnaps:        make([]*domain.NodeTrafficSnapshot, 0),
-		ownershipUpdates: make([]*domain.XUIClientEntry, 0, len(users)*4),
-		userUpdates:      make(map[int64]*domain.User, len(users)),
-		lastOnlineMs:     make(map[int64]int64, len(users)),
-		clientDeltas:     make(map[int64]trafficDelta, len(users)*4),
-		rolledOver:       make(map[int64]bool),
-		clientsByUser:    make(map[int64][]*domain.XUIClientEntry, len(users)),
-		userCutoff:       make(map[int64]*time.Time, len(users)),
+		userSnaps:          make([]*domain.TrafficSnapshot, 0, len(users)),
+		clientSnaps:        make([]*domain.ClientTrafficSnapshot, 0, len(users)*4),
+		nodeSnaps:          make([]*domain.NodeTrafficSnapshot, 0),
+		nodeCounterUpdates: make(map[int64]*domain.Node),
+		ownershipUpdates:   make([]*domain.XUIClientEntry, 0, len(users)*4),
+		userUpdates:        make(map[int64]*domain.User, len(users)),
+		lastOnlineMs:       make(map[int64]int64, len(users)),
+		clientDeltas:       make(map[int64]trafficDelta, len(users)*4),
+		rolledOver:         make(map[int64]bool),
+		clientsByUser:      make(map[int64][]*domain.XUIClientEntry, len(users)),
+		userCutoff:         make(map[int64]*time.Time, len(users)),
 	}
 
 	// Pre-fetch every user's latest snapshot in ONE batched read. Replaces
@@ -561,6 +562,15 @@ func (s *Service) PollOnce(ctx context.Context) error {
 			log.Warn("traffic poll flush user snapshots", "count", len(sink.userSnaps), "err", err)
 		}
 	}
+	if len(sink.nodeCounterUpdates) > 0 {
+		nodes := make([]*domain.Node, 0, len(sink.nodeCounterUpdates))
+		for _, n := range sink.nodeCounterUpdates {
+			nodes = append(nodes, n)
+		}
+		if err := s.nodes.BatchUpdateTrafficCounters(ctx, nodes); err != nil {
+			log.Warn("traffic poll flush node counters", "count", len(nodes), "err", err)
+		}
+	}
 	if len(sink.nodeSnaps) > 0 && s.nodeTraffic != nil {
 		if err := s.nodeTraffic.InsertBatch(ctx, sink.nodeSnaps); err != nil {
 			log.Warn("traffic poll flush node snapshots", "count", len(sink.nodeSnaps), "err", err)
@@ -680,6 +690,12 @@ type pollSink struct {
 	userSnaps   []*domain.TrafficSnapshot
 	clientSnaps []*domain.ClientTrafficSnapshot
 	nodeSnaps   []*domain.NodeTrafficSnapshot
+	// nodeCounterUpdates buffers per-node lifetime-counter writes from the
+	// per-inbound node accounting; flushed via BatchUpdateTrafficCounters at
+	// end-of-cycle. Keyed by node ID (each inbound maps to a unique node, so in
+	// practice one entry per touched node), mirroring userUpdates: the pointer
+	// state at flush time wins. Pre-fix this was an inline UPDATE per inbound.
+	nodeCounterUpdates map[int64]*domain.Node
 	// ownershipUpdates buffers per-client counter writes; flushed via
 	// BatchUpdateCounters at end-of-cycle. Each XUIClientEntry has a
 	// unique ID so no dedup is needed — the slice is one append per
@@ -1332,12 +1348,18 @@ func (s *Service) recordNodeStats(ctx context.Context, panelID int64, inboundID 
 	}
 	if sink != nil {
 		sink.nodeSnaps = append(sink.nodeSnaps, nodeSnap)
-	} else if err := s.nodeTraffic.Insert(ctx, nodeSnap); err != nil {
-		return fmt.Errorf("insert node snapshot: %w", err)
-	}
-
-	if err := s.nodes.UpdateTrafficCounters(ctx, node); err != nil {
-		log.Warn("node traffic lifetime update", "node_id", node.ID, "err", err)
+		// Buffer the lifetime-counter write for the end-of-cycle batch flush
+		// instead of an inline UPDATE per inbound. Keyed by node ID so multiple
+		// inbounds on the same node collapse to one write (the pointer's state
+		// at flush time wins, exactly like userUpdates).
+		sink.nodeCounterUpdates[node.ID] = node
+	} else {
+		if err := s.nodeTraffic.Insert(ctx, nodeSnap); err != nil {
+			return fmt.Errorf("insert node snapshot: %w", err)
+		}
+		if err := s.nodes.UpdateTrafficCounters(ctx, node); err != nil {
+			log.Warn("node traffic lifetime update", "node_id", node.ID, "err", err)
+		}
 	}
 	return nil
 }
@@ -1484,6 +1506,36 @@ func (s *Service) NodeHistoryFor(ctx context.Context, nodeID int64, period Histo
 		Since:  since.Format("2006-01-02"),
 		Until:  until.Format("2006-01-02"),
 		Items:  items,
+	}, nil
+}
+
+// NodesHistoryForAll is the all-scope variant of NodeHistoryFor: it sums every
+// node's hourly buckets in ONE GROUP BY query (SumHourlyAllNodes) and bucketizes
+// once, replacing the admin handler's per-node NodeHistoryFor N+1.
+func (s *Service) NodesHistoryForAll(ctx context.Context, period HistoryPeriod, since, until time.Time) (*NodeHistoryReport, error) {
+	period, err := normalizeHistoryPeriod(period)
+	if err != nil {
+		return nil, err
+	}
+	since = startOfDay(since)
+	until = startOfDay(until)
+	if until.Before(since) {
+		return nil, fmt.Errorf("%w: until must be on or after since", domain.ErrValidation)
+	}
+	untilExclusive := until.AddDate(0, 0, 1)
+	var hourly []domain.HourlyTraffic
+	if s.nodeTraffic != nil {
+		var lerr error
+		hourly, lerr = s.nodeTraffic.SumHourlyAllNodes(ctx, since, untilExclusive)
+		if lerr != nil {
+			return nil, lerr
+		}
+	}
+	return &NodeHistoryReport{
+		Period: period,
+		Since:  since.Format("2006-01-02"),
+		Until:  until.Format("2006-01-02"),
+		Items:  bucketizeHourly(hourly, period, since, untilExclusive),
 	}, nil
 }
 
@@ -1692,6 +1744,33 @@ func (s *Service) HistoryFor(ctx context.Context, userID int64, period HistoryPe
 	}, nil
 }
 
+// HistoryForAll is the all-scope variant of HistoryFor: it sums every user's
+// hourly buckets in ONE GROUP BY query (SumHourlyAllUsers) and bucketizes once,
+// instead of the admin handler calling HistoryFor per user (an N+1). Returns the
+// same period-bucketed Items as a single HistoryFor would over the same range.
+func (s *Service) HistoryForAll(ctx context.Context, period HistoryPeriod, since, until time.Time) (*HistoryReport, error) {
+	period, err := normalizeHistoryPeriod(period)
+	if err != nil {
+		return nil, err
+	}
+	since = startOfDay(since)
+	until = startOfDay(until)
+	if until.Before(since) {
+		return nil, fmt.Errorf("%w: until must be on or after since", domain.ErrValidation)
+	}
+	untilExclusive := until.AddDate(0, 0, 1)
+	hourly, err := s.traffic.SumHourlyAllUsers(ctx, since, untilExclusive)
+	if err != nil {
+		return nil, err
+	}
+	return &HistoryReport{
+		Period: period,
+		Since:  since.Format("2006-01-02"),
+		Until:  until.Format("2006-01-02"),
+		Items:  bucketizeHourly(hourly, period, since, untilExclusive),
+	}, nil
+}
+
 // bucketizeHourly folds pre-aggregated hourly delta rows (sorted by UTC
 // bucket_start ASC) into the chart's [since, untilExclusive) buckets at the
 // requested period granularity. Buckets are computed in the since/until
@@ -1780,7 +1859,6 @@ func bucketLabel(t time.Time, period HistoryPeriod) string {
 	}
 	return t.Format("2006-01-02")
 }
-
 
 // SetPeriodUsage adjusts the current billing-period usage by moving the
 // user's period baseline to "now". This keeps future 3X-UI poll results

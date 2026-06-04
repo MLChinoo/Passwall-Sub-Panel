@@ -36,10 +36,13 @@ func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 // when the dialog opened (defeating the auto-disable threshold —
 // admin "save profile" between a violation increment and the next
 // /sub poll resets the counter to its pre-violation value).
-// Emergency-access columns are intentionally NOT in this list —
-// UseEmergencyAccess goes through Update too, and the race with admin
-// editing the SAME user concurrently is narrowed by emergencyMu at
-// the service layer rather than the repo guard.
+// The emergency-access columns are ALSO omitted: emergencyMu only serializes
+// the emergency subsystem against itself, not against the broad mutators
+// (UpdateProfile, etc.) that call Update WITHOUT the lock. Without omitting them,
+// an admin's read-modify-Save that brackets a concurrent UseEmergencyAccess
+// grant (or the poll's ClearEmergencyAccess) reverts the just-granted window
+// from the dialog's stale snapshot. Emergency columns are written ONLY through
+// the targeted GrantEmergencyAccess / ClearEmergencyAccess writers.
 var pollOwnedColumns = []string{
 	// BatchUpdateTrafficState / UpdateTrafficState
 	"lifetime_up_bytes", "lifetime_down_bytes", "lifetime_total_bytes",
@@ -48,6 +51,8 @@ var pollOwnedColumns = []string{
 	"last_online_at",
 	// UpdateBlockViolation (sub.go blocked-client path)
 	"block_violation_count", "last_block_violation_at", "disable_detail",
+	// GrantEmergencyAccess / ClearEmergencyAccess (emergency subsystem)
+	"emergency_until", "emergency_used_count", "emergency_baseline_bytes",
 }
 
 func (r *userRepo) Update(ctx context.Context, u *domain.User) error {
@@ -61,6 +66,49 @@ func (r *userRepo) CountEnabledAdmins(ctx context.Context) (int64, error) {
 		Where("role = ? AND enabled = ?", string(domain.RoleAdmin), true).
 		Count(&n).Error
 	return n, err
+}
+
+// CountByStatus tallies the dashboard summary counters with COUNT queries
+// instead of loading every user row. Disabled is derived (Total-Enabled) to save
+// a query.
+func (r *userRepo) CountByStatus(ctx context.Context, now time.Time) (ports.UserStatusCounts, error) {
+	var c ports.UserStatusCounts
+	if err := r.db.WithContext(ctx).Model(&userRow{}).Count(&c.Total).Error; err != nil {
+		return c, err
+	}
+	if err := r.db.WithContext(ctx).Model(&userRow{}).
+		Where("enabled = ?", true).Count(&c.Enabled).Error; err != nil {
+		return c, err
+	}
+	c.Disabled = c.Total - c.Enabled
+	if err := r.db.WithContext(ctx).Model(&userRow{}).
+		Where("emergency_until IS NOT NULL AND emergency_until > ?", now.UTC()).
+		Count(&c.Emergency).Error; err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// ListExpiringBetween returns up to limit users with ExpireAt in [from, to],
+// soonest first — the dashboard "expiring soon" list as one bounded query.
+func (r *userRepo) ListExpiringBetween(ctx context.Context, from, to time.Time, limit int) ([]*domain.User, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	var rows []userRow
+	err := r.db.WithContext(ctx).
+		Where("expire_at IS NOT NULL AND expire_at >= ? AND expire_at <= ?", from.UTC(), to.UTC()).
+		Order("expire_at ASC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.User, len(rows))
+	for i := range rows {
+		out[i] = rows[i].toDomain()
+	}
+	return out, nil
 }
 
 // AdvanceBlockViolation atomically advances the blocked-client violation count
@@ -219,6 +267,25 @@ func (r *userRepo) ClearEmergencyAccess(ctx context.Context, userID int64) error
 		Updates(map[string]any{
 			"emergency_until":          nil,
 			"emergency_baseline_bytes": 0,
+		}).Error
+}
+
+// GrantEmergencyAccess writes the emergency window for one user via a targeted
+// write (the grant counterpart of ClearEmergencyAccess). UseEmergencyAccess
+// calls it under the service's emergency lock so the broad Update — which now
+// omits the emergency columns — can never revert a just-granted window from a
+// concurrent admin edit's stale snapshot.
+func (r *userRepo) GrantEmergencyAccess(ctx context.Context, userID int64, until time.Time, usedCount int, baselineBytes int64) error {
+	if userID == 0 {
+		return fmt.Errorf("GrantEmergencyAccess requires a non-zero user ID")
+	}
+	return r.db.WithContext(ctx).
+		Model(&userRow{}).
+		Where("id = ?", userID).
+		Updates(map[string]any{
+			"emergency_until":          until,
+			"emergency_used_count":     usedCount,
+			"emergency_baseline_bytes": baselineBytes,
 		}).Error
 }
 

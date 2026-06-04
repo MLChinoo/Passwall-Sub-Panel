@@ -17,6 +17,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/geoip"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safehttp"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
@@ -56,8 +57,14 @@ func (s *Service) StartUpdate() error {
 	s.updating = true
 	s.upMu.Unlock()
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), geoDownloadTimeout+30*time.Second)
+	run := func() {
+		// Derive from bgCtx so Shutdown cancels the download instead of letting it
+		// run ~3.5 min past exit; fall back to a standalone context when unwired.
+		base := context.Background()
+		if s.bgCtx != nil {
+			base = s.bgCtx
+		}
+		ctx, cancel := context.WithTimeout(base, geoDownloadTimeout+30*time.Second)
 		defer cancel()
 		file, err := s.Update(ctx)
 		s.upMu.Lock()
@@ -70,7 +77,13 @@ func (s *Service) StartUpdate() error {
 			s.lastErr, s.lastFile = "", file
 		}
 		s.upMu.Unlock()
-	}()
+	}
+	// Register on bgWG (when wired) so Shutdown drains it; safego recovers panics.
+	if s.bgWG != nil {
+		safego.GoTracked(s.bgWG, "geo.update", run)
+	} else {
+		safego.Go("geo.update", run)
+	}
 	return nil
 }
 
@@ -128,7 +141,11 @@ func (s *Service) Update(ctx context.Context) (string, error) {
 		// chowning the config dir to 10001.
 		return "", fmt.Errorf("create geoip dir %s (in Docker, make the config dir writable by the container user, e.g. `chown -R 10001 <config-dir>`): %w", s.dir, err)
 	}
-	tmp := filepath.Join(s.dir, target+".part")
+	// PID-suffix the temp file so two processes sharing the config volume (a
+	// rolling restart) can't write the same .part concurrently and corrupt it —
+	// the in-process s.updating single-flight doesn't span processes. The final
+	// os.Rename below is atomic, so whichever finishes last wins cleanly.
+	tmp := filepath.Join(s.dir, fmt.Sprintf("%s.part.%d", target, os.Getpid()))
 	if err := os.WriteFile(tmp, mmdb, 0o644); err != nil {
 		return "", err
 	}

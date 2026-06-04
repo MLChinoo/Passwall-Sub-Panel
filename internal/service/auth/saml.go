@@ -484,7 +484,11 @@ func (s *SAMLService) ParseACSResponse(r *http.Request, possibleRequestIDs []str
 	}
 	exp := assertion.IssueInstant.Add(10 * time.Minute) // generous fallback
 	if assertion.Conditions != nil && !assertion.Conditions.NotOnOrAfter.IsZero() {
-		exp = assertion.Conditions.NotOnOrAfter
+		// crewjam/saml accepts an assertion until NotOnOrAfter + MaxClockSkew, so
+		// the replay cache must hold the entry that long too — otherwise a captured
+		// assertion with a sub-skew condition window could validate again after the
+		// cache already expired it. Pad by MaxClockSkew to close that window.
+		exp = assertion.Conditions.NotOnOrAfter.Add(saml.MaxClockSkew)
 	}
 	if s.replay.SeenOrAdd(assertion.ID, exp, time.Now()) {
 		log.Warn("saml: assertion replay detected", "assertion_id", assertion.ID)

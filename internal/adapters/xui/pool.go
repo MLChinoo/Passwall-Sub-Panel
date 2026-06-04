@@ -95,3 +95,23 @@ func (p *Pool) Remove(panelID int64) error {
 	delete(p.panels, panelID)
 	return nil
 }
+
+// Replace atomically swaps the registered client + panel for panel.ID under a
+// single write lock. The panel-edit handler used to Remove() then Add() as two
+// separate lock cycles, opening a transient window where a concurrent Get()
+// (traffic / reconcile / render / sync) saw the id unregistered and failed.
+// The new client is built BEFORE the lock (New does no I/O) so a build error
+// leaves the pool untouched.
+func (p *Pool) Replace(panel *domain.XUIPanel) error {
+	c, err := New(panel)
+	if err != nil {
+		return fmt.Errorf("init xui client %s: %w", panel.Name, err)
+	}
+	// Defensive copy (same rationale as Add): List() reads p.panels under RLock.
+	cp := *panel
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clients[panel.ID] = c
+	p.panels[panel.ID] = &cp
+	return nil
+}

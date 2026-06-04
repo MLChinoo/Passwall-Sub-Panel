@@ -263,6 +263,33 @@ func (r *trafficRepo) ListHourlyByUser(ctx context.Context, userID int64, since,
 	return out, nil
 }
 
+// SumHourlyAllUsers sums every user's hourly buckets per bucket_start in one
+// GROUP BY query (the all-scope chart's single-query source). UTC bounds for the
+// same TZ-string-ordering reason as ListHourlyByUser.
+func (r *trafficRepo) SumHourlyAllUsers(ctx context.Context, since, until time.Time) ([]domain.HourlyTraffic, error) {
+	var rows []trafficHourlyRow
+	err := r.db.WithContext(ctx).
+		Model(&trafficHourlyRow{}).
+		Select("bucket_start, SUM(up_bytes) AS up_bytes, SUM(down_bytes) AS down_bytes, SUM(total_bytes) AS total_bytes").
+		Where("bucket_start >= ? AND bucket_start < ?", since.UTC(), until.UTC()).
+		Group("bucket_start").
+		Order("bucket_start ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.HourlyTraffic, len(rows))
+	for i := range rows {
+		out[i] = domain.HourlyTraffic{
+			BucketStart: rows[i].BucketStart,
+			UpBytes:     rows[i].UpBytes,
+			DownBytes:   rows[i].DownBytes,
+			TotalBytes:  rows[i].TotalBytes,
+		}
+	}
+	return out, nil
+}
+
 func (r *trafficRepo) InsertClient(ctx context.Context, s *domain.ClientTrafficSnapshot) error {
 	row := clientTrafficRow{
 		UserID:      s.UserID,
