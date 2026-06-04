@@ -45,14 +45,25 @@ small improvement).
 - **认证日志保留天数改为自由可配(默认 90,0 = 永不清理),后端 TDD** —— 原先 loader 把 `<=0` 硬 floor 成 90、又没有「0=永久」逃生口,UI 写「最小 90」但显式小值其实前后端都没拦(名不副实)。改为和 `traffic_history_days` 一致:默认 90 仅在「键从未写过」时由 key-presence 补(`settings_kv_repo.Load`);显式 0 = 永不清理(`pruneAuthEvents` 的 `<=0` 守卫此后是 load-bearing 的);任意正数照单全收(删掉 `applyUISettingsDefaults` 的硬 floor)。前端 hint「最小 90」→「0=永不清理,默认 90」。新增 `TestKVSettings_AuthEventRetentionFreelyEditable`(默认 / 0=永久 / 显式值三态)。
 - **「按节点用量」从用户编辑弹窗搬到 Traffic 页** —— 节点越来越多时,编辑弹窗左栏那张 per-node 表越拉越长会撑爆弹窗。改为:`Traffic → Trend` 选中**某个具体用户**时,在图表下方显示该用户的按节点 累计 / 本周期 / 今日 明细;选「所有用户」或 By node 时不显示。编辑弹窗里换成一行「查看用量 →」深链(`/admin/traffic?tab=trend&scope=user&user=<id>`),点了跳 Traffic 并预选该用户。复用现成 `UserNodeUsage` 组件,后端接口零改动;`tsc -b` 通过。
 
-## v3.6.3 — 2026-06-02
+## v3.6.3 — 2026-06-03
 
-正式版。汇总 v3.6.3-beta.1 → beta.15 全部改动,beta.15 内容直发为正式版定稿。本次在 v3.6.x
-线内同时带来三个新功能(访问日志 IP 地区显示 / 一等公民认证日志 / 按节点用量明细)、一轮全面
-审计后的修复批次,以及对 3X-UI 3.2.6 的兼容复核与端点提效,无 schema 破坏性变更。完整逐项见
-下方各 pre-release 段落,下面只列核心叙事。
+正式版。汇总 v3.6.3-beta.1 → beta.19 全部改动,beta.19 内容直发为正式版定稿。v3.6.x 线内带来
+多个新功能(访问日志 IP 地区显示 / 一等公民认证日志 / 按节点用量明细)、两轮全面审计后的修复
+批次(beta.1–15 的 19 维度审计 + beta.19 的 31 项全代码库审计)、流量小时统计改用 RRDtool 式时间
+比例分摊,以及对 3X-UI 的兼容复核(已到 3.2.7),无 schema 破坏性变更。完整逐项见下方各
+pre-release 段落,下面只列核心叙事。
 
 ### 主要变化（叙事性总述）
+
+- **全代码库审计:31 项修复(0 critical / 5 high / 9 medium / 17 low)(beta.19)** —— 多 agent 对抗式审计后逐条修复并本地回归。HIGH 含:设置保存静默清零 `auth_event_retention_days` 导致认证日志永不清理、最后一个启用管理员可自锁死、邮件重试无上限的僵尸 sync_task、`X-Forwarded-Host` 被无条件信任(新增 `ProxyTrust` middleware)、`RollupRecent` 每轮全表扫 raw。MEDIUM/LOW 覆盖越权 `ensureOperatorAllowed` fail-open、emergency 列并发回滚、设置缓存竞态、邮件重复发信、缺 `ConnMaxLifetime` / `ListDue` 索引、多处 N+1、geo 下载生命周期等。
+
+- **流量「每小时」统计改用时间比例分摊(RRDtool / MRTG 式计数器归一化)(beta.19)** —— 原「MAX-MIN + carry-in」把跨整点流量整块算给后一小时;改为按时间比例摊入各小时(线性插值到 :00 边界再相减),精确到自然小时、总量守恒、不改拉取时机。含 heartbeat 防跨大空洞涂抹、重置钳零、当前小时实时、裁剪边界保值,并修了 SQLite `captured_at` 的 TZ-string SQL bug。
+
+- **「按节点用量」明细从用户编辑弹窗搬到 Traffic 页 + 表格化(beta.16–17)** —— 选中用户后在 `Traffic → Trend` 展示,加分页 / 搜索 / 排序、表脚「合计」始终 = 全部节点之和;并修掉该接口 N+1(固定 2 次查询)。
+
+- **认证日志保留改为自由可配(beta.16)** —— 默认 90、显式 0 = 永不清理、任意正数照单全收(HTTP DTO 漏接回归在 beta.19 修掉)。
+
+- **3X-UI 兼容范围复核到 3.2.7(beta.18,源码级)** —— 44 提交差异核对,PSP 端点无一改动;3.2.7 token 落库哈希对已配置的明文 bearer token 透明。
 
 - **访问日志 IP 地区显示,完全离线(beta.1,beta.2–4 细化、beta.8 三类日志统一)**:订阅 / 审计 /
   认证日志的每条记录在 IP 下方显示来源地区(国旗 + 国家 · 州/省 · 城市),用本地 `.mmdb` 库做内存
