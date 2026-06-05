@@ -9,7 +9,7 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 
 | PSP 版本 | 最低 3X-UI | 已实测通过 | 备注 |
 |---|---|---|---|
-| **v3.6.2+** | **3.2.0** | 3.2.6 | client 适配迁到一级 `/clients/*` API,**硬切 ≥ 3.2.0**;已测上限 2026-06-02 抬到 3.2.6,见下文 |
+| **v3.6.2+** | **3.2.0** | 3.2.8 | client 适配迁到一级 `/clients/*` API,**硬切 ≥ 3.2.0**;已测上限 2026-06-05 实机抬到 3.2.8,见下文 |
 | v3.6.0 – v3.6.1 | 3.1.0 | 3.1.0 | 仍走 inbound-scoped 端点;别跑在 3.2.0 上,先升 PSP 到 v3.6.2 |
 | v3.5.1 – v3.5.x | 3.1.0 | 3.1.0 | `/inbounds/list` 把 settings 等改成 nested object,见下文 |
 | v3.5.0 | 3.0.x | 3.0.x | 跨 3.1.0 升级会破坏 traffic poll |
@@ -24,6 +24,17 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 - 任何高于"已实测通过"的 3X-UI 版本都属于**未知风险**——升级前先在一台 panel 上小流量验证
 
 ## 历史兼容性事件
+
+### 2026-06-05 / 3X-UI 3.2.8 实机复核 → 已测上限 3.2.7 抬到 3.2.8
+
+**背景**: 上游 2026-06-05 当天发 3.2.8(此前 3.2.7 是 source-verified 抬上来的)。拿一台已升到 **3.2.8 的真实面板**(`panelVersion 3.2.8`、xray `26.6.1`)端到端复核。
+
+**复核结论(代码零改动,LIVE-VERIFIED)**: PSP 触及的端点在 3.2.8 全部仍在、形状未变。实机 smoke-test(临时 inbound + client,测完自清理,全 `success:true`):
+- **inbound**: `add` → `get`(回读 `security=tls` / `certificates:[]` / `serverName` / `settings.fingerprint` 全对)→ `update`(内联证书)→ 回读字节级一致 → `del`。
+- **client(全部按 panel 唯一 email)**: `add` → `get`(`obj.client.uuid` 在、`email/enable/flow/password/auth/expiryTime/totalGB` 在原位、`inboundIds` 在)→ `update`(改 enable,回读已生效)→ `del`(删后 get 回 not-found)→ `bulkCreate`(`created:2`)→ `bulkDel`(`deleted:2`)。
+- **server**: `/server/status`(取到 panelVersion 3.2.8 + xray version)、`/server/getPanelUpdateInfo` 正常。
+
+**3.2.7→3.2.8 变更对 PSP 的影响 = 无**: delta 主要是 multi-node(3X-UI 自家主从节点功能)、client 批量性能、订阅格式。唯一碰 client API 的是 **#4892「scope remote client update/delete to one inbound」**——这是 multi-node 专属;PSP 每个 `(panel,inbound)` 用唯一 email、一个 client 只落一个 inbound,所以该改动对 PSP 是 no-op,已被实机 update/del 正常生效证实。3.2.8 的 client obj 新增 `security/group/comment/createdAt/updatedAt/reverse` 字段是**附加**的,Go json 自动忽略,不影响解析。
 
 ### 2026-06-02 / 3X-UI 3.2.6 复核 → 已测上限 3.2.0 抬到 3.2.6
 
