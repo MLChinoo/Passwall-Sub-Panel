@@ -3,12 +3,16 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/captcha"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/loginguard"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 )
 
@@ -21,10 +25,12 @@ type AuthLocalHandler struct {
 	oidc       *auth.OIDCService
 	settings   ports.SettingsRepo
 	authEvents ports.AuthEventRepo
+	guard      *loginguard.Guard
+	captcha    *captcha.Service
 }
 
-func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *auth.SAMLService, oidcSvc *auth.OIDCService, settings ports.SettingsRepo, authEvents ports.AuthEventRepo) *AuthLocalHandler {
-	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings, authEvents: authEvents}
+func NewAuthLocalHandler(authSvc *auth.Service, userSvc *user.Service, samlSvc *auth.SAMLService, oidcSvc *auth.OIDCService, settings ports.SettingsRepo, authEvents ports.AuthEventRepo, guard *loginguard.Guard, captchaSvc *captcha.Service) *AuthLocalHandler {
+	return &AuthLocalHandler{auth: authSvc, user: userSvc, saml: samlSvc, oidc: oidcSvc, settings: settings, authEvents: authEvents, guard: guard, captcha: captchaSvc}
 }
 
 // localLoginDisallowedForUsers reports whether non-admin accounts should be
@@ -63,21 +69,56 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 	//                  frontend bypasses the form entirely via login_mode
 	localShown := mode != "sso_redirect"
 	ssoShown := ssoEnabled && mode != "local_only"
+	// Captcha config for the login form. captcha_required is the upfront
+	// requirement (always-mode); after_failures mode flips on later via the
+	// captcha_required flag returned on a failed login. site_key is public;
+	// the secret never leaves the server.
+	captchaProvider := s.CaptchaProvider
+	if captchaProvider == "" {
+		captchaProvider = captcha.ProviderImage
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"local":         localShown,
-		"sso":           ssoShown,
-		"saml":          ssoShown && samlEnabled,
-		"oidc":          ssoShown && oidcEnabled,
-		"login_mode":    mode,
-		"site_title":    s.SiteTitle,
-		"app_title":     s.AppTitle,
-		"icon_url":      s.IconURL,
-		"logo_url":      s.LogoURL,
-		"logo_url_dark": s.LogoURLDark,
-		"footer_text":   s.FooterText,
-		"theme_color":   s.ThemeColor,
-		"timezone":      s.Timezone,
+		"local":            localShown,
+		"sso":              ssoShown,
+		"saml":             ssoShown && samlEnabled,
+		"oidc":             ssoShown && oidcEnabled,
+		"login_mode":       mode,
+		"site_title":       s.SiteTitle,
+		"app_title":        s.AppTitle,
+		"icon_url":         s.IconURL,
+		"logo_url":         s.LogoURL,
+		"logo_url_dark":    s.LogoURLDark,
+		"footer_text":      s.FooterText,
+		"theme_color":      s.ThemeColor,
+		"timezone":         s.Timezone,
+		"captcha_enabled":  s.CaptchaEnabled,
+		"captcha_provider": captchaProvider,
+		"captcha_site_key": s.CaptchaSiteKey,
+		"captcha_required": s.CaptchaEnabled && s.CaptchaTrigger == "always",
 	})
+}
+
+// Captcha issues a fresh image-captcha challenge for the login form. Only
+// meaningful for the self-hosted "image" provider; token providers render
+// client-side from the site key (so this returns enabled:false for them and
+// when captcha is off). Shares the login rate limiter.
+func (h *AuthLocalHandler) Captcha(c *gin.Context) {
+	s, err := h.settings.Load(c.Request.Context(), ports.UISettings{})
+	if err != nil || !s.CaptchaEnabled {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	ch, err := h.captcha.Issue(c.Request.Context(), s)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	if ch == nil {
+		// Token provider — nothing to issue server-side.
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": true, "captcha_id": ch.ID, "image": ch.Image})
 }
 
 // disabledReasonMessage produces a user-facing explanation for why a login
@@ -102,6 +143,12 @@ func disabledReasonMessage(reason domain.AutoDisabledReason) string {
 type loginRequest struct {
 	UPN      string `json:"upn" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	// Captcha response (optional; required only when the guard demands it).
+	// Image provider fills captcha_id+captcha_answer; token providers
+	// (turnstile/recaptcha/hcaptcha) fill captcha_token.
+	CaptchaID     string `json:"captcha_id,omitempty"`
+	CaptchaAnswer string `json:"captcha_answer,omitempty"`
+	CaptchaToken  string `json:"captcha_token,omitempty"`
 }
 
 type loginResponse struct {
@@ -195,12 +242,67 @@ func (h *AuthLocalHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	ip := c.ClientIP()
+	// Live config, loaded once and shared by the guard + captcha checks below.
+	s, _ := h.settings.Load(c.Request.Context(), ports.UISettings{})
+
+	// Pre-password guard: account lockout + captcha requirement. Runs BEFORE
+	// the bcrypt check so brute-force automation is stopped before it can even
+	// probe a password.
+	decision, gerr := h.guard.Evaluate(c.Request.Context(), s, ip, req.UPN)
+	if gerr != nil {
+		// Fail open: a failed history read must never lock everyone out.
+		log.Warn("login guard evaluate failed", "err", gerr)
+		decision = loginguard.Decision{}
+	}
+	if decision.Locked {
+		recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, 0, req.UPN, domain.AuthReasonLockedOut)
+		retry := int(decision.RetryAfter.Seconds()) + 1
+		c.Header("Retry-After", strconv.Itoa(retry))
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":       "Too many failed attempts, please try again later",
+			"locked":      true,
+			"retry_after": retry,
+		})
+		return
+	}
+	if decision.CaptchaRequired {
+		ok, cerr := h.captcha.Verify(c.Request.Context(), s, captcha.Response{
+			ChallengeID: req.CaptchaID, Answer: req.CaptchaAnswer, Token: req.CaptchaToken, RemoteIP: ip,
+		})
+		if cerr != nil {
+			// Fail CLOSED: a captcha the panel can't verify (misconfigured
+			// provider, or a transient siteverify outage on a token provider)
+			// must not silently disable the gate and let automation through.
+			// The image provider is the network-free default; admins who pick a
+			// token provider accept its reachability requirement. Log for ops.
+			log.Warn("captcha verify error", "err", cerr)
+		}
+		if cerr != nil || !ok {
+			// Reject WITHOUT recording an invalid_credentials failure — a wrong
+			// or unverifiable captcha isn't a password guess and must not feed
+			// the lockout count.
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":            "Captcha is required or incorrect",
+				"captcha_required": true,
+			})
+			return
+		}
+	}
+
 	u, err := h.user.VerifyLocalPassword(c.Request.Context(), req.UPN, req.Password)
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrUnauthorized):
-			recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, 0, req.UPN, "invalid_credentials")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			recordAuthEvent(c, h.authEvents, domain.AuthMethodLocal, domain.AuthOutcomeFailure, 0, req.UPN, domain.AuthReasonInvalidCredentials)
+			body := gin.H{"error": "Invalid credentials"}
+			// Re-evaluate after recording this failure so the response can tell
+			// the client whether the retry now needs a captcha (after_failures
+			// mode flips on here).
+			if d, e := h.guard.Evaluate(c.Request.Context(), s, ip, req.UPN); e == nil && d.CaptchaRequired {
+				body["captcha_required"] = true
+			}
+			c.JSON(http.StatusUnauthorized, body)
 		case errors.Is(err, domain.ErrForbidden):
 			// u is non-nil here so the message can name the actual reason —
 			// otherwise the user just sees "Account disabled" and has no idea

@@ -16,9 +16,11 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/auth"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/captcha"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/cert"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/loginguard"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
@@ -139,12 +141,16 @@ func NewRouter(d Deps) *gin.Engine {
 	subPathCache := newSubPathCache(d.Repos.Settings)
 
 	// Auth endpoints
-	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings, d.Repos.AuthEvent)
+	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings, d.Repos.AuthEvent,
+		loginguard.New(d.Repos.AuthEvent), captcha.NewService())
 	loginLimiter := middleware.NewPerIPLimiter(d.LoginPerIPPerMin, time.Minute)
 	loginLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.LoginPerIPPerMin, func(s ports.UISettings) int { return s.LoginPerIPPerMin }).get)
 	authGroup := g.Group("/api/auth")
 	{
 		authGroup.GET("/methods", authLocal.Methods)
+		// Image-captcha challenge for the login form. Shares the login limiter
+		// so it can't be hammered to churn the captcha store.
+		authGroup.GET("/captcha", loginLimiter.Handler(), authLocal.Captcha)
 		authGroup.POST("/local/login", loginLimiter.Handler(), authLocal.Login)
 		// Refresh shares the login limiter — refresh storms from a misbehaving
 		// client should be throttled just like brute-force login attempts.

@@ -230,4 +230,28 @@ export interface AuthMethods {
   // IANA timezone for system-level calculations (traffic resets, expire_at,
   // default for the admin traffic chart). Empty falls back to server local.
   timezone?: string
+  // Login captcha (v3.7.0). captcha_required is the upfront requirement
+  // (always mode); after_failures mode flips it on via a captcha_required flag
+  // returned on a failed login. site_key is public.
+  captcha_enabled?: boolean
+  captcha_provider?: CaptchaProvider
+  captcha_site_key?: string
+  captcha_required?: boolean
+}
+
+export type CaptchaProvider = 'image' | 'turnstile' | 'recaptcha' | 'hcaptcha'
+
+// CaptchaChallenge is the image-provider challenge issued by GET /auth/captcha.
+export interface CaptchaChallenge {
+  enabled: boolean
+  captcha_id?: string
+  image?: string // data:image/...;base64 URL
+}
+
+// LoginCaptcha is the captcha response carried on a login attempt. Image
+// provider fills id+answer; token providers fill token.
+export interface LoginCaptcha {
+  captcha_id?: string
+  captcha_answer?: string
+  captcha_token?: string
 }

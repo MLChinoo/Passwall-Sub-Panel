@@ -1,13 +1,21 @@
 import { client } from './client'
-import type { AuthLoginResponse, AuthMethods } from './types'
+import type { AuthLoginResponse, AuthMethods, CaptchaChallenge, LoginCaptcha } from './types'
 
 export async function getAuthMethods() {
   const { data } = await client.get<AuthMethods>('/auth/methods')
   return data
 }
 
-export async function localLogin(upn: string, password: string) {
-  const { data } = await client.post<AuthLoginResponse>('/auth/local/login', { upn, password })
+// getCaptcha fetches a fresh image-captcha challenge. Returns {enabled:false}
+// when captcha is off or the active provider renders client-side (token
+// providers). Skips the shared error toast — the login form handles failures.
+export async function getCaptcha(): Promise<CaptchaChallenge> {
+  const { data } = await client.get<CaptchaChallenge>('/auth/captcha', { _skipErrorToast: true })
+  return data
+}
+
+export async function localLogin(upn: string, password: string, captcha?: LoginCaptcha) {
+  const { data } = await client.post<AuthLoginResponse>('/auth/local/login', { upn, password, ...captcha })
   return data
 }
 

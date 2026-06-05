@@ -86,3 +86,84 @@ func TestAuthEventRepo(t *testing.T) {
 		t.Fatalf("after prune total = %d, want 3", got)
 	}
 }
+
+// TestAuthEventRecentFailures pins the contract the login guard (captcha +
+// lockout) relies on: count genuine credential failures for a scope within a
+// window, plus the timestamp of the most recent one. Only
+// reason=invalid_credentials counts — disabled / locked_out / server-error
+// failures must NOT inflate the count (so the lock window can't slide).
+func TestAuthEventRecentFailures(t *testing.T) {
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, derr := db.DB(); derr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	repo := NewRepos(db).AuthEvent
+	ctx := context.Background()
+	now := time.Now()
+
+	fail := func(ip, upn, reason string, at time.Time) *domain.AuthEvent {
+		return &domain.AuthEvent{
+			UserID: 0, UPN: upn, Method: domain.AuthMethodLocal,
+			Outcome: domain.AuthOutcomeFailure, Reason: reason, IP: ip, At: at,
+		}
+	}
+	seed := []*domain.AuthEvent{
+		fail("1.1.1.1", "alice@x", domain.AuthReasonInvalidCredentials, now.Add(-2*time.Minute)),
+		fail("1.1.1.1", "alice@x", domain.AuthReasonInvalidCredentials, now.Add(-1*time.Minute)),
+		// success from same scope — never counts
+		{UserID: 1, UPN: "alice@x", Method: domain.AuthMethodLocal, Outcome: domain.AuthOutcomeSuccess, IP: "1.1.1.1", At: now.Add(-30 * time.Second)},
+		// a locked_out rejection from same scope — must NOT count (else the lock slides)
+		fail("1.1.1.1", "alice@x", domain.AuthReasonLockedOut, now.Add(-10*time.Second)),
+		// disabled-account failure from same scope — must NOT count
+		fail("1.1.1.1", "alice@x", "disabled:manual", now.Add(-20*time.Second)),
+		// same IP, different user
+		fail("1.1.1.1", "bob@x", domain.AuthReasonInvalidCredentials, now.Add(-1*time.Minute)),
+		// same user, different IP
+		fail("2.2.2.2", "alice@x", domain.AuthReasonInvalidCredentials, now.Add(-1*time.Minute)),
+		// genuine failure but outside the window
+		fail("1.1.1.1", "alice@x", domain.AuthReasonInvalidCredentials, now.Add(-2*time.Hour)),
+	}
+	for _, e := range seed {
+		if err := repo.Insert(ctx, e); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	since := now.Add(-30 * time.Minute)
+
+	// ip_upn scope (both non-empty): only the two recent invalid_credentials.
+	count, lastAt, err := repo.RecentAuthFailures(ctx, "1.1.1.1", "alice@x", since)
+	if err != nil {
+		t.Fatalf("RecentAuthFailures ip_upn: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("ip_upn count = %d, want 2", count)
+	}
+	if want := now.Add(-1 * time.Minute); lastAt.Sub(want).Abs() > time.Second {
+		t.Fatalf("ip_upn lastAt = %v, want ~%v", lastAt, want)
+	}
+
+	// ip-only scope (upn empty): alice×2 + bob×1 from that IP.
+	if count, _, err = repo.RecentAuthFailures(ctx, "1.1.1.1", "", since); err != nil || count != 3 {
+		t.Fatalf("ip-only count = %d (err %v), want 3", count, err)
+	}
+
+	// upn-only scope (ip empty): 1.1.1.1×2 + 2.2.2.2×1 for alice.
+	if count, _, err = repo.RecentAuthFailures(ctx, "", "alice@x", since); err != nil || count != 3 {
+		t.Fatalf("upn-only count = %d (err %v), want 3", count, err)
+	}
+
+	// no match → count 0, zero lastAt.
+	count, lastAt, err = repo.RecentAuthFailures(ctx, "9.9.9.9", "alice@x", since)
+	if err != nil || count != 0 || !lastAt.IsZero() {
+		t.Fatalf("no-match = (%d, %v, %v), want (0, zero, nil)", count, lastAt, err)
+	}
+}

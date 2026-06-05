@@ -661,6 +661,21 @@ const (
 	AuthOutcomeFailure AuthOutcome = "failure"
 )
 
+// Auth failure reason codes (AuthEvent.Reason). Single source of truth shared by
+// the producer (login handler) and the consumer (lockout/captcha guard, which
+// counts failures via AuthEventRepo.RecentAuthFailures) so the two can't drift.
+//
+//   - AuthReasonInvalidCredentials is the genuine brute-force signal the guard
+//     counts toward the captcha/lockout thresholds.
+//   - AuthReasonLockedOut marks a request the guard itself rejected because the
+//     scope was already locked. It is deliberately NOT a counted reason, so the
+//     lock window anchors on the real credential failures and can't slide
+//     forward forever as locked-out retries keep arriving.
+const (
+	AuthReasonInvalidCredentials = "invalid_credentials"
+	AuthReasonLockedOut          = "locked_out"
+)
+
 // AuthEvent is one authentication attempt — a login via any method, success or
 // failure. First-class and separate from AuditEntry so logins are queryable by
 // method / outcome / user and retained on their own schedule. (Token refresh

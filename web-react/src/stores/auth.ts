@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { localLogin, ssoComplete } from '@/api/auth'
-import type { Role } from '@/api/types'
+import type { LoginCaptcha, Role } from '@/api/types'
 
 interface AuthState {
   userId: number | null
@@ -12,7 +12,7 @@ interface AuthState {
   // directly (which doesn't trigger re-renders). Kept in sync by
   // login / loginSSO / logout / the cross-tab storage listener.
   hasToken: boolean
-  login: (upn: string, password: string) => Promise<void>
+  login: (upn: string, password: string, captcha?: LoginCaptcha) => Promise<void>
   loginSSO: () => Promise<void>
   setDisplayName: (name: string) => void
   logout: () => void
@@ -45,8 +45,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   ...loadFromStorage(),
   hasToken: !!localStorage.getItem(ACCESS_KEY),
 
-  async login(upn, password) {
-    const res = await localLogin(upn, password)
+  async login(upn, password, captcha) {
+    const res = await localLogin(upn, password, captcha)
     localStorage.setItem('psp_access', res.access_token)
     localStorage.setItem('psp_refresh', res.refresh_token)
     const next: PersistedAuthState = {

@@ -171,6 +171,8 @@ export default function SettingsView() {
   // changeGeoToken mirrors the SMTP-password "kept unchanged" pattern: when a
   // token is already stored, show a read-only chip until the admin clicks Change.
   const [changeGeoToken, setChangeGeoToken] = useState(false)
+  // Same "kept unchanged" pattern for the captcha provider secret key.
+  const [changeCaptchaSecret, setChangeCaptchaSecret] = useState(false)
 
   useEffect(() => { void load(); void loadGeoStatus() }, [])
 
@@ -309,6 +311,7 @@ export default function SettingsView() {
         themeColor: saved.theme_color || undefined,
       })
       setChangeGeoToken(false)
+      setChangeCaptchaSecret(false)
       if (!opts.quiet) pushSnack(t('settings.saved'), 'success')
       return true
     } finally { setSaving(false) }
@@ -378,6 +381,98 @@ export default function SettingsView() {
                 defaultValue: '关闭后用户仍可在自助页查看个人规则，但无法保存修改。管理端不受影响，可继续手动为指定用户编辑。',
               })}
             </Typography>
+          </Section>
+
+          <Section title={t('settings.general.section_login_security', { defaultValue: '登录安全' })} md={md}>
+            {/* CAPTCHA */}
+            <FormControlLabel label={t('settings.general.captcha_enabled', { defaultValue: '启用登录验证码' })}
+              control={<Switch checked={settings.captcha_enabled}
+                onChange={(_, c) => patch('captcha_enabled', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            {settings.captcha_enabled && (
+              <>
+                <Pair>
+                  <TextField select fullWidth size="small"
+                    label={t('settings.general.captcha_provider', { defaultValue: '验证码提供方' })}
+                    value={settings.captcha_provider || 'image'}
+                    onChange={e => patch('captcha_provider', e.target.value as UISettings['captcha_provider'])}>
+                    <MenuItem value="image">{t('settings.general.captcha_provider_image', { defaultValue: '内置图形验证码（推荐，无外部依赖）' })}</MenuItem>
+                    <MenuItem value="turnstile">Cloudflare Turnstile</MenuItem>
+                    <MenuItem value="recaptcha">Google reCAPTCHA v2</MenuItem>
+                    <MenuItem value="hcaptcha">hCaptcha</MenuItem>
+                  </TextField>
+                  <TextField select fullWidth size="small"
+                    label={t('settings.general.captcha_trigger', { defaultValue: '触发时机' })}
+                    value={settings.captcha_trigger || 'after_failures'}
+                    onChange={e => patch('captcha_trigger', e.target.value as UISettings['captcha_trigger'])}>
+                    <MenuItem value="after_failures">{t('settings.general.captcha_trigger_after_failures', { defaultValue: '失败若干次后' })}</MenuItem>
+                    <MenuItem value="always">{t('settings.general.captcha_trigger_always', { defaultValue: '始终显示' })}</MenuItem>
+                  </TextField>
+                </Pair>
+                {settings.captcha_trigger !== 'always' && (
+                  <NumField label={t('settings.general.captcha_fail_threshold', { defaultValue: '触发阈值（失败次数）' })}
+                    value={settings.captcha_fail_threshold}
+                    onChange={v => patch('captcha_fail_threshold', v)} />
+                )}
+                {settings.captcha_provider && settings.captcha_provider !== 'image' && (
+                  <>
+                    <TextField fullWidth size="small"
+                      label={t('settings.general.captcha_site_key', { defaultValue: 'Site Key（公开）' })}
+                      value={settings.captcha_site_key}
+                      onChange={e => patch('captcha_site_key', e.target.value)} />
+                    {settings.has_captcha_secret_key && !changeCaptchaSecret ? (
+                      <Box>
+                        <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.5 }}>
+                          {t('settings.general.captcha_secret_key', { defaultValue: 'Secret Key（服务端校验）' })}
+                        </Typography>
+                        <Box sx={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          gap: 1.5, minHeight: 40, px: 1.75, py: 0.5,
+                          borderRadius: 1.5, border: `1px solid ${md.outlineVariant}`,
+                        }}>
+                          <Typography variant="body2">{t('settings.geo.token_kept', { defaultValue: '已保存（保持不变）' })}</Typography>
+                          <Button size="small" variant="text" onClick={() => setChangeCaptchaSecret(true)}>
+                            {t('settings.geo.token_change', { defaultValue: '更改' })}
+                          </Button>
+                        </Box>
+                      </Box>
+                    ) : (
+                      <TextField fullWidth size="small" type="password" autoComplete="new-password"
+                        label={t('settings.general.captcha_secret_key', { defaultValue: 'Secret Key（服务端校验）' })}
+                        value={settings.captcha_secret_key ?? ''}
+                        onChange={e => patch('captcha_secret_key', e.target.value)} />
+                    )}
+                  </>
+                )}
+              </>
+            )}
+            <Divider sx={{ my: 0.5, borderColor: md.outlineVariant }} />
+            {/* Account lockout */}
+            <FormControlLabel label={t('settings.general.lockout_enabled', { defaultValue: '启用失败锁定' })}
+              control={<Switch checked={settings.lockout_enabled}
+                onChange={(_, c) => patch('lockout_enabled', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            {settings.lockout_enabled && (
+              <>
+                <Pair>
+                  <NumField label={t('settings.general.lockout_threshold', { defaultValue: '锁定阈值（失败次数）' })}
+                    value={settings.lockout_threshold} onChange={v => patch('lockout_threshold', v)} />
+                  <NumField label={t('settings.general.lockout_window_minutes', { defaultValue: '统计窗口（分钟）' })}
+                    value={settings.lockout_window_minutes} onChange={v => patch('lockout_window_minutes', v)} />
+                </Pair>
+                <Pair>
+                  <NumField label={t('settings.general.lockout_duration_minutes', { defaultValue: '锁定时长（分钟）' })}
+                    value={settings.lockout_duration_minutes} onChange={v => patch('lockout_duration_minutes', v)} />
+                  <TextField select fullWidth size="small"
+                    label={t('settings.general.lockout_scope', { defaultValue: '锁定范围' })}
+                    value={settings.lockout_scope || 'ip_upn'}
+                    onChange={e => patch('lockout_scope', e.target.value as UISettings['lockout_scope'])}>
+                    <MenuItem value="ip_upn">{t('settings.general.lockout_scope_ip_upn', { defaultValue: 'IP + 用户名（推荐）' })}</MenuItem>
+                    <MenuItem value="ip">{t('settings.general.lockout_scope_ip', { defaultValue: '仅 IP' })}</MenuItem>
+                  </TextField>
+                </Pair>
+              </>
+            )}
           </Section>
 
           <Section title={t('settings.general.section_security')} md={md}>

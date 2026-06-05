@@ -4,9 +4,22 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
-## v3.6.4 — 2026-06-05
+## v3.7.0-beta.1 — 2026-06-05
 
-正式版。汇总 v3.6.4-beta.1 → beta.5 全部改动 + 正式版收尾两项小改。本线主题是 **PSP 自持的
+「账号安全」专题首个 beta：本地登录的**验证码 + 失败锁定**两道闸门（两者都可配、默认关，仅作用于本地账号；SSO 由 IdP 负责，不叠加）。全程 TDD（仓储/守卫/验证码服务/handler 集成各自先红后绿），并起真实二进制端到端验：启用图形验证码后 `/api/auth/captcha` 真签发 data-URL 挑战、`/api/auth/methods` 暴露公开配置、设置往返脱敏正确。`go build` / `go vet` / `go test ./...` / `tsc` / `npm run build` 全绿。
+
+### Added
+
+- **本地登录验证码（可配，默认关）** —— 四种提供方：`image`（内置 base64Captcha 图形码，**零外部依赖、GFW 安全**，默认）、`turnstile`（Cloudflare）、`recaptcha`（Google v2）、`hcaptcha`。触发时机可配：`always`（始终）或 `after_failures`（同一作用域在统计窗口内累计失败达阈值才要）。验证码在**密码校验之前**核验，挡住自动化撞库。新增 `GET /api/auth/captcha` 签发图形挑战（image 模式服务端签发；token 模式由前端用 site key 渲染 widget）。`captcha_secret_key` AES-GCM 加密落库、管理端只回 `has_captcha_secret_key`、PUT 留空即保持不变。
+- **失败锁定（可配，默认关）** —— 同一作用域在 `lockout_window_minutes` 内累计失败达 `lockout_threshold` 次，则锁 `lockout_duration_minutes`，期间登录直接 429（带 `Retry-After`），不再走密码校验。作用域 `ip_upn`（IP+用户名，推荐：知道用户名也无法借此把受害者从别处锁死）或 `ip`。复用既有 `auth_events` 失败日志（无新表）：新增 `AuthEventRepo.RecentAuthFailures(ip,upn,since)→(count,lastAt)`，**只数 `reason=invalid_credentials`**——`locked_out`/`disabled:*`/服务端错误一律不计，使锁定窗口不会被锁定期内的重试推着无限滑动。
+- **登录守卫服务 `loginguard`** —— 把「该不该挑战 / 该不该锁」从「答案对不对」拆开：handler 每次登录加载一次实时设置传入，守卫据失败计数一次决策出 `{Locked, RetryAfter, CaptchaRequired}`；统计窗口取 `max(window, duration)` 以让配置的锁定时长真正可执行。
+- **管理端「登录安全」设置区** —— 「系统设置 → 基本设置」新增分区：验证码开关/提供方/触发时机/阈值/site key/secret（密钥用「已保存·更改」范式不被清空），锁定开关/阈值/窗口/时长/范围。前端登录页按需内嵌验证码组件（image 显示图形+刷新+输入；token 动态加载各家 widget 脚本），失败返回 `captcha_required` 时自动浮现、429 锁定时提示稍后再试。
+
+### 安全设计要点
+
+- **验证码失败闭合（fail-closed）** —— 验证码校验返回错误（未知 provider、token provider 暂时性 siteverify 不可达等）时**拒绝登录**而非放行，避免「显示已启用却被静默绕过」。image 为零网络默认；选 token provider 即接受其可达性要求。
+- **token provider 必须配 secret** —— 启用 token 类验证码却留空 secret 的设置在保存时即 400 拒绝（image 无需密钥），杜绝「启用但无法校验」的空转。
+- **锁定时长防溢出** —— `LockoutDurationMinutes`/窗口换算为 `time.Duration` 时饱和封顶（超大值不再溢出为负而把锁定静默关掉），API 侧另对分钟字段设 10 年上限即时报错。本线主题是 **PSP 自持的
 TLS 证书自动化**(内置 ACME、DNS-01 通配符签发、内联部署到 3X-UI 入站、自动续期、失败告警),外加
 证书管理 UI 的多轮打磨、一处 PSP→3X-UI 取数效率修复,以及对 3X-UI 的兼容复核(已真机实测到 3.2.8)。
 无 schema 破坏性变更(新表/新列走 AutoMigrate)。完整逐项见下方各 pre-release 段落,下面只列核心叙事。

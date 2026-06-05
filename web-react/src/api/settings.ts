@@ -164,6 +164,32 @@ export interface UISettings {
    *  presence flag below reports whether one is stored. */
   geo_ip_update_token?: string
   has_geo_ip_update_token: boolean
+
+  // ---- Login security: CAPTCHA + account lockout (v3.7.0) ----
+  /** Master toggle for the login-form captcha. Off by default. */
+  captcha_enabled: boolean
+  /** "image" (self-hosted, CN-safe default) / "turnstile" / "recaptcha" / "hcaptcha". */
+  captcha_provider: 'image' | 'turnstile' | 'recaptcha' | 'hcaptcha' | ''
+  /** "always" or "after_failures" (show only once an IP/account racks up failures). */
+  captcha_trigger: 'always' | 'after_failures' | ''
+  /** Failure count (over the lockout window) that trips after_failures mode. */
+  captcha_fail_threshold: number
+  /** Public site key for token providers (embedded in the login page). */
+  captcha_site_key: string
+  /** Write-only secret key: sent on PUT (empty = keep existing), never returned.
+   *  Image provider needs no keys. */
+  captcha_secret_key?: string
+  has_captcha_secret_key: boolean
+  /** Master toggle for temporary account lockout after repeated failures. */
+  lockout_enabled: boolean
+  /** Failures within the window that trigger a lock. */
+  lockout_threshold: number
+  /** Window (minutes) over which failures are counted. */
+  lockout_window_minutes: number
+  /** How long (minutes) a tripped lock lasts. */
+  lockout_duration_minutes: number
+  /** "ip" or "ip_upn" (recommended — lock the IP+username pair). */
+  lockout_scope: 'ip' | 'ip_upn' | ''
 }
 
 export async function getUISettings() {

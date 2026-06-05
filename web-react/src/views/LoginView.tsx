@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -13,9 +14,11 @@ import LoginIcon from '@mui/icons-material/Login'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import type { AxiosError } from 'axios'
 
 import { getAuthMethods, oidcLoginURL, samlLoginURL } from '@/api/auth'
-import type { AuthMethods } from '@/api/types'
+import type { AuthMethods, LoginCaptcha } from '@/api/types'
+import CaptchaWidget from '@/components/CaptchaWidget'
 import { useAuthStore, selectIsAdmin } from '@/stores/auth'
 import { useSiteStore } from '@/stores/site'
 import { useAppearanceStore } from '@/stores/appearance'
@@ -47,6 +50,13 @@ export default function LoginView() {
   const [upn, setUpn] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  // Captcha: shown upfront in "always" mode, or once a failed login returns
+  // captcha_required (after_failures mode). refreshKey forces a new challenge
+  // after each failed attempt (the prior image is single-use / consumed).
+  const [showCaptcha, setShowCaptcha] = useState(false)
+  const [captcha, setCaptcha] = useState<LoginCaptcha>({})
+  const [captchaRefresh, setCaptchaRefresh] = useState(0)
+  const [lockedMsg, setLockedMsg] = useState('')
   // Set when the user clicks the SSO button in sso_first / dual mode. We
   // render the same "正在前往 SSO" intermediate as sso_redirect so every
   // SSO entry point (auto-bounce OR explicit click) feels the same.
@@ -71,6 +81,8 @@ export default function LoginView() {
         const m = await getAuthMethods()
         if (cancelled) return
         setMethods(m)
+        // "always" mode demands a captcha before the first attempt.
+        if (m.captcha_enabled && m.captcha_required) setShowCaptcha(true)
         if (m.login_mode === 'sso_redirect' && m.sso) {
           // Show the redirect-pending screen (rendered when methods is set
           // and login_mode === sso_redirect). 3s gives the user enough time
@@ -100,15 +112,29 @@ export default function LoginView() {
       return
     }
     setBusy(true)
+    setLockedMsg('')
     try {
-      await auth.login(upn, password)
+      await auth.login(upn, password, showCaptcha ? captcha : undefined)
       const fallback = homeForRole(useAuthStore.getState().role)
       const requested = returnTo ?? fallback
       const isAdmin = selectIsAdmin(useAuthStore.getState())
       const target = isAdminPath(requested) && !isAdmin ? fallback : requested
       navigate(target, { replace: true })
-    } catch {
-      // axios interceptor already toasted
+    } catch (err) {
+      // The axios interceptor already toasted the message; here we react to the
+      // structured flags to drive the inline captcha / lockout UI.
+      const e = err as AxiosError<{ captcha_required?: boolean; locked?: boolean; retry_after?: number }>
+      const data = e.response?.data
+      if (e.response?.status === 429 || data?.locked) {
+        const mins = Math.max(1, Math.ceil((data?.retry_after ?? 60) / 60))
+        setLockedMsg(t('auth:locked', { minutes: mins }))
+      }
+      if (data?.captcha_required) setShowCaptcha(true)
+      // Refresh the (now-consumed or stale) challenge for the retry.
+      if (showCaptcha || data?.captcha_required) {
+        setCaptcha({})
+        setCaptchaRefresh(x => x + 1)
+      }
     } finally {
       setBusy(false)
     }
@@ -168,6 +194,15 @@ export default function LoginView() {
       <TextField label={t('auth:password')} type="password" value={password}
         onChange={e => setPassword(e.target.value)}
         autoComplete="current-password" fullWidth />
+      {showCaptcha && methods?.captcha_enabled && (
+        <CaptchaWidget
+          provider={methods.captcha_provider ?? 'image'}
+          siteKey={methods.captcha_site_key}
+          refreshKey={captchaRefresh}
+          onChange={setCaptcha}
+        />
+      )}
+      {lockedMsg && <Alert severity="warning" sx={{ py: 0 }}>{lockedMsg}</Alert>}
       <Button type="submit" variant={ssoFirst ? 'outlined' : 'contained'} fullWidth size="large"
         disabled={busy}
         startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}

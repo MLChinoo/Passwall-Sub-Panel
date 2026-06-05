@@ -88,3 +88,39 @@ func (r *authEventRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (int
 	res := r.db.WithContext(ctx).Where("at < ?", cutoff).Delete(&authEventRow{})
 	return res.RowsAffected, res.Error
 }
+
+// RecentAuthFailures backs the login guard (captcha + account lockout). It
+// counts only genuine credential failures (outcome=failure AND
+// reason=invalid_credentials) for the given scope since `since`. Counting that
+// one reason — not every failure — is deliberate: locked_out rejections,
+// disabled-account attempts and server errors must not feed the count, or a
+// locked-out source's continued retries would keep advancing the lock window
+// and the lock would never expire.
+func (r *authEventRepo) RecentAuthFailures(ctx context.Context, ip, upn string, since time.Time) (int64, time.Time, error) {
+	q := r.db.WithContext(ctx).Model(&authEventRow{}).
+		Where("outcome = ?", string(domain.AuthOutcomeFailure)).
+		Where("reason = ?", domain.AuthReasonInvalidCredentials).
+		Where("at >= ?", since)
+	if ip != "" {
+		q = q.Where("ip = ?", ip)
+	}
+	if upn != "" {
+		q = q.Where("upn = ?", upn)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return 0, time.Time{}, err
+	}
+	if count == 0 {
+		return 0, time.Time{}, nil
+	}
+	// Read the newest matching row for its timestamp. MAX(at) scanned directly
+	// can't go straight into time.Time under the pure-Go SQLite driver (it
+	// hands back a string), so let GORM map the row's `at` column instead.
+	// Fresh session so the Count above doesn't leak into this statement.
+	var newest authEventRow
+	if err := q.Session(&gorm.Session{}).Order("at DESC").Limit(1).Find(&newest).Error; err != nil {
+		return count, time.Time{}, err
+	}
+	return count, newest.At, nil
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/jwtutil"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/captcha"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 )
 
@@ -92,6 +93,21 @@ type settingsDTO struct {
 	CertRenewCheckIntervalHours int    `json:"cert_renew_check_interval_hours"`
 	ACMEEmail                   string `json:"acme_email"`
 	ACMEDirectoryURL            string `json:"acme_directory_url"`
+	// Login security: CAPTCHA + account lockout (v3.7.0).
+	CaptchaEnabled       bool   `json:"captcha_enabled"`
+	CaptchaProvider      string `json:"captcha_provider"`
+	CaptchaTrigger       string `json:"captcha_trigger"`
+	CaptchaFailThreshold int    `json:"captcha_fail_threshold"`
+	CaptchaSiteKey       string `json:"captcha_site_key"`
+	// CaptchaSecretKey is write-only: accepted on PUT (empty = keep existing),
+	// never echoed on GET. HasCaptchaSecretKey reports whether one is set.
+	CaptchaSecretKey       string `json:"captcha_secret_key,omitempty"`
+	HasCaptchaSecretKey    bool   `json:"has_captcha_secret_key"`
+	LockoutEnabled         bool   `json:"lockout_enabled"`
+	LockoutThreshold       int    `json:"lockout_threshold"`
+	LockoutWindowMinutes   int    `json:"lockout_window_minutes"`
+	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	LockoutScope           string `json:"lockout_scope"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -175,6 +191,18 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		ACMEDirectoryURL:            s.ACMEDirectoryURL,
 		// Update token masked: never echoed, only presence reported.
 		HasGeoIPUpdateToken: strings.TrimSpace(s.GeoIPUpdateToken) != "",
+		CaptchaEnabled:       s.CaptchaEnabled,
+		CaptchaProvider:      s.CaptchaProvider,
+		CaptchaTrigger:       s.CaptchaTrigger,
+		CaptchaFailThreshold: s.CaptchaFailThreshold,
+		CaptchaSiteKey:       s.CaptchaSiteKey,
+		// Secret key masked: never echoed, only presence reported.
+		HasCaptchaSecretKey:    strings.TrimSpace(s.CaptchaSecretKey) != "",
+		LockoutEnabled:         s.LockoutEnabled,
+		LockoutThreshold:       s.LockoutThreshold,
+		LockoutWindowMinutes:   s.LockoutWindowMinutes,
+		LockoutDurationMinutes: s.LockoutDurationMinutes,
+		LockoutScope:           s.LockoutScope,
 	})
 }
 
@@ -257,7 +285,17 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		CertRenewCheckIntervalHours: req.CertRenewCheckIntervalHours,
 		ACMEEmail:                   req.ACMEEmail,
 		ACMEDirectoryURL:            req.ACMEDirectoryURL,
-		// GeoIPUpdateToken resolved below ("empty = keep existing").
+		CaptchaEnabled:              req.CaptchaEnabled,
+		CaptchaProvider:             strings.ToLower(strings.TrimSpace(req.CaptchaProvider)),
+		CaptchaTrigger:              strings.ToLower(strings.TrimSpace(req.CaptchaTrigger)),
+		CaptchaFailThreshold:        req.CaptchaFailThreshold,
+		CaptchaSiteKey:              strings.TrimSpace(req.CaptchaSiteKey),
+		LockoutEnabled:              req.LockoutEnabled,
+		LockoutThreshold:            req.LockoutThreshold,
+		LockoutWindowMinutes:        req.LockoutWindowMinutes,
+		LockoutDurationMinutes:      req.LockoutDurationMinutes,
+		LockoutScope:                strings.ToLower(strings.TrimSpace(req.LockoutScope)),
+		// GeoIPUpdateToken / CaptchaSecretKey resolved below ("empty = keep existing").
 	}
 	// Update token is write-only: a blank field on save means the admin didn't
 	// re-enter the masked token, so preserve the stored one (mirrors the
@@ -266,6 +304,51 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		s.GeoIPUpdateToken = prev.GeoIPUpdateToken
 	} else {
 		s.GeoIPUpdateToken = strings.TrimSpace(req.GeoIPUpdateToken)
+	}
+	// Captcha secret key is write-only too: blank on save = keep the stored one
+	// (mirrors the GeoIP/SMTP/SSO secret-handling pattern).
+	if strings.TrimSpace(req.CaptchaSecretKey) == "" {
+		s.CaptchaSecretKey = prev.CaptchaSecretKey
+	} else {
+		s.CaptchaSecretKey = strings.TrimSpace(req.CaptchaSecretKey)
+	}
+	// Validate login-security enums only when set (empty = the settings layer
+	// fills the default on Load, so blanks are fine). captcha.IsValidProvider is
+	// the SAME set captcha.Verify dispatches on, so the API can't store a
+	// provider the verifier would reject.
+	if s.CaptchaProvider != "" && !captcha.IsValidProvider(s.CaptchaProvider) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Captcha_provider must be image, turnstile, recaptcha, or hcaptcha"})
+		return
+	}
+	if s.CaptchaTrigger != "" && s.CaptchaTrigger != "always" && s.CaptchaTrigger != "after_failures" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Captcha_trigger must be always or after_failures"})
+		return
+	}
+	if s.LockoutScope != "" && s.LockoutScope != "ip" && s.LockoutScope != "ip_upn" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Lockout_scope must be ip or ip_upn"})
+		return
+	}
+	if s.CaptchaFailThreshold < 0 || s.LockoutThreshold < 0 ||
+		s.LockoutWindowMinutes < 0 || s.LockoutDurationMinutes < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Login-security thresholds must be >= 0"})
+		return
+	}
+	// Upper-bound the lockout minute fields so a fat-fingered huge value can't
+	// approach the time.Duration overflow boundary (the guard also saturates, but
+	// reject early for clear admin feedback). 10 years of minutes is plenty.
+	const maxLockoutMinutes = 10 * 365 * 24 * 60
+	if s.LockoutWindowMinutes > maxLockoutMinutes || s.LockoutDurationMinutes > maxLockoutMinutes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Lockout window/duration is unreasonably large"})
+		return
+	}
+	// A token captcha provider can't verify anything without its secret key, so
+	// reject "enabled but unverifiable": captcha must never be on yet silently
+	// inert. s.CaptchaSecretKey is already resolved (kept-or-new), so a
+	// previously-stored secret left blank on this save still passes.
+	if s.CaptchaEnabled && s.CaptchaProvider != "" && s.CaptchaProvider != captcha.ProviderImage &&
+		strings.TrimSpace(s.CaptchaSecretKey) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "A secret key is required for token captcha providers"})
+		return
 	}
 	// Single source of truth: geo.IsValidUpdateSource is the SAME set
 	// geo.Update (candidateURLs) can actually download, so the API can't accept
@@ -388,6 +471,18 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		ACMEDirectoryURL:            s.ACMEDirectoryURL,
 		// Update token masked: never echoed, only presence reported.
 		HasGeoIPUpdateToken: strings.TrimSpace(s.GeoIPUpdateToken) != "",
+		CaptchaEnabled:       s.CaptchaEnabled,
+		CaptchaProvider:      s.CaptchaProvider,
+		CaptchaTrigger:       s.CaptchaTrigger,
+		CaptchaFailThreshold: s.CaptchaFailThreshold,
+		CaptchaSiteKey:       s.CaptchaSiteKey,
+		// Secret key masked: never echoed, only presence reported.
+		HasCaptchaSecretKey:    strings.TrimSpace(s.CaptchaSecretKey) != "",
+		LockoutEnabled:         s.LockoutEnabled,
+		LockoutThreshold:       s.LockoutThreshold,
+		LockoutWindowMinutes:   s.LockoutWindowMinutes,
+		LockoutDurationMinutes: s.LockoutDurationMinutes,
+		LockoutScope:           s.LockoutScope,
 	})
 }
 

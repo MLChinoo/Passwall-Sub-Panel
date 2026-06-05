@@ -435,6 +435,15 @@ type AuthEventRepo interface {
 	Insert(ctx context.Context, e *domain.AuthEvent) error
 	List(ctx context.Context, filter AuthEventFilter) (items []*domain.AuthEvent, total int64, err error)
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// RecentAuthFailures counts genuine credential failures
+	// (reason=invalid_credentials) for a scope since `since`, and returns the
+	// timestamp of the most recent one (zero when count==0). A non-empty ip
+	// and/or upn narrows the scope; pass "" for a dimension to ignore it
+	// (ip+upn = the ip_upn lockout scope; ip alone = the ip scope). Drives the
+	// login guard's captcha-trigger and account-lockout decisions; deliberately
+	// excludes locked_out / disabled / server-error failures so a locked-out
+	// source's retries can't keep pushing the lock window forward.
+	RecentAuthFailures(ctx context.Context, ip, upn string, since time.Time) (count int64, lastAt time.Time, err error)
 }
 
 type SubLogRepo interface {
