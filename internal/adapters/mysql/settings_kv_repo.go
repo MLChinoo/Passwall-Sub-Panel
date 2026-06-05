@@ -223,6 +223,20 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		intField("security", "emergency_access_max_count", &s.EmergencyAccessMaxCount),
 		floatField("security", "emergency_access_quota_gb", &s.EmergencyAccessQuotaGB),
 
+		// security --- login protection: CAPTCHA (v3.7.0)
+		boolField("security", "captcha_enabled", &s.CaptchaEnabled),
+		strField("security", "captcha_provider", &s.CaptchaProvider),
+		strField("security", "captcha_trigger", &s.CaptchaTrigger),
+		intField("security", "captcha_fail_threshold", &s.CaptchaFailThreshold),
+		strField("security", "captcha_site_key", &s.CaptchaSiteKey),
+		encStrField("security", "captcha_secret_key", &s.CaptchaSecretKey), // encrypted at rest
+		// security --- login protection: account lockout (v3.7.0)
+		boolField("security", "lockout_enabled", &s.LockoutEnabled),
+		intField("security", "lockout_threshold", &s.LockoutThreshold),
+		intField("security", "lockout_window_minutes", &s.LockoutWindowMinutes),
+		intField("security", "lockout_duration_minutes", &s.LockoutDurationMinutes),
+		strField("security", "lockout_scope", &s.LockoutScope),
+
 		// runtime --- cron / performance / tz / global toggles
 		strField("runtime", "timezone", &s.Timezone),
 		intField("runtime", "cron_traffic_pull_minutes", &s.CronTrafficPullMinutes),
@@ -441,6 +455,35 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 	if out.CertRenewCheckIntervalHours < 1 {
 		// 12h default; the renewal scan is cheap (a DB read + threshold check).
 		out.CertRenewCheckIntervalHours = 12
+	}
+	// Login protection (v3.7.0). Defaults are inert until CaptchaEnabled /
+	// LockoutEnabled are turned on, so existing installs are unaffected.
+	if out.CaptchaProvider == "" {
+		// Self-hosted image captcha: CN-reachable, zero external calls — the
+		// safe default for a proxy panel whose admins are often behind the GFW.
+		out.CaptchaProvider = "image"
+	}
+	if out.CaptchaTrigger == "" {
+		// Invisible until suspicious: only demand a captcha once an IP/account
+		// has racked up failures (counted over LockoutWindowMinutes).
+		out.CaptchaTrigger = "after_failures"
+	}
+	if out.CaptchaFailThreshold <= 0 {
+		out.CaptchaFailThreshold = 3
+	}
+	if out.LockoutThreshold <= 0 {
+		out.LockoutThreshold = 10
+	}
+	if out.LockoutWindowMinutes <= 0 {
+		out.LockoutWindowMinutes = 15
+	}
+	if out.LockoutDurationMinutes <= 0 {
+		out.LockoutDurationMinutes = 15
+	}
+	if out.LockoutScope == "" {
+		// Lock the IP+username pair, not the bare IP: knowing a victim's
+		// username can't then be weaponised to lock them out from elsewhere.
+		out.LockoutScope = "ip_upn"
 	}
 	if out.ACMEDirectoryURL == "" {
 		// Let's Encrypt production. Switch to the staging directory

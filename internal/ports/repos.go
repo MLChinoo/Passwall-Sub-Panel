@@ -680,6 +680,43 @@ type UISettings struct {
 	// Fractional GB allowed (e.g. 0.12). Stored as a float string in the KV.
 	EmergencyAccessQuotaGB float64 `json:"emergency_access_quota_gb"`
 
+	// ---- Login protection: CAPTCHA on the public local-login form (v3.6.5) ----
+	// Defense-in-depth on top of the per-IP login rate limit, aimed at
+	// automated / distributed brute force + credential stuffing. CaptchaEnabled
+	// gates the whole thing (default off). CaptchaProvider selects the
+	// implementation: "image" (self-hosted base64 character captcha — the
+	// CN-safe default, zero external calls), "turnstile" (Cloudflare),
+	// "recaptcha" (Google v2), "hcaptcha". CaptchaTrigger is "always" or
+	// "after_failures" (only require it once an IP/account has accumulated
+	// failed logins — counted over LockoutWindowMinutes — reaching
+	// CaptchaFailThreshold). SiteKey is public (embedded in the login page);
+	// SecretKey is the provider's server-side verify secret, encrypted at rest
+	// and masked in the admin GET (has_captcha_secret_key). Image mode needs no
+	// keys. All hot-reloadable (read per login attempt).
+	CaptchaEnabled       bool   `json:"captcha_enabled"`
+	CaptchaProvider      string `json:"captcha_provider"`
+	CaptchaTrigger       string `json:"captcha_trigger"`
+	CaptchaFailThreshold int    `json:"captcha_fail_threshold"`
+	CaptchaSiteKey       string `json:"captcha_site_key"`
+	CaptchaSecretKey     string `json:"captcha_secret_key,omitempty"`
+
+	// ---- Login protection: account lockout / failed-attempt backoff (v3.6.5) ----
+	// Complements the captcha (which stops automation): a temporary lock stops
+	// targeted slow guessing. When enabled, a source that accumulates
+	// LockoutThreshold failed local logins within LockoutWindowMinutes is refused
+	// for LockoutDurationMinutes — independent of, and stricter than, the per-IP
+	// rate limit. LockoutScope picks what is locked: "ip" (the client IP) or
+	// "ip_upn" (the IP+username pair — recommended, so knowing a username can't
+	// be used to lock a victim out by spamming failures from elsewhere). Reuses
+	// the auth_events failure log (no new table). LockoutWindowMinutes also
+	// defines the recent-failure window the CaptchaTrigger="after_failures" mode
+	// counts over.
+	LockoutEnabled         bool   `json:"lockout_enabled"`
+	LockoutThreshold       int    `json:"lockout_threshold"`
+	LockoutWindowMinutes   int    `json:"lockout_window_minutes"`
+	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	LockoutScope           string `json:"lockout_scope"`
+
 	// ---- IP geolocation (access-log region display, offline .mmdb) ----
 	// Resolution is fully offline against a local .mmdb in <ConfigDir>/geoip/;
 	// no per-IP external calls. GeoIPEnabled gates the whole feature (default
