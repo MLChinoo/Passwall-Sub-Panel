@@ -99,6 +99,12 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 		// link + which reset form (link vs OTP) the reset page renders.
 		"password_recovery_enabled":  s.PasswordRecoveryEnabled,
 		"password_recovery_delivery": s.PasswordRecoveryDelivery,
+		// Self-service registration (v3.7.0): the "Create account" link + whether
+		// the register page should expect an email-verify step. The email-domain
+		// allow-list is deliberately NOT exposed (server-side only).
+		"registration_enabled":                   s.RegistrationEnabled,
+		"registration_require_email_verification": !s.RegistrationAllowUnverified,
+		"registration_delivery":                   s.RegistrationDelivery,
 	})
 }
 
@@ -137,6 +143,8 @@ func disabledReasonMessage(reason domain.AutoDisabledReason) string {
 		return "账号因使用了被禁的客户端而停用，请联系管理员。"
 	case domain.DisabledPendingApproval:
 		return "账号正在等待管理员审核，请稍后再试。"
+	case domain.DisabledPendingEmailVerify:
+		return "请先验证邮箱后再登录，验证邮件已发送到你的邮箱。"
 	case domain.DisabledPendingDelete:
 		return "账号已被标记为待删除，请联系管理员。"
 	default:

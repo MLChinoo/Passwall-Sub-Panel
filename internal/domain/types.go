@@ -95,6 +95,13 @@ type User struct {
 	AutoDisabledReason AutoDisabledReason
 	// DisableDetail stores additional context for the disable reason (e.g., admin note, blocked client info).
 	DisableDetail string
+	// SelfRegistered marks an account created through the public self-service
+	// signup flow (UPN = a user-chosen email). Because that UPN is
+	// attacker-registerable, such a row must NOT be a silent first-time SSO
+	// link target (see EnsureSSO) — otherwise pre-registering a victim's email
+	// could shadow / hijack their incoming SSO identity. Admin- and
+	// SSO-provisioned rows leave this false.
+	SelfRegistered bool
 	// BlockViolationCount tracks how many times the user attempted to use a blocked subscription client.
 	BlockViolationCount int
 	// LastBlockViolationAt is when BlockViolationCount was last incremented.
@@ -898,6 +905,7 @@ const (
 	MailReminderBlockedClient    MailReminderKind = "blocked_client"
 	MailReminderCertFailure      MailReminderKind = "cert_failure"
 	MailReminderPasswordReset    MailReminderKind = "password_reset"
+	MailReminderEmailVerify      MailReminderKind = "email_verify"
 )
 
 type MailSettings struct {

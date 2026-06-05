@@ -242,6 +242,12 @@ export interface AuthMethods {
   // a token (from the email link) or an OTP code the user types.
   password_recovery_enabled?: boolean
   password_recovery_delivery?: 'link' | 'otp'
+  // Self-service registration (v3.7.0). The email-domain allow-list is NOT
+  // exposed (server-side only). require_email_verification drives whether the
+  // register page shows a "check your email" step.
+  registration_enabled?: boolean
+  registration_require_email_verification?: boolean
+  registration_delivery?: 'link' | 'otp'
 }
 
 export type CaptchaProvider = 'image' | 'turnstile' | 'recaptcha' | 'hcaptcha'

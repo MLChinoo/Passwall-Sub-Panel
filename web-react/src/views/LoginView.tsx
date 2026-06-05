@@ -212,6 +212,15 @@ export default function LoginView() {
           </MuiLink>
         </Box>
       )}
+      {methods?.registration_enabled && (
+        <Box sx={{ textAlign: 'center', mt: 0.5, fontSize: 13, color: md.onSurfaceVariant }}>
+          {t('auth:register_prompt')}{' '}
+          <MuiLink component={RouterLink} to="/register" variant="body2"
+            onClick={(e) => { e.preventDefault(); navigate('/register') }}>
+            {t('auth:create_account')}
+          </MuiLink>
+        </Box>
+      )}
       <Button type="submit" variant={ssoFirst ? 'outlined' : 'contained'} fullWidth size="large"
         disabled={busy}
         startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}

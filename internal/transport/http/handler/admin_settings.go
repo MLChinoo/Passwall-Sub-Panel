@@ -111,6 +111,15 @@ type settingsDTO struct {
 	// Self-service password recovery (v3.7.0).
 	PasswordRecoveryEnabled  bool   `json:"password_recovery_enabled"`
 	PasswordRecoveryDelivery string `json:"password_recovery_delivery"`
+	// Self-service registration (v3.7.0). require_email_verification is the
+	// positive form of the stored RegistrationAllowUnverified.
+	RegistrationEnabled                  bool    `json:"registration_enabled"`
+	RegistrationRequireEmailVerification bool    `json:"registration_require_email_verification"`
+	RegistrationEmailDomains             string  `json:"registration_email_domains"`
+	RegistrationDefaultGroupID           int64   `json:"registration_default_group_id"`
+	RegistrationDelivery                 string  `json:"registration_delivery"`
+	RegistrationDefaultTrafficGB         float64 `json:"registration_default_traffic_gb"`
+	RegistrationDefaultExpireDays        int     `json:"registration_default_expire_days"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -208,6 +217,13 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 		LockoutScope:           s.LockoutScope,
 		PasswordRecoveryEnabled:  s.PasswordRecoveryEnabled,
 		PasswordRecoveryDelivery: s.PasswordRecoveryDelivery,
+		RegistrationEnabled:                  s.RegistrationEnabled,
+		RegistrationRequireEmailVerification: !s.RegistrationAllowUnverified,
+		RegistrationEmailDomains:             s.RegistrationEmailDomains,
+		RegistrationDefaultGroupID:           s.RegistrationDefaultGroupID,
+		RegistrationDelivery:                 s.RegistrationDelivery,
+		RegistrationDefaultTrafficGB:         s.RegistrationDefaultTrafficGB,
+		RegistrationDefaultExpireDays:        s.RegistrationDefaultExpireDays,
 	})
 }
 
@@ -302,6 +318,13 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		LockoutScope:                strings.ToLower(strings.TrimSpace(req.LockoutScope)),
 		PasswordRecoveryEnabled:     req.PasswordRecoveryEnabled,
 		PasswordRecoveryDelivery:    strings.ToLower(strings.TrimSpace(req.PasswordRecoveryDelivery)),
+		RegistrationEnabled:           req.RegistrationEnabled,
+		RegistrationAllowUnverified:   !req.RegistrationRequireEmailVerification,
+		RegistrationEmailDomains:      strings.TrimSpace(req.RegistrationEmailDomains),
+		RegistrationDefaultGroupID:    req.RegistrationDefaultGroupID,
+		RegistrationDelivery:          strings.ToLower(strings.TrimSpace(req.RegistrationDelivery)),
+		RegistrationDefaultTrafficGB:  req.RegistrationDefaultTrafficGB,
+		RegistrationDefaultExpireDays: req.RegistrationDefaultExpireDays,
 		// GeoIPUpdateToken / CaptchaSecretKey resolved below ("empty = keep existing").
 	}
 	// Update token is write-only: a blank field on save means the admin didn't
@@ -346,6 +369,20 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 	// emails a code and needs no URL, so it's exempt.)
 	if s.PasswordRecoveryEnabled && s.PasswordRecoveryDelivery != "otp" && strings.TrimSpace(s.SubBaseURL) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Password recovery with link delivery requires the subscription base URL (sub_base_url) to be set first"})
+		return
+	}
+	if s.RegistrationDelivery != "" && s.RegistrationDelivery != "link" && s.RegistrationDelivery != "otp" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Registration_delivery must be link or otp"})
+		return
+	}
+	if s.RegistrationDefaultTrafficGB < 0 || s.RegistrationDefaultExpireDays < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Registration default traffic / expiry must be >= 0"})
+		return
+	}
+	// Like recovery: the email-verify LINK is built only from the configured
+	// canonical base URL, so verification-required + link delivery needs it set.
+	if s.RegistrationEnabled && !s.RegistrationAllowUnverified && s.RegistrationDelivery != "otp" && strings.TrimSpace(s.SubBaseURL) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Registration email verification with link delivery requires the subscription base URL (sub_base_url) to be set first"})
 		return
 	}
 	if s.CaptchaFailThreshold < 0 || s.LockoutThreshold < 0 ||
@@ -505,6 +542,13 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		LockoutScope:           s.LockoutScope,
 		PasswordRecoveryEnabled:  s.PasswordRecoveryEnabled,
 		PasswordRecoveryDelivery: s.PasswordRecoveryDelivery,
+		RegistrationEnabled:                  s.RegistrationEnabled,
+		RegistrationRequireEmailVerification: !s.RegistrationAllowUnverified,
+		RegistrationEmailDomains:             s.RegistrationEmailDomains,
+		RegistrationDefaultGroupID:           s.RegistrationDefaultGroupID,
+		RegistrationDelivery:                 s.RegistrationDelivery,
+		RegistrationDefaultTrafficGB:         s.RegistrationDefaultTrafficGB,
+		RegistrationDefaultExpireDays:        s.RegistrationDefaultExpireDays,
 	})
 }
 

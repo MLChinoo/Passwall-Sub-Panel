@@ -196,6 +196,18 @@ export interface UISettings {
   password_recovery_enabled: boolean
   /** "link" (a one-time reset URL) or "otp" (a short code the user types). */
   password_recovery_delivery: 'link' | 'otp' | ''
+
+  // ---- Self-service registration (v3.7.0) ----
+  registration_enabled: boolean
+  /** Positive form of the stored allow_unverified (default true = required). */
+  registration_require_email_verification: boolean
+  /** Comma-separated allowed email domains; empty = any. */
+  registration_email_domains: string
+  registration_default_group_id: number
+  registration_delivery: 'link' | 'otp' | ''
+  /** Quota/expiry a registrant inherits. 0 = unlimited / no expiry. */
+  registration_default_traffic_gb: number
+  registration_default_expire_days: number
 }
 
 export async function getUISettings() {

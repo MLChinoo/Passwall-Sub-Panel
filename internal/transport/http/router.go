@@ -26,6 +26,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/recovery"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/registration"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
@@ -170,6 +171,18 @@ func NewRouter(d Deps) *gin.Engine {
 		recoveryH := handler.NewAuthRecoveryHandler(recoverySvc)
 		authGroup.POST("/forgot-password", loginLimiter.Handler(), recoveryH.Forgot)
 		authGroup.POST("/reset-password", loginLimiter.Handler(), recoveryH.Reset)
+		// Self-service registration (v3.7.0). Email-verify reuses the auth_tokens
+		// infrastructure; both endpoints share the login rate limiter.
+		registerSvc := registration.New(registration.Deps{
+			Users:    d.User,
+			Groups:   d.Repos.Group,
+			Tokens:   d.Repos.AuthToken,
+			Mail:     d.Mail,
+			Settings: d.Repos.Settings,
+		})
+		registerH := handler.NewAuthRegisterHandler(registerSvc)
+		authGroup.POST("/register", loginLimiter.Handler(), registerH.Register)
+		authGroup.POST("/verify-email", loginLimiter.Handler(), registerH.VerifyEmail)
 		// SAML endpoints stay registered even when SSO is currently
 		// disabled — the underlying service rejects calls until admin
 		// re-enables it. That way an admin who flips SSO on in the panel

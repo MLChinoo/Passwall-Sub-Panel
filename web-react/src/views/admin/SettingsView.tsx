@@ -493,6 +493,48 @@ export default function SettingsView() {
                 </Typography>
               </>
             )}
+            <Divider sx={{ my: 0.5, borderColor: md.outlineVariant }} />
+            {/* Self-service registration */}
+            <FormControlLabel label={t('settings.general.registration_enabled', { defaultValue: '允许自助注册' })}
+              control={<Switch checked={settings.registration_enabled}
+                onChange={(_, c) => patch('registration_enabled', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            {settings.registration_enabled && (
+              <>
+                <FormControlLabel label={t('settings.general.registration_require_email_verification', { defaultValue: '要求邮箱验证（推荐）' })}
+                  control={<Switch checked={settings.registration_require_email_verification}
+                    onChange={(_, c) => patch('registration_require_email_verification', c)} />}
+                  sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+                {settings.registration_require_email_verification && (
+                  <TextField select fullWidth size="small"
+                    label={t('settings.general.registration_delivery', { defaultValue: '验证邮件方式' })}
+                    value={settings.registration_delivery || 'link'}
+                    onChange={e => patch('registration_delivery', e.target.value as UISettings['registration_delivery'])}>
+                    <MenuItem value="link">{t('settings.general.password_recovery_delivery_link', { defaultValue: '重置链接' })}</MenuItem>
+                    <MenuItem value="otp">{t('settings.general.password_recovery_delivery_otp', { defaultValue: '验证码（OTP）' })}</MenuItem>
+                  </TextField>
+                )}
+                <TextField fullWidth size="small"
+                  label={t('settings.general.registration_email_domains', { defaultValue: '允许的邮箱域名（逗号分隔，空=不限）' })}
+                  value={settings.registration_email_domains}
+                  onChange={e => patch('registration_email_domains', e.target.value)}
+                  placeholder="example.com, corp.org" />
+                <Pair>
+                  <NumField label={t('settings.general.registration_default_group_id', { defaultValue: '默认组 ID（0=第一个组）' })}
+                    value={settings.registration_default_group_id}
+                    onChange={v => patch('registration_default_group_id', v)} />
+                  <NumField label={t('settings.general.registration_default_traffic_gb', { defaultValue: '默认流量 GB（0=不限）' })}
+                    value={settings.registration_default_traffic_gb}
+                    onChange={v => patch('registration_default_traffic_gb', v)} />
+                </Pair>
+                <NumField label={t('settings.general.registration_default_expire_days', { defaultValue: '默认有效期（天，0=不过期）' })}
+                  value={settings.registration_default_expire_days}
+                  onChange={v => patch('registration_default_expire_days', v)} />
+                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
+                  {t('settings.general.registration_hint', { defaultValue: '注册用户以邮箱作为登录名、角色为普通用户，加入默认组并继承上述配额/有效期。开启邮箱验证需先配置 SMTP；链接方式需先配置订阅基础 URL。' })}
+                </Typography>
+              </>
+            )}
           </Section>
 
           <Section title={t('settings.general.section_security')} md={md}>

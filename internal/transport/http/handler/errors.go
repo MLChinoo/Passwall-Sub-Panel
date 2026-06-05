@@ -48,6 +48,8 @@ func respondError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 	case errors.Is(err, domain.ErrConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "Conflict"})
+	case errors.Is(err, domain.ErrAlreadyExists):
+		c.JSON(http.StatusConflict, gin.H{"error": "Already exists"})
 	case errors.Is(err, domain.ErrSSONoAccount):
 		c.JSON(http.StatusNotFound, gin.H{"error": "No SSO-linked account for this identity"})
 	case errors.Is(err, domain.ErrSSOAccountConflict):

@@ -238,6 +238,14 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		// security --- self-service password recovery (v3.7.0)
 		boolField("security", "password_recovery_enabled", &s.PasswordRecoveryEnabled),
 		strField("security", "password_recovery_delivery", &s.PasswordRecoveryDelivery),
+		// security --- self-service registration (v3.7.0)
+		boolField("security", "registration_enabled", &s.RegistrationEnabled),
+		boolField("security", "registration_allow_unverified", &s.RegistrationAllowUnverified),
+		strField("security", "registration_email_domains", &s.RegistrationEmailDomains),
+		int64Field("security", "registration_default_group_id", &s.RegistrationDefaultGroupID),
+		strField("security", "registration_delivery", &s.RegistrationDelivery),
+		floatField("security", "registration_default_traffic_gb", &s.RegistrationDefaultTrafficGB),
+		intField("security", "registration_default_expire_days", &s.RegistrationDefaultExpireDays),
 
 		// runtime --- cron / performance / tz / global toggles
 		strField("runtime", "timezone", &s.Timezone),
@@ -301,6 +309,24 @@ func intField(typ, name string, dst *int) settingDescriptor {
 				return nil
 			}
 			v, err := strconv.Atoi(raw)
+			if err != nil {
+				return err
+			}
+			*dst = v
+			return nil
+		},
+	}
+}
+
+func int64Field(typ, name string, dst *int64) settingDescriptor {
+	return settingDescriptor{
+		Type: typ, Name: name,
+		Marshal: func() (string, error) { return strconv.FormatInt(*dst, 10), nil },
+		Unmarshal: func(raw string) error {
+			if raw == "" {
+				return nil
+			}
+			v, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
 				return err
 			}
@@ -492,6 +518,9 @@ func applyUISettingsDefaults(out, defaults ports.UISettings) ports.UISettings {
 		// OTP codes for environments where link-rewriting/preview bots would
 		// otherwise auto-consume a one-time link.
 		out.PasswordRecoveryDelivery = "link"
+	}
+	if out.RegistrationDelivery == "" {
+		out.RegistrationDelivery = "link"
 	}
 	if out.ACMEDirectoryURL == "" {
 		// Let's Encrypt production. Switch to the staging directory

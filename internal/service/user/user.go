@@ -208,6 +208,14 @@ type CreateLocalInput struct {
 	TrafficLimitBytes  int64
 	TrafficResetPeriod domain.ResetPeriod
 	Remark             string
+	// PendingEmailVerify creates the account disabled + flagged
+	// DisabledPendingEmailVerify (self-registration before the email is
+	// confirmed). Such a user can't log in and gets no 3X-UI clients until
+	// ActivateAfterVerification flips it on. Default false = enabled on create.
+	PendingEmailVerify bool
+	// SelfRegistered marks the account as created via public signup, so it's
+	// excluded from silent first-time SSO linking (see User.SelfRegistered).
+	SelfRegistered bool
 }
 
 // CreateLocalResult conveys the generated initial password (shown to admin
@@ -309,14 +317,45 @@ func (s *Service) CreateLocal(ctx context.Context, in CreateLocalInput) (*Create
 		// later overwrite them (see EnsureSSO linking path). Pinning
 		// sso_subject to UPN keeps the (provider, subject) tuple unique
 		// within the local namespace without needing a separate uuid.
-		SSOProvider: domain.SSOProviderLocal,
-		SSOSubject:  upn,
-		Enabled:     true,
+		SSOProvider:    domain.SSOProviderLocal,
+		SSOSubject:     upn,
+		Enabled:        true,
+		SelfRegistered: in.SelfRegistered,
+	}
+	if in.PendingEmailVerify {
+		// Self-registration before the email is confirmed: created disabled so it
+		// can't log in, and (via the caller using CreateLocal not CreateLocalAndSync)
+		// with no 3X-UI clients until ActivateAfterVerification.
+		u.Enabled = false
+		u.AutoDisabledReason = domain.DisabledPendingEmailVerify
 	}
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
 	return &CreateLocalResult{User: u, InitialPassword: pwd}, nil
+}
+
+// ActivateAfterVerification flips a pending-email-verify account live: enabled,
+// reason cleared, and its 3X-UI clients provisioned. Idempotent and guarded —
+// it only acts on accounts currently in the DisabledPendingEmailVerify state,
+// so a stale email_verify token can't re-enable an admin-disabled user.
+func (s *Service) ActivateAfterVerification(ctx context.Context, userID int64) error {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u.Enabled || u.AutoDisabledReason != domain.DisabledPendingEmailVerify {
+		return nil // already activated, or never in the pending state — no-op
+	}
+	u.Enabled = true
+	u.AutoDisabledReason = domain.DisabledNone
+	u.DisableDetail = ""
+	if err := s.users.Update(ctx, u); err != nil {
+		return err
+	}
+	// Provision the proxy clients now that the account is real. Best-effort with
+	// async fallback (same pattern as CreateLocalAndSync's retry path).
+	return s.ResyncMembershipOrEnqueue(ctx, userID, "provision after email verification for "+u.UPN)
 }
 
 // EnsureSSOInput carries the SAML/OIDC-derived facts a successful SSO
@@ -441,6 +480,23 @@ func (s *Service) EnsureSSO(ctx context.Context, in EnsureSSOInput) (*domain.Use
 	if linkable != nil && linkable.AutoDisabledReason == domain.DisabledPendingApproval {
 		s.dropOrphanUser(ctx, linkable.ID)
 		linkable = nil
+	}
+	if linkable != nil && linkable.SelfRegistered {
+		// A self-service-registered row's UPN is just an email the registrant
+		// typed — anyone can pre-register a victim's email. So this row is NOT a
+		// trustworthy first-time SSO link target; silently rebinding the IdP's
+		// identity onto it would let an attacker shadow / hijack the victim's
+		// incoming SSO account.
+		if linkable.AutoDisabledReason == domain.DisabledPendingEmailVerify {
+			// Still unverified (no 3X-UI clients) → just a squat. Drop it and let
+			// SSO provision a clean, IdP-owned account for the real user.
+			s.dropOrphanUser(ctx, linkable.ID)
+			linkable = nil
+		} else {
+			// A verified, active self-registered local account. Refuse the
+			// implicit takeover; an admin must link it explicitly.
+			return nil, domain.ErrSSOAccountConflict
+		}
 	}
 	if linkable != nil {
 		// Pass 3: strict conflict refusal — only local rows are
@@ -779,6 +835,13 @@ func isMinimallyStrongPassword(s string) bool {
 // Get returns one user or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id int64) (*domain.User, error) {
 	return s.users.GetByID(ctx, id)
+}
+
+// GetByUPN looks a user up by login username. Thin wrapper so callers that only
+// have the service (e.g. self-registration's OTP-verify path) don't need the
+// repo directly.
+func (s *Service) GetByUPN(ctx context.Context, upn string) (*domain.User, error) {
+	return s.users.GetByUPN(ctx, upn)
 }
 
 // SetPersonalRules updates only the user's subscription-only personal rule

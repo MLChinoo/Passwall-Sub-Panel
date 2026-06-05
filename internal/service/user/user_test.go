@@ -239,6 +239,34 @@ func TestEnsureSSO_FirstLoginPersistsLocalAccountBinding(t *testing.T) {
 	}
 }
 
+// A self-service-registered local account's UPN is an attacker-registerable
+// email, so an incoming SSO identity for the same UPN must NOT silently rebind
+// onto it (that would let an attacker who pre-registered a victim's email shadow
+// / hijack the victim's SSO account). An active self-registered row → refuse.
+func TestEnsureSSO_SelfRegisteredNotSilentlyLinked(t *testing.T) {
+	ctx := context.Background()
+	repo := &memoryUserRepo{
+		byID: map[int64]*domain.User{
+			5: {
+				ID: 5, UPN: "victim@corp.com",
+				SSOProvider: domain.SSOProviderLocal, SSOSubject: "victim@corp.com",
+				Enabled: true, SelfRegistered: true, PasswordHash: "attacker-chosen",
+			},
+		},
+	}
+	svc := &Service{users: repo}
+	_, err := svc.EnsureSSO(ctx, EnsureSSOInput{
+		Provider: domain.SSOProviderSAML, Subject: "real-victim-sub",
+		UPN: "victim@corp.com", Email: "victim@corp.com",
+	})
+	if !errors.Is(err, domain.ErrSSOAccountConflict) {
+		t.Fatalf("self-registered account must not be silently SSO-linked; want ErrSSOAccountConflict, got %v", err)
+	}
+	if repo.updateCalls != 0 {
+		t.Fatalf("must not rebind the self-registered row, updateCalls=%d", repo.updateCalls)
+	}
+}
+
 type memoryUserRepo struct {
 	byID        map[int64]*domain.User
 	updateCalls int

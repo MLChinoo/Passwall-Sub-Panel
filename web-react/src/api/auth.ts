@@ -57,6 +57,25 @@ export async function resetPassword(input: {
   return data
 }
 
+// registerUser creates a new self-service account. The email is the username.
+// Returns { requires_verification } so the page knows whether to show the
+// "check your email" step or send the user straight to login.
+export async function registerUser(input: {
+  email: string
+  password: string
+  display_name?: string
+}): Promise<{ ok: boolean; requires_verification: boolean }> {
+  const { data } = await client.post('/auth/register', input, { _skipErrorToast: true })
+  return data
+}
+
+// verifyEmail confirms a registration. Link delivery passes token; OTP delivery
+// passes ident (the email) + code.
+export async function verifyEmail(input: { token?: string; ident?: string; code?: string }) {
+  const { data } = await client.post('/auth/verify-email', input, { _skipErrorToast: true })
+  return data
+}
+
 export function samlLoginURL(returnTo: string = '/user/me'): string {
   return `/api/auth/saml/login?return_to=${encodeURIComponent(returnTo)}`
 }

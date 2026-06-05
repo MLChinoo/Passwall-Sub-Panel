@@ -759,6 +759,31 @@ type UISettings struct {
 	PasswordRecoveryEnabled  bool   `json:"password_recovery_enabled"`
 	PasswordRecoveryDelivery string `json:"password_recovery_delivery"`
 
+	// ---- Self-service registration (v3.7.0) ----
+	// RegistrationEnabled gates the public /auth/register flow. Default off.
+	// Registrants log in with their email as the username (UPN), get role=user,
+	// join RegistrationDefaultGroupID, and inherit the default quota/expiry below
+	// (Group itself carries no quota — only node selection). With
+	// RegistrationRequireEmailVerification on (recommended), the account is
+	// created disabled + unprovisioned until the email is confirmed.
+	RegistrationEnabled bool `json:"registration_enabled"`
+	// RegistrationAllowUnverified is the INVERSE of "require email verification".
+	// Stored inverted so the zero value (false) means the safe default —
+	// verification required — without the KV layer needing to distinguish unset
+	// from explicit-false for a bool. The admin API + public methods present the
+	// positive "registration_require_email_verification" (= !AllowUnverified).
+	RegistrationAllowUnverified bool `json:"registration_allow_unverified"`
+	// RegistrationEmailDomains is a comma-separated allow-list of email domains
+	// (e.g. "example.com, corp.org"). Empty = any domain. Server-side only —
+	// never exposed to the public methods endpoint.
+	RegistrationEmailDomains  string  `json:"registration_email_domains"`
+	RegistrationDefaultGroupID int64  `json:"registration_default_group_id"`
+	// RegistrationDelivery picks the email-verify shape: "link" or "otp".
+	RegistrationDelivery       string  `json:"registration_delivery"`
+	// Quota/expiry a registrant inherits (Group has none). 0 = unlimited / no expiry.
+	RegistrationDefaultTrafficGB  float64 `json:"registration_default_traffic_gb"`
+	RegistrationDefaultExpireDays int     `json:"registration_default_expire_days"`
+
 	// ---- IP geolocation (access-log region display, offline .mmdb) ----
 	// Resolution is fully offline against a local .mmdb in <ConfigDir>/geoip/;
 	// no per-IP external calls. GeoIPEnabled gates the whole feature (default

@@ -4,6 +4,22 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.7.0-beta.4 — 2026-06-05
+
+「账号安全」专题第四块：**本地账号自助注册**（可配，默认关）。访客用邮箱注册（邮箱即登录名），默认**强制邮箱验证**后才激活；可配邮箱域名白名单、默认组、默认配额/有效期。全程 TDD（registration 服务先红后绿）+ 真机端到端验（关验证时「注册→直接登录成功」整链路通；开验证时「注册→pending→登录 403」；域名白名单 400；设置校验 400）。`go test ./...` / `go vet` / `tsc` / `npm build` 全绿。
+
+### Added
+
+- **自助注册服务 `internal/service/registration`** —— `POST /auth/register {email,password,display_name}`：邮箱即 UPN（登录名，其唯一索引兼作邮箱去重）、角色固定 `user`、加入默认组、继承可配默认配额/有效期（Group 本身无配额，故由注册设置提供——同 SSO 自动建号的做法）。校验邮箱格式（`net/mail`）+ **域名白名单**（逗号分隔，空=不限，精确域名匹配防子域绕过）+ 密码策略（复用 `user.IsMinimallyStrongPassword`）。
+- **邮箱验证（默认开）+ 延迟开通** —— 开验证时：建**禁用**账号（新增 `DisabledPendingEmailVerify` 停用原因，登录/刷新/中间件/订阅各闸门自动拦截，**不**走自助豁免）、**不开通 3X-UI 客户端**（避免给垃圾注册占用资源）；发 `email_verify` 邮件（复用 `auth_tokens` 的 email_verify purpose + OTP 每令牌 5 次上限；link/OTP 可配）。`POST /auth/verify-email {token | ident+code}` 消费令牌→`user.ActivateAfterVerification`（启用+清原因+`ResyncMembershipOrEnqueue` 此时才开通客户端；**仅对 pending_email_verify 态生效**，杜绝旧令牌复活管理员停用的账号）。关验证则直接 `CreateLocalAndSync` 建+开通+可登录。
+- **mailer `SendEmailVerification` + `email_verify` 模板** —— link/OTP 条件渲染、html/template 转义、随 `ListTemplates` 可在管理端编辑。
+- **管理端「登录安全」注册区 + 前端注册/验证页** —— 7 项设置（开关 / 要求邮箱验证 / 投递方式 / 域名白名单 / 默认组 / 默认流量 / 默认有效期；「要求邮箱验证」在存储层以**反向 `allow_unverified`** 存，使零值=安全默认「要求验证」，API/Methods 呈正向）。登录页据 `/auth/methods` 显示「立即注册」；新增注册页（邮箱+密码+昵称+强度校验）与验证页（链接模式自动验证；OTP 模式输邮箱+码）。两公开端点挂 loginLimiter，链接投递的验证 URL 只用 `SubBaseURL`（防投毒）。中英 i18n 齐。
+
+### 安全加固（23-agent 对抗审查后）
+
+- **杜绝自助注册账号被 SSO 静默劫持/占位（HIGH）** —— 自助注册以邮箱作 UPN，而 UPN 是 SSO 首次登录的隐式 link 键：攻击者**抢注受害者邮箱**后，受害者真实 SSO 登录会被静默 rebind 到攻击者那行（攻击者保留本地密码 → 账号接管；开邮箱验证时则把受害者卡在「账号停用」→ 拒绝服务）。新增 `User.SelfRegistered` 标记（AutoMigrate）：`EnsureSSO` 首次 link 时，**自助注册行一律不静默 link**——未验证的（无 3X-UI 客户端）直接 scrub 让 SSO 干净建号，已激活的返回 `ErrSSOAccountConflict`（需管理员显式关联）。管理员/SSO 建号不受影响（标记为 false，照旧 link）。配 TDD。
+- **重复邮箱返回干净 409** —— 注册重复邮箱原经 `respondError` 默认分支漏成 500（带原始串），现 `ErrAlreadyExists → 409`。注册「邮箱已存在」是标准注册 UX（区别于找回的零枚举语义），邮箱验证闸门保证被占邮箱无法被激活劫持。
+
 ## v3.7.0-beta.3 — 2026-06-05
 
 「账号安全」专题第三块：**本地账号邮箱找回密码**。用户用账号名发起找回，收到邮件（一次性**重置链接**或**验证码 OTP**，按管理员配置），凭它设新密码。全程 TDD（仓储/服务各自先红后绿）+ 真机端到端验（设置往返、`/auth/methods` 暴露、forgot 对存在/不存在账号都 200 不泄露枚举、错误令牌 401、弱密码 400）。`go test ./...` / `go vet` / `tsc` / `npm build` 全绿。
