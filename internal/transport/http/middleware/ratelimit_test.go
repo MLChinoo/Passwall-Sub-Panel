@@ -64,3 +64,46 @@ func TestPerIPLimiterZeroLimitFallsBackToOne(t *testing.T) {
 		t.Fatal("second request with effective limit=1 should be blocked")
 	}
 }
+
+// A dynamic limit source overrides the static limit and is read per call, so an
+// admin changing the rate limit in settings takes effect WITHOUT a restart.
+func TestPerIPLimiterDynamicLimit(t *testing.T) {
+	limit := 1
+	l := NewPerIPLimiter(99, time.Minute)
+	l.SetLimitFunc(func() int { return limit })
+
+	if !l.Allow("ip1") {
+		t.Fatal("1st allowed under dynamic limit 1")
+	}
+	if l.Allow("ip1") {
+		t.Fatal("2nd blocked under dynamic limit 1 (overrides static 99)")
+	}
+	// Admin raises the limit at runtime — a fresh window picks it up with no
+	// limiter reconstruction.
+	limit = 3
+	if !l.Allow("ip2") {
+		t.Fatal("dynamic limit 3: 1st allowed")
+	}
+	if !l.Allow("ip2") {
+		t.Fatal("dynamic limit 3: 2nd allowed")
+	}
+	if !l.Allow("ip2") {
+		t.Fatal("dynamic limit 3: 3rd allowed")
+	}
+	if l.Allow("ip2") {
+		t.Fatal("dynamic limit 3: 4th blocked")
+	}
+}
+
+// A dynamic source returning <=0 falls back to the static limit — a settings-load
+// error must never open the gate to unlimited requests.
+func TestPerIPLimiterDynamicZeroFallsBackToStatic(t *testing.T) {
+	l := NewPerIPLimiter(1, time.Minute)
+	l.SetLimitFunc(func() int { return 0 })
+	if !l.Allow("ip1") {
+		t.Fatal("1st allowed")
+	}
+	if l.Allow("ip1") {
+		t.Fatal("2nd blocked — zero dynamic limit falls back to static 1")
+	}
+}

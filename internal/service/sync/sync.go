@@ -280,14 +280,11 @@ func (s *Service) DelOwnedClient(ctx context.Context, panelID int64, inboundID i
 		return err
 	}
 
-	cl, err := c.GetClient(ctx, email)
-	if err != nil {
-		return fmt.Errorf("xui get client: %w", err)
-	}
-	if cl == nil {
-		// Already absent upstream — desired end-state ("client gone") reached.
-		return s.ownership.RemoveByMatch(ctx, panelID, inboundID, email)
-	}
+	// Delete by email directly — no pre-flight GetClient. DelClientByEmail is the
+	// real delete and the error path below already converts "already gone" into
+	// success (clientMissingByEmail), so a probe-before-delete just doubles the
+	// round-trips on the common happy path.
+	//
 	// Always delete by email. Per 3X-UI's API, delClient/:clientId takes the
 	// client's UUID or password — so it matches VLESS/VMess by UUID and Trojan
 	// by password, but NOT Shadowsocks (keyed by email) or Hysteria2 (keyed by

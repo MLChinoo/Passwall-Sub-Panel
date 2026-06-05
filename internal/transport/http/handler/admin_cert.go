@@ -207,10 +207,12 @@ func (h *AdminCertHandler) DeleteDNSCred(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// ListProviders returns the built-in DNS provider codes for the create-credential
-// dropdown (the frontend renders it as a searchable select).
+// ListProviders returns the curated DNS provider catalog — each provider's code,
+// label, and credential field schema — so the create-credential dialog can render
+// labeled inputs for a built-in vendor and fall back to a free-form KEY/VALUE
+// editor only for the generic exec/httpreq providers (Custom=true).
 func (h *AdminCertHandler) ListProviders(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"providers": acme.SupportedProviders()})
+	c.JSON(http.StatusOK, gin.H{"providers": acme.SupportedProviderInfos()})
 }
 
 type setNodeCertSourceRequest struct {

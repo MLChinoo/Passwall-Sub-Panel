@@ -1066,7 +1066,11 @@ func (s *Service) ListUnmanagedInbounds(ctx context.Context, panelID int64) ([]*
 			claimed[n.InboundID] = struct{}{}
 		}
 	}
-	inbounds, err := c.ListInbounds(ctx)
+	// Slim: this listing reads only inbound-level fields (id/protocol/port/
+	// remark/enable) + len(ClientStats); it never touches settings.clients[], so
+	// the slim payload (clients trimmed, clientStats kept) is a strict win on
+	// panels with many clients.
+	inbounds, err := c.ListInboundsSlim(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list inbounds for panel %d: %w", panelID, err)
 	}

@@ -4,6 +4,21 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.4-beta.2 — 2026-06-04
+
+证书页 UI 重构（子 Tab + 具名凭据字段 + 更多 DNS 厂商）、限流配置改热生效、外加一批 PSP→3X-UI API 取数效率优化（去掉全量回拉）。本地 `go build` / `go vet` / `go test ./...` / `tsc -b` 全通过。
+
+### Changed
+
+- **证书页改 3 个子 Tab（证书 / DNS 凭据 / ACME 设置）** —— 原先「证书」「DNS 凭据」两块卡片直接堆叠贴边；改为子 Tab（同节点页 Managed/Unmanaged 模式），每 Tab 单块、不再贴边。ACME 设置（账户邮箱 / 目录 / 续期阈值）从「设置」页**迁到**证书页「ACME 设置」Tab（单一入口、避免两处 drift），加 LE 生产 / staging 一键切换。导航「证书」从服务器下方挪到**节点下方**。
+- **DNS 凭据表单：已知厂商给具名标签字段，不再让用户手填 KEY/VALUE** —— 选 Cloudflare 就显示「API Token」具名输入（附 env 变量名提示 + 密钥掩码），而非通用 KEY=VALUE 编辑器；只有 `exec`/`httpreq`/未知自定义厂商才回退自由 KV。字段 schema 由后端按各厂商 lego `.toml` 的权威 env 变量名暴露（单一真相源 + drift 测试防漂移）。
+- **DNS 厂商扩到 27 家** —— 新增 DNSimple / Bunny.net / ClouDNS / Dynu / netcup / Njalla / Vercel / Name.com / reg.ru（均轻量 HTTP / 小 SDK，不引入重云 SDK）。
+- **登录 / 订阅限流改热生效（无需重启）** —— 此前限流器在启动时按 boot 值构建，改 `login_per_ip_per_min` / `sub_per_ip_per_min` 要重启才生效；现限流中间件每请求读当前设置（5 秒 TTL 缓存、避免登录洪峰打 DB），改完即时生效；读取失败回退静态值（绝不放开闸门）。
+
+### Performance
+
+- **PSP→3X-UI 取数优化：消除若干「全量回拉再用一小片」** —— 14-agent 审计 + 对抗验证后确认的 5 处（热路径已最优的 traffic poll / health / 稳态 render / reconcile 不动）：① 流量地板推送（每活跃用户每轮 poll）与 ② 群组 resync，原先全量 `ListInbounds` 拉回整面板所有入站的 `clients[]`，只为读自己 1-2 个入站的 protocol/method/flow → 改 `GetInbound` 按需取（保留「面板探不到任一入站则跳过、不误删 ownership」守卫，不靠易错的 not-found 字符串匹配）；③ 节点「认领」列表与 ④ render 未捕获节点兜底只读 inbound 级配置 / clientStats → 改 `ListInboundsSlim`（剥离 clients[]，大面板省一个数量级）；⑤ `DelOwnedClient` happy path 去掉多余的删前 `GetClient` 预检（`DelClientByEmail` 幂等、错误路径已处理 already-gone）。另删 render 一处零调用死代码。
+
 ## v3.6.4-beta.1 — 2026-06-04
 
 PSP 托管的 TLS 证书自动化：内置 ACME（`go-acme/lego`，DNS-01）自动签发**通配符**证书、内联部署到 3X-UI 入站、自动续期，外加失败告警。核心（签发链路）已真机验证 —— 对**真实 Let's Encrypt staging + 真实 Cloudflare DNS-01** 成功签出通配符 + 多 SAN 证书。本地 `go build` / `go vet` / `go test ./...` / `tsc -b` 全通过。

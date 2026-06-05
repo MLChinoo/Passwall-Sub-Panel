@@ -295,22 +295,17 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 	return withSentinelIfEmpty(out)
 }
 
-func (s *Service) fetchInbound(ctx context.Context, n *domain.Node) (*ports.Inbound, error) {
-	c, err := s.pool.Get(n.PanelID)
-	if err != nil {
-		return nil, err
-	}
-	return c.GetInbound(ctx, n.InboundID)
-}
-
 // prefetchInboundsForRender pulls every inbound the proxy-block builder
-// will need in one ListInbounds call per panel, then returns a node→
+// will need in one ListInboundsSlim call per panel, then returns a node→
 // inbound map. This collapses the previous "fetchInbound on every node"
 // N+1 pattern: for a 10-node user spread across 2 panels, render now
-// makes 2 ListInbounds calls instead of 10 GetInbound calls. Failures
-// (panel unreachable, inbound deleted server-side) leave the affected
-// entries absent from the map; the caller logs and skips them, matching
-// the prior fall-through behaviour.
+// makes 2 list calls instead of 10 GetInbound calls. Slim is sufficient
+// because the renderer reads only inbound-level config (protocol/port/
+// settings root keys/streamSettings) — per-user credentials derive from
+// the user's UUID, never from settings.clients[]. Failures (panel
+// unreachable, inbound deleted server-side) leave the affected entries
+// absent from the map; the caller logs and skips them, matching the prior
+// fall-through behaviour.
 func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderItem, st ports.UISettings) map[int64]*ports.Inbound {
 	// Bucket node IDs by their owning panel so each panel is touched once.
 	panelInboundIDs := map[int64]map[int]struct{}{}
@@ -376,7 +371,7 @@ func (s *Service) prefetchInboundsForRender(ctx context.Context, items []renderI
 				result = panelResult{panelID: p, err: err}
 				return
 			}
-			list, lerr := c.ListInbounds(ctx)
+			list, lerr := c.ListInboundsSlim(ctx)
 			if lerr != nil {
 				result = panelResult{panelID: p, err: lerr}
 				return

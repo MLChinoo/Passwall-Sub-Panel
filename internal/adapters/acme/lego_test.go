@@ -132,3 +132,53 @@ func TestSupportedProvidersIncludesCommonAndGenericFallbacks(t *testing.T) {
 		}
 	}
 }
+
+// Drift guard: every curated (non-generic) provider with a factory MUST carry a
+// field schema, and every schema MUST map to a real factory — so the admin UI
+// never falls back to the raw KEY/VALUE editor for a built-in vendor, and a stale
+// schema can't reference a removed provider.
+func TestProviderMetaCoversFactories(t *testing.T) {
+	generic := map[string]bool{"exec": true, "httpreq": true}
+	for code := range providerFactories {
+		if generic[code] {
+			if _, ok := providerMeta[code]; ok {
+				t.Errorf("generic provider %q must NOT have a fixed schema (it's free-form KV)", code)
+			}
+			continue
+		}
+		meta, ok := providerMeta[code]
+		if !ok {
+			t.Errorf("provider %q has a factory but no providerMeta schema", code)
+			continue
+		}
+		if len(meta.Fields) == 0 {
+			t.Errorf("provider %q schema has no fields", code)
+		}
+		for _, f := range meta.Fields {
+			if f.Key == "" || f.Label == "" {
+				t.Errorf("provider %q has a field with empty key or label: %+v", code, f)
+			}
+		}
+	}
+	for code := range providerMeta {
+		if _, ok := providerFactories[code]; !ok {
+			t.Errorf("providerMeta has %q but no matching factory", code)
+		}
+	}
+}
+
+// Every curated provider surfaces with a schema; generics surface as Custom.
+func TestSupportedProviderInfosShape(t *testing.T) {
+	for _, info := range SupportedProviderInfos() {
+		if info.Name == "" || info.Label == "" {
+			t.Errorf("provider info missing name/label: %+v", info)
+		}
+		if info.Custom {
+			if len(info.Fields) != 0 {
+				t.Errorf("custom provider %q should carry no fields", info.Name)
+			}
+		} else if len(info.Fields) == 0 {
+			t.Errorf("curated provider %q should carry fields", info.Name)
+		}
+	}
+}

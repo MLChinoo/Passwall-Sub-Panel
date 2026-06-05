@@ -31,11 +31,15 @@ import (
 
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
 	"github.com/go-acme/lego/v4/providers/dns/azuredns"
+	"github.com/go-acme/lego/v4/providers/dns/bunny"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
+	"github.com/go-acme/lego/v4/providers/dns/cloudns"
 	"github.com/go-acme/lego/v4/providers/dns/desec"
 	"github.com/go-acme/lego/v4/providers/dns/digitalocean"
+	"github.com/go-acme/lego/v4/providers/dns/dnsimple"
 	"github.com/go-acme/lego/v4/providers/dns/dnspod"
 	"github.com/go-acme/lego/v4/providers/dns/duckdns"
+	"github.com/go-acme/lego/v4/providers/dns/dynu"
 	"github.com/go-acme/lego/v4/providers/dns/exec"
 	"github.com/go-acme/lego/v4/providers/dns/gandiv5"
 	"github.com/go-acme/lego/v4/providers/dns/gcloud"
@@ -44,10 +48,15 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/httpreq"
 	"github.com/go-acme/lego/v4/providers/dns/linode"
 	"github.com/go-acme/lego/v4/providers/dns/namecheap"
+	"github.com/go-acme/lego/v4/providers/dns/namedotcom"
 	"github.com/go-acme/lego/v4/providers/dns/namesilo"
+	"github.com/go-acme/lego/v4/providers/dns/netcup"
+	"github.com/go-acme/lego/v4/providers/dns/njalla"
 	"github.com/go-acme/lego/v4/providers/dns/ovh"
 	"github.com/go-acme/lego/v4/providers/dns/porkbun"
+	"github.com/go-acme/lego/v4/providers/dns/regru"
 	"github.com/go-acme/lego/v4/providers/dns/route53"
+	"github.com/go-acme/lego/v4/providers/dns/vercel"
 	"github.com/go-acme/lego/v4/providers/dns/vultr"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
@@ -78,8 +87,177 @@ var providerFactories = map[string]func() (challenge.Provider, error){
 	"vultr":        func() (challenge.Provider, error) { return vultr.NewDNSProvider() },
 	"desec":        func() (challenge.Provider, error) { return desec.NewDNSProvider() },
 	"duckdns":      func() (challenge.Provider, error) { return duckdns.NewDNSProvider() },
+	"dnsimple":     func() (challenge.Provider, error) { return dnsimple.NewDNSProvider() },
+	"bunny":        func() (challenge.Provider, error) { return bunny.NewDNSProvider() },
+	"cloudns":      func() (challenge.Provider, error) { return cloudns.NewDNSProvider() },
+	"dynu":         func() (challenge.Provider, error) { return dynu.NewDNSProvider() },
+	"netcup":       func() (challenge.Provider, error) { return netcup.NewDNSProvider() },
+	"njalla":       func() (challenge.Provider, error) { return njalla.NewDNSProvider() },
+	"vercel":       func() (challenge.Provider, error) { return vercel.NewDNSProvider() },
+	"namedotcom":   func() (challenge.Provider, error) { return namedotcom.NewDNSProvider() },
+	"regru":        func() (challenge.Provider, error) { return regru.NewDNSProvider() },
 	"exec":         func() (challenge.Provider, error) { return exec.NewDNSProvider() },
 	"httpreq":      func() (challenge.Provider, error) { return httpreq.NewDNSProvider() },
+}
+
+// DNSProviderField is one credential env var a curated provider needs. Key is the
+// EXACT env var lego reads (mirrored from the provider's lego .toml Credentials
+// block) — it's injected verbatim as a process env var at issuance. Secret marks
+// values to mask in the UI and treat as write-only on edit.
+type DNSProviderField struct {
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Secret   bool   `json:"secret"`
+	Optional bool   `json:"optional,omitempty"`
+}
+
+// DNSProviderInfo is one entry of the catalog the admin UI renders. For a curated
+// vendor, Fields lists exactly the inputs to collect (labeled, no guessing). For
+// the generic fallbacks (exec/httpreq) Custom=true tells the UI to fall back to
+// the free-form KEY/VALUE editor.
+type DNSProviderInfo struct {
+	Name   string             `json:"name"`
+	Label  string             `json:"label"`
+	Custom bool               `json:"custom"`
+	Fields []DNSProviderField `json:"fields,omitempty"`
+}
+
+// providerMeta is the credential field schema per curated provider, mirrored from
+// each provider's lego .toml [Configuration.Credentials] block (so the env keys
+// match exactly what lego reads). EVERY non-generic provider in providerFactories
+// MUST have an entry here — enforced by TestProviderMetaCoversFactories — so a
+// built-in vendor never degrades to the raw KV editor. exec/httpreq are
+// deliberately absent (Custom=true is synthesized for them).
+var providerMeta = map[string]DNSProviderInfo{
+	"cloudflare": {Label: "Cloudflare", Fields: []DNSProviderField{
+		{Key: "CF_DNS_API_TOKEN", Label: "API Token (DNS:Edit + Zone:Read)", Secret: true},
+		{Key: "CF_ZONE_API_TOKEN", Label: "Zone API Token (only if scoped separately)", Secret: true, Optional: true},
+	}},
+	"alidns": {Label: "Alibaba Cloud DNS", Fields: []DNSProviderField{
+		{Key: "ALICLOUD_ACCESS_KEY", Label: "Access Key ID"},
+		{Key: "ALICLOUD_SECRET_KEY", Label: "Access Key Secret", Secret: true},
+	}},
+	"dnspod": {Label: "DNSPod", Fields: []DNSProviderField{
+		{Key: "DNSPOD_API_KEY", Label: "API Token", Secret: true},
+	}},
+	"route53": {Label: "AWS Route 53", Fields: []DNSProviderField{
+		{Key: "AWS_ACCESS_KEY_ID", Label: "Access Key ID"},
+		{Key: "AWS_SECRET_ACCESS_KEY", Label: "Secret Access Key", Secret: true},
+		{Key: "AWS_REGION", Label: "Region (e.g. us-east-1)"},
+		{Key: "AWS_HOSTED_ZONE_ID", Label: "Hosted Zone ID", Optional: true},
+	}},
+	"gcloud": {Label: "Google Cloud DNS", Fields: []DNSProviderField{
+		{Key: "GCE_PROJECT", Label: "Project ID"},
+		{Key: "GCE_SERVICE_ACCOUNT", Label: "Service Account JSON", Secret: true},
+	}},
+	"azuredns": {Label: "Azure DNS", Fields: []DNSProviderField{
+		{Key: "AZURE_CLIENT_ID", Label: "Client ID"},
+		{Key: "AZURE_CLIENT_SECRET", Label: "Client Secret", Secret: true},
+		{Key: "AZURE_TENANT_ID", Label: "Tenant ID"},
+	}},
+	"godaddy": {Label: "GoDaddy", Fields: []DNSProviderField{
+		{Key: "GODADDY_API_KEY", Label: "API Key"},
+		{Key: "GODADDY_API_SECRET", Label: "API Secret", Secret: true},
+	}},
+	"namecheap": {Label: "Namecheap", Fields: []DNSProviderField{
+		{Key: "NAMECHEAP_API_USER", Label: "API User"},
+		{Key: "NAMECHEAP_API_KEY", Label: "API Key", Secret: true},
+	}},
+	"namesilo": {Label: "NameSilo", Fields: []DNSProviderField{
+		{Key: "NAMESILO_API_KEY", Label: "API Key", Secret: true},
+	}},
+	"porkbun": {Label: "Porkbun", Fields: []DNSProviderField{
+		{Key: "PORKBUN_API_KEY", Label: "API Key"},
+		{Key: "PORKBUN_SECRET_API_KEY", Label: "Secret API Key", Secret: true},
+	}},
+	"digitalocean": {Label: "DigitalOcean", Fields: []DNSProviderField{
+		{Key: "DO_AUTH_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"gandiv5": {Label: "Gandi", Fields: []DNSProviderField{
+		{Key: "GANDIV5_PERSONAL_ACCESS_TOKEN", Label: "Personal Access Token", Secret: true},
+	}},
+	"hetzner": {Label: "Hetzner", Fields: []DNSProviderField{
+		{Key: "HETZNER_API_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"linode": {Label: "Linode", Fields: []DNSProviderField{
+		{Key: "LINODE_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"ovh": {Label: "OVH", Fields: []DNSProviderField{
+		{Key: "OVH_ENDPOINT", Label: "Endpoint (ovh-eu / ovh-ca / ...)"},
+		{Key: "OVH_APPLICATION_KEY", Label: "Application Key"},
+		{Key: "OVH_APPLICATION_SECRET", Label: "Application Secret", Secret: true},
+		{Key: "OVH_CONSUMER_KEY", Label: "Consumer Key", Secret: true},
+	}},
+	"vultr": {Label: "Vultr", Fields: []DNSProviderField{
+		{Key: "VULTR_API_KEY", Label: "API Key", Secret: true},
+	}},
+	"desec": {Label: "deSEC", Fields: []DNSProviderField{
+		{Key: "DESEC_TOKEN", Label: "Token", Secret: true},
+	}},
+	"duckdns": {Label: "DuckDNS", Fields: []DNSProviderField{
+		{Key: "DUCKDNS_TOKEN", Label: "Token", Secret: true},
+	}},
+	"dnsimple": {Label: "DNSimple", Fields: []DNSProviderField{
+		{Key: "DNSIMPLE_OAUTH_TOKEN", Label: "OAuth Token", Secret: true},
+	}},
+	"bunny": {Label: "Bunny.net", Fields: []DNSProviderField{
+		{Key: "BUNNY_API_KEY", Label: "API Key", Secret: true},
+	}},
+	"cloudns": {Label: "ClouDNS", Fields: []DNSProviderField{
+		{Key: "CLOUDNS_AUTH_ID", Label: "Auth ID"},
+		{Key: "CLOUDNS_AUTH_PASSWORD", Label: "Auth Password", Secret: true},
+	}},
+	"dynu": {Label: "Dynu", Fields: []DNSProviderField{
+		{Key: "DYNU_API_KEY", Label: "API Key", Secret: true},
+	}},
+	"netcup": {Label: "netcup", Fields: []DNSProviderField{
+		{Key: "NETCUP_CUSTOMER_NUMBER", Label: "Customer Number"},
+		{Key: "NETCUP_API_KEY", Label: "API Key"},
+		{Key: "NETCUP_API_PASSWORD", Label: "API Password", Secret: true},
+	}},
+	"njalla": {Label: "Njalla", Fields: []DNSProviderField{
+		{Key: "NJALLA_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"vercel": {Label: "Vercel", Fields: []DNSProviderField{
+		{Key: "VERCEL_API_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"namedotcom": {Label: "Name.com", Fields: []DNSProviderField{
+		{Key: "NAMECOM_USERNAME", Label: "Username"},
+		{Key: "NAMECOM_API_TOKEN", Label: "API Token", Secret: true},
+	}},
+	"regru": {Label: "reg.ru", Fields: []DNSProviderField{
+		{Key: "REGRU_USERNAME", Label: "Username"},
+		{Key: "REGRU_PASSWORD", Label: "Password", Secret: true},
+	}},
+}
+
+// genericProviderLabels gives the two SDK-free long-tail fallbacks a friendly
+// name; they carry no fixed schema (Custom=true → free-form KEY/VALUE editor).
+var genericProviderLabels = map[string]string{
+	"exec":    "Custom — exec script",
+	"httpreq": "Custom — HTTP webhook",
+}
+
+// SupportedProviderInfos returns the curated provider catalog (sorted by code)
+// with each provider's credential field schema, so the admin UI can render
+// labeled inputs instead of asking the operator to guess raw KEY=VALUE pairs.
+// exec/httpreq surface as Custom=true.
+func SupportedProviderInfos() []DNSProviderInfo {
+	out := make([]DNSProviderInfo, 0, len(providerFactories))
+	for code := range providerFactories {
+		if meta, ok := providerMeta[code]; ok {
+			meta.Name = code
+			out = append(out, meta)
+			continue
+		}
+		label := genericProviderLabels[code]
+		if label == "" {
+			label = code
+		}
+		out = append(out, DNSProviderInfo{Name: code, Label: label, Custom: true})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // SupportedProviders returns the sorted list of built-in DNS provider codes.

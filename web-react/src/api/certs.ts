@@ -79,10 +79,29 @@ export async function deleteDNSCred(id: number): Promise<void> {
   await client.delete(`/admin/dns-credentials/${id}`)
 }
 
-// listDNSProviders returns the built-in lego provider codes for the searchable
-// provider dropdown in the credential form.
-export async function listDNSProviders(): Promise<string[]> {
-  const { data } = await client.get<{ providers: string[] }>('/admin/dns-providers')
+// DNSProviderField is one labeled credential input for a curated provider. key is
+// the exact env var lego reads; secret marks values to mask + treat write-only.
+export interface DNSProviderField {
+  key: string
+  label: string
+  secret: boolean
+  optional?: boolean
+}
+
+// DNSProviderInfo is one entry of the provider catalog. custom=true (exec/httpreq)
+// means there's no fixed schema — the form falls back to a free-form KEY/VALUE
+// editor; otherwise fields lists exactly the inputs to collect.
+export interface DNSProviderInfo {
+  name: string
+  label: string
+  custom: boolean
+  fields?: DNSProviderField[]
+}
+
+// listDNSProviders returns the curated provider catalog (code + label + the
+// credential field schema) so the credential form can render labeled inputs.
+export async function listDNSProviders(): Promise<DNSProviderInfo[]> {
+  const { data } = await client.get<{ providers: DNSProviderInfo[] }>('/admin/dns-providers')
   return data.providers
 }
 

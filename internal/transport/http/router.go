@@ -135,11 +135,13 @@ func NewRouter(d Deps) *gin.Engine {
 	// The actual route is registered via NoRoute handler for dynamic path support.
 	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.Settings, d.Repos.User, d.Mail, d.Async)
 	subLimiter := middleware.NewPerIPLimiter(d.SubPerIPPerMin, time.Minute)
+	subLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.SubPerIPPerMin, func(s ports.UISettings) int { return s.SubPerIPPerMin }).get)
 	subPathCache := newSubPathCache(d.Repos.Settings)
 
 	// Auth endpoints
 	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings, d.Repos.AuthEvent)
 	loginLimiter := middleware.NewPerIPLimiter(d.LoginPerIPPerMin, time.Minute)
+	loginLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.LoginPerIPPerMin, func(s ports.UISettings) int { return s.LoginPerIPPerMin }).get)
 	authGroup := g.Group("/api/auth")
 	{
 		authGroup.GET("/methods", authLocal.Methods)
@@ -485,4 +487,51 @@ func (c *subPathCache) isSubRequest(path string) bool {
 		c.mu.RUnlock()
 	}
 	return strings.HasPrefix(path, prefix)
+}
+
+// settingsIntCache caches one int-valued setting with a short TTL so a
+// hot-reloadable rate limit (read on every request via PerIPLimiter.SetLimitFunc)
+// doesn't query the DB each time. Mirrors subPathCache's refresh cadence. On a
+// load failure or a non-positive value it returns fallback, so a settings outage
+// never opens the rate-limit gate to unlimited requests.
+type settingsIntCache struct {
+	mu          sync.RWMutex
+	val         int
+	nextRefresh time.Time
+	repo        ports.SettingsRepo
+	pick        func(ports.UISettings) int
+	fallback    int
+}
+
+func newSettingsIntCache(repo ports.SettingsRepo, fallback int, pick func(ports.UISettings) int) *settingsIntCache {
+	c := &settingsIntCache{repo: repo, fallback: fallback, pick: pick}
+	c.refresh()
+	return c
+}
+
+func (c *settingsIntCache) refresh() {
+	v := c.fallback
+	if s, err := c.repo.Load(context.Background(), ports.UISettings{}); err == nil {
+		if got := c.pick(s); got > 0 {
+			v = got
+		}
+	}
+	c.mu.Lock()
+	c.val = v
+	c.nextRefresh = time.Now().Add(5 * time.Second)
+	c.mu.Unlock()
+}
+
+func (c *settingsIntCache) get() int {
+	c.mu.RLock()
+	v := c.val
+	stale := time.Now().After(c.nextRefresh)
+	c.mu.RUnlock()
+	if stale {
+		c.refresh()
+		c.mu.RLock()
+		v = c.val
+		c.mu.RUnlock()
+	}
+	return v
 }

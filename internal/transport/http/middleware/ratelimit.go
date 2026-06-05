@@ -15,6 +15,7 @@ type PerIPLimiter struct {
 	mu        sync.Mutex
 	buckets   map[string]*bucket
 	limit     int
+	limitFn   func() int // optional dynamic override; read per request (hot-reload)
 	window    time.Duration
 	lastSweep time.Time
 }
@@ -35,8 +36,26 @@ func NewPerIPLimiter(limitPerWindow int, window time.Duration) *PerIPLimiter {
 	}
 }
 
+// SetLimitFunc installs a dynamic per-window limit source, read on every request
+// so an admin changing the rate limit in settings takes effect WITHOUT a restart.
+// A returned value <= 0 falls back to the static limit (a settings-load failure
+// must never open the gate). Call once during router setup, before serving.
+func (l *PerIPLimiter) SetLimitFunc(fn func() int) { l.limitFn = fn }
+
+// effectiveLimit resolves the dynamic override (if any) ahead of the lock so a
+// settings read never serializes other callers behind l.mu.
+func (l *PerIPLimiter) effectiveLimit() int {
+	if l.limitFn != nil {
+		if v := l.limitFn(); v > 0 {
+			return v
+		}
+	}
+	return l.limit
+}
+
 // Allow returns true if the request from ip is within the limit.
 func (l *PerIPLimiter) Allow(ip string) bool {
+	limit := l.effectiveLimit()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -46,7 +65,7 @@ func (l *PerIPLimiter) Allow(ip string) bool {
 		l.buckets[ip] = &bucket{count: 1, expire: now.Add(l.window)}
 		return true
 	}
-	if b.count >= l.limit {
+	if b.count >= limit {
 		return false
 	}
 	b.count++

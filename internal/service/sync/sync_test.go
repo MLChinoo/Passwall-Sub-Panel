@@ -82,6 +82,24 @@ func TestDelOwnedClientDeletesByEmailNotByStoredID(t *testing.T) {
 	}
 }
 
+// With the pre-flight GetClient dropped, an already-absent client surfaces as a
+// DelClientByEmail "not found" error; DelOwnedClient must still converge to
+// success (clientMissingByEmail confirms absence → drop the ownership row),
+// never propagate the error and loop a stale resync DEL.
+func TestDelOwnedClientAlreadyAbsentConvergesToSuccess(t *testing.T) {
+	// clients empty → GetClient returns (nil, nil) = absent; DelClientByEmail errors.
+	xui := &fakeXUIClient{delByEmailErr: fmt.Errorf("record not found")}
+	own := newFakeOwnership("u1@example.test", "")
+	s := New(&fakePool{xui: xui}, own)
+
+	if err := s.DelOwnedClient(context.Background(), 1, 100, "u1@example.test"); err != nil {
+		t.Fatalf("already-absent delete must converge to success, got %v", err)
+	}
+	if !own.removed {
+		t.Fatal("ownership row should be removed after converging on absence")
+	}
+}
+
 // TestBuildClientSpecHysteria2SetsAuth pins that Hysteria2 clients carry the
 // per-user credential in the `auth` field (3X-UI's client id for HY2), not id
 // or password — otherwise 3X-UI rejects the client as "empty client ID". The
@@ -330,6 +348,7 @@ type fakeXUIClient struct {
 	deletedID      string
 	deletedByEmail string
 	delClientErr   error // when set, DelClient (by id) fails with this
+	delByEmailErr  error // when set, DelClientByEmail fails with this
 	addClientErr   error // when set, AddClient fails with this
 
 	// bulk knobs
@@ -359,7 +378,7 @@ func (c *fakeXUIClient) DelClient(ctx context.Context, inboundID int, clientUUID
 }
 func (c *fakeXUIClient) DelClientByEmail(ctx context.Context, inboundID int, email string) error {
 	c.deletedByEmail = email
-	return nil
+	return c.delByEmailErr
 }
 func (c *fakeXUIClient) BulkDelByEmail(ctx context.Context, emails []string) (int, error) {
 	if c.bulkDelErr != nil {

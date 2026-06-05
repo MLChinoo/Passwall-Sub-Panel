@@ -1386,21 +1386,32 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	// Phase-1 prefetch.
 	cfg, _ := s.settings.Load(ctx, ports.UISettings{})
 	concurrency := paneltz.ResolveMaxPanelConcurrency(cfg.MaxPanelConcurrency)
-	uniquePanels := make(map[int64]struct{})
+	// Fetch ONLY the inbounds the desired nodes reference (via GetInbound), not
+	// every inbound on each panel. resolveInfo below reads just the inbound-level
+	// Protocol + Settings (method/flow) of those specific inbounds; the old
+	// ListInbounds pulled the whole panel's clients[] for every inbound and
+	// discarded it. Group members on one panel share the same few inbounds, so
+	// this also shrinks the per-member fan-out during a group re-tag.
+	panelInbounds := make(map[int64]map[int]struct{})
 	for k := range desired {
-		uniquePanels[k.panelID] = struct{}{}
+		ids := panelInbounds[k.panelID]
+		if ids == nil {
+			ids = make(map[int]struct{})
+			panelInbounds[k.panelID] = ids
+		}
+		ids[k.inboundID] = struct{}{}
 	}
 	type panelData struct {
 		byInbound map[int]*ports.Inbound
 		err       error
 	}
-	panelMap := make(map[int64]panelData, len(uniquePanels))
+	panelMap := make(map[int64]panelData, len(panelInbounds))
 	var prefetchMu sync.Mutex
 	var prefetchWG sync.WaitGroup
 	prefetchSem := make(chan struct{}, concurrency)
-	for pid := range uniquePanels {
+	for pid, ids := range panelInbounds {
 		prefetchWG.Add(1)
-		go func(p int64) {
+		go func(p int64, want map[int]struct{}) {
 			defer safego.Recover("user.ResyncMembership.prefetch")
 			defer prefetchWG.Done()
 			prefetchSem <- struct{}{}
@@ -1412,15 +1423,18 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 				prefetchMu.Unlock()
 				return
 			}
-			list, lerr := c.ListInbounds(ctx)
-			idx := make(map[int]*ports.Inbound, len(list))
-			for i := range list {
-				idx[list[i].ID] = &list[i]
+			idx := make(map[int]*ports.Inbound, len(want))
+			for id := range want {
+				inb, gerr := c.GetInbound(ctx, id)
+				if gerr != nil || inb == nil {
+					continue // missing → resolveInfo returns "inbound not found", as before
+				}
+				idx[inb.ID] = inb
 			}
 			prefetchMu.Lock()
-			panelMap[p] = panelData{byInbound: idx, err: lerr}
+			panelMap[p] = panelData{byInbound: idx}
 			prefetchMu.Unlock()
-		}(pid)
+		}(pid, ids)
 	}
 	prefetchWG.Wait()
 
@@ -1602,37 +1616,42 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	cfg, _ := s.settings.Load(ctx, ports.UISettings{})
 	concurrency := paneltz.ResolveMaxPanelConcurrency(cfg.MaxPanelConcurrency)
 
-	// Phase 1 — prefetch ListInbounds for every panel referenced by the
-	// user's ownership rows in parallel. Each ListInbounds returns the
-	// inbound's full settings JSON including the live clients[] array,
-	// which the per-push RMW (UpdateClient → updateClientInSettings)
-	// requires to find the existing client entry by uuid before patching
-	// it.
+	// Phase 1 — fetch ONLY the inbounds this user actually owns on each panel
+	// (via GetInbound), not the panel's entire inbound+client roster. The push
+	// path consumes just the owned inbound's Protocol + Settings (method/flow);
+	// in 3.2.0 the write itself (UpdateClient by email) reads no clients[] at
+	// all, so the panel-wide ListInbounds the old code ran was fetched and
+	// discarded. Users typically own 1 inbound per panel, so this collapses a
+	// whole-panel pull to 1–2 by-id gets.
 	//
-	// A previous attempt (v3.6.1-beta.6 D1) tried to short-circuit this
-	// to inboundcfg.InboundFromNode(n) for captured nodes — that broke
-	// every captured-node push because the v3.5 snapshot strips clients[]
-	// (it's a render-only contract, see inboundcfg.StripClients), so the
-	// downstream updateClientInSettings would find an empty clients[] and
-	// return "client not found". Until ListInbounds can be skipped
-	// safely (would require either re-merging live clients[] into the
-	// snapshot, or threading the traffic-poll's already-fetched inbound
-	// map all the way down through PushClientConfig), the prefetch stays.
-	uniquePanels := make(map[int64]struct{})
+	// "Don't mass-drop ownership on a panel blip" guard preserved WITHOUT a full
+	// list: a panel that resolves ZERO of its requested inbounds is treated as
+	// down (skip, keep ownership); if it resolves at least one it's up, so a
+	// still-missing inbound was genuinely deleted upstream and its stale
+	// ownership is dropped — same outcome as the old empty-vs-non-empty check,
+	// with no inbound-not-found error-string matching (which would risk dropping
+	// a live inbound on a transient error).
+	panelInbounds := make(map[int64]map[int]struct{})
 	for _, e := range entries {
-		uniquePanels[e.PanelID] = struct{}{}
+		ids := panelInbounds[e.PanelID]
+		if ids == nil {
+			ids = make(map[int]struct{})
+			panelInbounds[e.PanelID] = ids
+		}
+		ids[e.InboundID] = struct{}{}
 	}
 	type panelData struct {
-		byInbound map[int]*ports.Inbound
-		err       error
+		byInbound   map[int]*ports.Inbound
+		anyResolved bool // panel returned ≥1 requested inbound → it's reachable
+		err         error
 	}
-	panelMap := make(map[int64]panelData, len(uniquePanels))
+	panelMap := make(map[int64]panelData, len(panelInbounds))
 	var prefetchMu sync.Mutex
 	var prefetchWG sync.WaitGroup
 	prefetchSem := make(chan struct{}, concurrency)
-	for pid := range uniquePanels {
+	for pid, ids := range panelInbounds {
 		prefetchWG.Add(1)
-		go func(p int64) {
+		go func(p int64, want map[int]struct{}) {
 			defer safego.Recover("user.pushClientConfigToAll.prefetch")
 			defer prefetchWG.Done()
 			prefetchSem <- struct{}{}
@@ -1644,15 +1663,18 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 				prefetchMu.Unlock()
 				return
 			}
-			list, lerr := c.ListInbounds(ctx)
-			idx := make(map[int]*ports.Inbound, len(list))
-			for i := range list {
-				idx[list[i].ID] = &list[i]
+			idx := make(map[int]*ports.Inbound, len(want))
+			for id := range want {
+				inb, gerr := c.GetInbound(ctx, id)
+				if gerr != nil || inb == nil {
+					continue // missing — left absent, classified in Phase 2
+				}
+				idx[inb.ID] = inb
 			}
 			prefetchMu.Lock()
-			panelMap[p] = panelData{byInbound: idx, err: lerr}
+			panelMap[p] = panelData{byInbound: idx, anyResolved: len(idx) > 0}
 			prefetchMu.Unlock()
-		}(pid)
+		}(pid, ids)
 	}
 	prefetchWG.Wait()
 
@@ -1681,20 +1703,14 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 		}
 		inb, found := pd.byInbound[e.InboundID]
 		if !found {
-			// ListInbounds returned the panel's inbound set, but our
-			// row points to an ID that's no longer there. Same
-			// semantics as the old isInboundNotFoundErr branch: the
-			// inbound was deleted on the 3X-UI side; the ownership
-			// row is stale and should be dropped.
-			//
-			// Defensive guard: if the panel returned ZERO inbounds
-			// total (rare but seen during 3X-UI restarts / momentary
-			// state corruption), treat it as a soft "skip this cycle"
-			// instead of mass-deleting every ownership row on the
-			// panel. The next reconcile cycle can confirm + clean up
-			// for real if the inbounds really are gone.
-			if len(pd.byInbound) == 0 {
-				log.Warn("user.pushClientConfigToAll: panel returned empty inbound list; skipping ownership without deletion",
+			// GetInbound didn't resolve this owned inbound. If the panel
+			// resolved NONE of its requested inbounds, treat it as a transient
+			// blip (3X-UI restart / momentary state) and skip this cycle WITHOUT
+			// dropping ownership — the next reconcile confirms + cleans up for
+			// real. If it resolved others, the panel is up and this inbound was
+			// genuinely deleted upstream, so the stale ownership row is dropped.
+			if !pd.anyResolved {
+				log.Warn("user.pushClientConfigToAll: panel resolved no owned inbounds; skipping ownership without deletion",
 					"panel_id", e.PanelID, "inbound_id", e.InboundID, "email", e.ClientEmail)
 				outcomes <- pushOutcome{entry: e}
 				continue
