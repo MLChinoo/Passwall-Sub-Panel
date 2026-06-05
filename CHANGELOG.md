@@ -4,6 +4,27 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.6.4 — 2026-06-05
+
+正式版。汇总 v3.6.4-beta.1 → beta.5 全部改动 + 正式版收尾两项小改。本线主题是 **PSP 自持的
+TLS 证书自动化**(内置 ACME、DNS-01 通配符签发、内联部署到 3X-UI 入站、自动续期、失败告警),外加
+证书管理 UI 的多轮打磨、一处 PSP→3X-UI 取数效率修复,以及对 3X-UI 的兼容复核(已真机实测到 3.2.8)。
+无 schema 破坏性变更(新表/新列走 AutoMigrate)。完整逐项见下方各 pre-release 段落,下面只列核心叙事。
+
+### 主要变化（叙事性总述）
+
+- **证书自动化:ACME 签发 + 内联部署 + 自动续期(beta.1)** —— 新增顶级「证书」页:配 DNS 凭据 → 走 `go-acme/lego` DNS-01 签发**通配符**证书 → PEM 内联写进 3X-UI 入站 `streamSettings.certificates[]` → 到期前自动续期 → 失败告警(首页 + 邮件)。精选 ~20 家常用 DNS 厂商显式注册 + `exec`/`httpreq` 兜底;证书/私钥/DNS 凭据/账户 key 全 AES-GCM 加密落库。核心签发链路对**真实 Let's Encrypt staging + 真实 Cloudflare DNS-01** 真机验过。
+
+- **证书页 3 子 Tab + 具名 DNS 凭据字段 + 27 家厂商 + 限流热生效 + 取数效率 5 修(beta.2)** —— 证书/DNS凭据/ACME设置 三子 Tab;已知厂商给具名标签字段(按各家 lego `.toml` 暴露 env schema + drift 测),只有 exec/httpreq/自定义才回退 KV;DNS 厂商扩到 27 家;ACME 设置从「设置」页迁入证书页;登录/订阅限流改**热生效**(改完不重启,5s 缓存);PSP→3X-UI 取数 5 处「全量回拉再用一小片」优化(push/resync ListInbounds→GetInbound 按需、认领列表/render 兜底→Slim、DelOwnedClient 去删前预检、删 render 死代码)。
+
+- **共享 PageHeader 统一全部管理页页头(beta.3)** —— 抽出共享 `PageHeader`(标题 h4 + 可选副标题 + 右操作区,统一间距),铺到全部 12 个管理页,标题大小/高度从此一致;并修证书页布局。
+
+- **证书详情/下载/复制 + 活动日志 + 新建即绑 + 四态 + 失败重试(beta.4)** —— 每证书详情弹窗(状态/域名/有效期/指纹/失败原因/申请进度);复制证书链 + 下载证书 + 下载私钥(显式 admin 动作,列表/详情 DTO 绝不含 PEM);Logs 加「证书」tab 记签发/续期终态;新建节点即可绑托管证书;四态(正常/申请中/失败/过期派生);失败证书按 check interval 自动重试(单任务快速重试 100→3,避免烧 ACME 限额)。
+
+- **证书来源整合 + 查看证书与私钥弹窗 + 修编辑入站 flow 丢失(beta.5)** —— 节点表单两套互相冲突的证书控件合并成单一「证书来源」四选一(无/文件路径/内嵌 PEM/PSP 托管证书),新建与编辑对称、编辑回填、切换自动绑/解绑+重部署;证书详情「复制证书」改「查看证书与私钥」可复制弹窗;修编辑入站对话框改 VLESS flow 被静默丢弃(现一并写回节点 metadata)。入站推送格式真机复验。
+
+- **收尾:取数效率再修一处 + 3X-UI 兼容真机复核到 3.2.8** —— `tryAdoptOrphan`(端口冲突恢复路径)原用 `ListInbounds` 拉回全 panel 全 client 却只比对 port/protocol/listen 且随后即 StripClients,改 `ListInboundsSlim`(TDD);并拿真实 3.2.8 面板端到端复核 PSP 全部端点(inbound+client CRUD+bulk 全过、`/clients/get` obj 形状未变),`max_tested` 抬到 3.2.8,3.2.7→3.2.8 的 multi-node/批量perf/订阅改动对 PSP 为 no-op。
+
 ## v3.6.4-beta.5 — 2026-06-05
 
 整合节点表单的证书来源（消除两套互相冲突的控件）、证书详情改可复制弹窗，并修一个编辑入站时 VLESS flow 被静默丢弃的 bug。PSP→3X-UI 入站推送格式在真机面板上端到端复验（建空壳证书入站→内联部署→字节级回读一致）。本地 `go build` / `go vet` / `go test ./...` / `tsc -b` / `npm run build` 全通过。
