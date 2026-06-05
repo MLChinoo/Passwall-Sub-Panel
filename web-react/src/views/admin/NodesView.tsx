@@ -214,15 +214,21 @@ interface InboundFormState {
   // Reject TLS handshakes whose SNI isn't in serverName. Tightens an
   // inbound that hosts multiple SNIs by name.
   tls_reject_unknown_sni: boolean
-  // Cert mode: 'file' uses paths on the 3X-UI host's filesystem (production
-  // pattern with acme/certbot), 'inline' pastes PEM directly into the
-  // config (one-off / testing). Empty / 'none' = no certificates emitted
-  // (REALITY and plain mode don't need them).
-  tls_cert_mode: '' | 'file' | 'inline'
+  // Cert source: 'file' uses paths on the 3X-UI host's filesystem (production
+  // pattern with acme/certbot), 'inline' pastes PEM directly into the config
+  // (one-off / testing), 'psp_managed' binds a PSP-issued ACME cert that the
+  // backend deploys + auto-renews. Empty / 'none' = no certificates emitted
+  // (REALITY and plain mode don't need them). This single selector replaces
+  // the older split between a tls_cert_mode dropdown and a separate managed-
+  // cert picker, which let an admin pick contradictory sources at once.
+  tls_cert_mode: '' | 'file' | 'inline' | 'psp_managed'
   tls_cert_file: string
   tls_key_file: string
   tls_cert_pem: string
   tls_key_pem: string
+  // cert_id: the bound PSP-managed certificate (tls_certificates row), used
+  // only when tls_cert_mode === 'psp_managed'. 0 = none picked.
+  cert_id: number
   // Reality
   reality_dest: string
   reality_server_names_text: string
@@ -338,6 +344,7 @@ const EMPTY_INBOUND: InboundFormState = {
   tls_key_file: '',
   tls_cert_pem: '',
   tls_key_pem: '',
+  cert_id: 0,
   reality_dest: 'www.tesla.com:443',
   reality_server_names_text: 'www.tesla.com',
   private_key: '',
@@ -777,6 +784,12 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
   let certMode: InboundFormState['tls_cert_mode'] = ''
   if (certFile || keyFile) certMode = 'file'
   else if (certPEM || keyPEM) certMode = 'inline'
+  // A PSP-managed binding wins over whatever cert is currently inlined in the
+  // live inbound: the inline PEM is just the last deployed copy, not something
+  // the admin hand-edits. Show "PSP-managed" + the bound cert so editing other
+  // fields doesn't accidentally turn the source back into a manual inline cert.
+  if (node.cert_source === 'psp_managed') certMode = 'psp_managed'
+  const boundCertID = node.cert_source === 'psp_managed' ? (node.cert_id ?? 0) : 0
   const sockopt = (stream.sockopt as Record<string, unknown>) ?? {}
   const tproxyVal = stringValue(sockopt.tproxy) as InboundFormState['sockopt_tproxy']
 
@@ -855,6 +868,7 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     tls_key_file: keyFile,
     tls_cert_pem: certPEM,
     tls_key_pem: keyPEM,
+    cert_id: boundCertID,
     // REALITY: read both 3X-UI's canonical names (target /
     // minClientVer / maxClientVer) AND xray-core's legacy aliases
     // (dest / minClient / maxClient). Pre-rc.10 inbounds shipped the
@@ -935,15 +949,9 @@ interface FieldsProps {
   // Existing tags across all nodes, surfaced as the Tags autocomplete's
   // suggestion list (same as the edit/import dialogs).
   allTags?: string[]
-  // The node being edited, or null when creating. In edit mode an in-form Apply
-  // button binds the picked psp_managed cert directly (it deploys to the live
-  // inbound). In create mode there's no node yet, so the picked cert id is
-  // reported up via onManagedCertChange and bound right after the node is made.
-  nodeId?: number | null
-  onManagedCertChange?: (certId: number) => void
 }
 
-function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced, allTags, nodeId, onManagedCertChange }: FieldsProps) {
+function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced, allTags }: FieldsProps) {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
@@ -953,21 +961,17 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
   }
 
   // --- Certificate source helpers (v3.6.4) ---
-  // from_panel: pull the panel's own web-cert PATHS into the file-mode fields.
-  // psp_managed: bind a PSP-managed cert to this node (the backend deploys it).
+  // The single "Certificate source" selector (form.tls_cert_mode) drives this:
+  //   '' → no cert · 'file'/'inline' → manual (emitted into streamSettings) ·
+  //   'psp_managed' → bind a PSP-managed cert (form.cert_id); the backend
+  //   deploys + auto-renews it. The actual bind/unbind happens on dialog submit
+  //   (both create and edit) so the two flows stay symmetric — see submitCreate
+  //   / submitEditInbound. 'from_panel' fills the file-mode paths in place.
   const [managedCerts, setManagedCerts] = useState<Cert[]>([])
-  const [boundCertId, setBoundCertId] = useState(0)
   const [fetchingPanelCert, setFetchingPanelCert] = useState(false)
-  const [bindingCert, setBindingCert] = useState(false)
   useEffect(() => {
     listCerts().then(setManagedCerts).catch(() => {})
   }, [])
-  // MUI keeps the dialog mounted, so the bound-cert selection survives across
-  // opens — clear it whenever the dialog targets a different inbound to avoid
-  // applying a stale cert to the wrong node.
-  useEffect(() => {
-    setBoundCertId(0)
-  }, [nodeId])
 
   async function fetchFromPanel() {
     if (!form.panel_id) {
@@ -987,19 +991,6 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
       /* error toast via the axios interceptor */
     } finally {
       setFetchingPanelCert(false)
-    }
-  }
-
-  async function applyManagedCert() {
-    if (nodeId == null || boundCertId === 0) return
-    setBindingCert(true)
-    try {
-      await setNodeCertSource(nodeId, 'psp_managed', boundCertId)
-      pushSnack(t('admin:nodes.cert_source.bound'), 'success')
-    } catch {
-      /* toast */
-    } finally {
-      setBindingCert(false)
     }
   }
 
@@ -1041,56 +1032,51 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
   const protocolLabel = PROTOCOL_OPTIONS.find(o => o.value === form.protocol)?.label ?? form.protocol
 
   // TLS certificate source picker, shared by the VLESS-stream TLS section and
-  // the Hysteria 2 section (both emit tlsSettings.certificates). File-paths is
-  // the production default; inline is for one-off deploys without ACME on the
-  // 3X-UI host; empty keeps certificates: [] (REALITY / bring-your-own-root).
+  // the Hysteria 2 section (both emit tlsSettings.certificates). ONE selector,
+  // four mutually-exclusive sources:
+  //   '' (none)        — certificates: [] (REALITY / bring-your-own-root)
+  //   'file'           — paths on the 3X-UI host (production w/ acme/certbot);
+  //                      "fetch from panel" fills them from the panel's web cert
+  //   'inline'         — paste PEM directly (one-off / no ACME on host)
+  //   'psp_managed'    — bind a PSP-issued cert; the backend deploys + renews it
+  // Folding the managed-cert picker into this selector (rather than a separate
+  // always-on row) means the admin can't pick a manual cert AND a managed one
+  // at the same time. The bind itself is applied on submit (create + edit).
+  const activeCerts = managedCerts.filter(c => c.status === 'active')
   const tlsCertFields = () => (
     <>
-      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-        <Button size="small" variant="outlined" disabled={!form.panel_id || fetchingPanelCert} onClick={fetchFromPanel}>
-          {fetchingPanelCert ? <CircularProgress size={16} /> : t('admin:nodes.cert_source.from_panel')}
-        </Button>
-        <Select
-          size="small"
-          value={boundCertId}
-          onChange={e => { const v = Number(e.target.value); setBoundCertId(v); onManagedCertChange?.(v) }}
-          sx={{ minWidth: 200 }}
-        >
-          <MenuItem value={0}><em>{t('admin:nodes.cert_source.pick_managed')}</em></MenuItem>
-          {managedCerts.filter(c => c.status === 'active').map(c => (
-            <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
-          ))}
-        </Select>
-        {nodeId != null && (
-          <Button size="small" variant="contained" disabled={boundCertId === 0 || bindingCert} onClick={applyManagedCert}>
-            {bindingCert ? <CircularProgress size={16} /> : t('admin:nodes.cert_source.apply_managed')}
-          </Button>
-        )}
-      </Box>
       <TextField select size="small"
         label={t('admin:nodes.create_dialog.tls_cert_mode')}
         value={form.tls_cert_mode}
         onChange={e => update('tls_cert_mode', e.target.value as InboundFormState['tls_cert_mode'])}
-        sx={{ alignSelf: 'flex-start', minWidth: 240 }}>
+        sx={{ alignSelf: 'flex-start', minWidth: 260 }}>
         <MenuItem value="">{t('admin:nodes.create_dialog.tls_cert_none')}</MenuItem>
         <MenuItem value="file">{t('admin:nodes.create_dialog.tls_cert_file')}</MenuItem>
         <MenuItem value="inline">{t('admin:nodes.create_dialog.tls_cert_inline')}</MenuItem>
+        <MenuItem value="psp_managed">{t('admin:nodes.create_dialog.tls_cert_managed')}</MenuItem>
       </TextField>
       {form.tls_cert_mode === 'file' && (
-        <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-          <TextField size="small" fullWidth
-            label={t('admin:nodes.create_dialog.tls_cert_file_path', { defaultValue: 'Certificate file path' })}
-            placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"
-            value={form.tls_cert_file}
-            onChange={e => update('tls_cert_file', e.target.value)}
-            sx={{ flex: '1 1 320px' }} />
-          <TextField size="small" fullWidth
-            label={t('admin:nodes.create_dialog.tls_key_file_path', { defaultValue: 'Private key file path' })}
-            placeholder="/etc/letsencrypt/live/example.com/privkey.pem"
-            value={form.tls_key_file}
-            onChange={e => update('tls_key_file', e.target.value)}
-            sx={{ flex: '1 1 320px' }} />
-        </Box>
+        <>
+          <Box>
+            <Button size="small" variant="outlined" disabled={!form.panel_id || fetchingPanelCert} onClick={fetchFromPanel}>
+              {fetchingPanelCert ? <CircularProgress size={16} /> : t('admin:nodes.cert_source.from_panel')}
+            </Button>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+            <TextField size="small" fullWidth
+              label={t('admin:nodes.create_dialog.tls_cert_file_path', { defaultValue: 'Certificate file path' })}
+              placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"
+              value={form.tls_cert_file}
+              onChange={e => update('tls_cert_file', e.target.value)}
+              sx={{ flex: '1 1 320px' }} />
+            <TextField size="small" fullWidth
+              label={t('admin:nodes.create_dialog.tls_key_file_path', { defaultValue: 'Private key file path' })}
+              placeholder="/etc/letsencrypt/live/example.com/privkey.pem"
+              value={form.tls_key_file}
+              onChange={e => update('tls_key_file', e.target.value)}
+              sx={{ flex: '1 1 320px' }} />
+          </Box>
+        </>
       )}
       {form.tls_cert_mode === 'inline' && (
         <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
@@ -1106,6 +1092,25 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
             value={form.tls_key_pem}
             onChange={e => update('tls_key_pem', e.target.value)}
             sx={{ flex: '1 1 320px', '& textarea': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12 } }} />
+        </Box>
+      )}
+      {form.tls_cert_mode === 'psp_managed' && (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          <TextField select size="small"
+            label={t('admin:nodes.create_dialog.tls_cert_managed_pick')}
+            value={form.cert_id}
+            onChange={e => update('cert_id', Number(e.target.value))}
+            sx={{ alignSelf: 'flex-start', minWidth: 260 }}>
+            <MenuItem value={0}><em>{t('admin:nodes.cert_source.pick_managed')}</em></MenuItem>
+            {activeCerts.map(c => (
+              <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
+            ))}
+          </TextField>
+          <Typography sx={{ fontSize: 11.5, color: activeCerts.length === 0 ? md.error : md.onSurfaceVariant }}>
+            {activeCerts.length === 0
+              ? t('admin:nodes.cert_source.no_active_certs')
+              : t('admin:nodes.cert_source.managed_help')}
+          </Typography>
         </Box>
       )}
     </>
@@ -2030,9 +2035,6 @@ export default function NodesView() {
   // (it doesn't persist to backend). Tracked separately so opening edit
   // doesn't carry the create dialog's mode.
   const [createAdvanced, setCreateAdvanced] = useState(false)
-  // PSP-managed cert the operator picked in the create form (0 = none). Bound to
-  // the new node right after it's created (see submitCreate).
-  const [createBoundCertId, setCreateBoundCertId] = useState(0)
   const [editAdvanced, setEditAdvanced] = useState(false)
 
   const selectableIds = managed.map(n => n.id)
@@ -2397,7 +2399,6 @@ export default function NodesView() {
     }
     setCreateForm({ ...EMPTY_INBOUND, panel_id: servers[0].id, server_address: hostFromURL(servers[0].url) })
     setCreateAdvanced(false)
-    setCreateBoundCertId(0)
     setCreateOpen(true)
   }
 
@@ -2471,14 +2472,14 @@ export default function NodesView() {
           expiry_time: 0,
         },
       })
-      // If a PSP-managed cert was picked, bind + deploy it now that the node and
-      // its live inbound exist. Best-effort: a binding failure doesn't undo the
-      // successful node creation (the operator can retry from the edit dialog).
-      // Only possible for a synchronously-created node (the queued path has no id
-      // yet — those bind later via the edit dialog).
-      if (!('queued' in res) && createBoundCertId !== 0) {
+      // If the cert source is "PSP-managed", bind + deploy the picked cert now
+      // that the node and its live inbound exist. Best-effort: a binding failure
+      // doesn't undo the successful node creation (the operator can retry from
+      // the edit dialog). Only possible for a synchronously-created node (the
+      // queued path has no id yet — those bind later via the edit dialog).
+      if (!('queued' in res) && f.tls_cert_mode === 'psp_managed' && f.cert_id > 0) {
         try {
-          await setNodeCertSource(res.id, 'psp_managed', createBoundCertId)
+          await setNodeCertSource(res.id, 'psp_managed', f.cert_id)
         } catch { /* binding error surfaces via the axios interceptor */ }
       }
       pushSnack(
@@ -2590,6 +2591,40 @@ export default function NodesView() {
         settings, stream_settings: streamSettings, sniffing,
         allocate: '',
       })
+      // VLESS flow is a node-level property (stored on the node row, consumed by
+      // the subscription renderers) — updateInboundConfig does NOT carry it, so
+      // a flow change made in this dialog would otherwise be silently dropped.
+      // Persist it via the metadata endpoint when it actually changed, mirroring
+      // the metadata-edit dialog. (Non-VLESS protocols clear it.)
+      const newFlow = f.protocol === 'vless' ? f.vless_flow.trim() : ''
+      if (newFlow !== (editingInboundNode.flow ?? '')) {
+        try {
+          await updateNodeMetadata(editingInboundNode.id, {
+            display_name: editingInboundNode.display_name,
+            server_address: editingInboundNode.server_address,
+            flow: newFlow || undefined,
+            region: editingInboundNode.region,
+            tags: editingInboundNode.tags ?? [],
+            sort_order: editingInboundNode.sort_order,
+          })
+        } catch { /* toast via interceptor */ }
+      }
+      // Reconcile the managed-cert binding (the unified Certificate-source
+      // selector). For psp_managed we ALWAYS re-deploy: the updateInboundConfig
+      // push above emitted certificates:[] (managed mode carries no inline cert),
+      // so the bound cert must be re-inlined by SetNodeCertSource→DeployToNode,
+      // which re-reads the just-saved inbound and pushes it back with the cert.
+      const wantManaged = f.tls_cert_mode === 'psp_managed' && f.cert_id > 0
+      const prevManaged = editingInboundNode.cert_source === 'psp_managed'
+      try {
+        if (wantManaged) {
+          await setNodeCertSource(editingInboundNode.id, 'psp_managed', f.cert_id)
+        } else if (prevManaged) {
+          // Switched away from managed → unbind so the renewal worker stops
+          // re-deploying. The manual cert (if any) was already pushed above.
+          await setNodeCertSource(editingInboundNode.id, 'manual', 0)
+        }
+      } catch { /* toast via interceptor */ }
       pushSnack(t('admin:nodes.edit_inbound_dialog.saved'), 'success')
       setEditInboundOpen(false)
       await load()
@@ -3050,7 +3085,7 @@ export default function NodesView() {
         </DialogTitle>
         <DialogContent sx={{ pt: 1 }}>
           <Box component="form" id="create-form" onSubmit={submitCreate}>
-            <InboundFormFields form={createForm} setForm={setCreateForm} nodeId={null}
+            <InboundFormFields form={createForm} setForm={setCreateForm}
               showMetadata
               servers={servers}
               onGenKeys={genKeys}
@@ -3059,7 +3094,6 @@ export default function NodesView() {
               advanced={createAdvanced}
               onSetAdvanced={setCreateAdvanced}
               allTags={allTags}
-              onManagedCertChange={setCreateBoundCertId}
             />
           </Box>
         </DialogContent>
@@ -3087,7 +3121,7 @@ export default function NodesView() {
             </Typography>
           ) : (
             <Box component="form" id="edit-inbound-form" onSubmit={submitEditInbound}>
-              <InboundFormFields form={editInboundForm} setForm={setEditInboundForm} nodeId={editingInboundNode?.id ?? null}
+              <InboundFormFields form={editInboundForm} setForm={setEditInboundForm}
                 showMetadata={false}
                 onGenKeys={genKeysForEdit}
                 onGenSSPassword={genSSPasswordEdit}

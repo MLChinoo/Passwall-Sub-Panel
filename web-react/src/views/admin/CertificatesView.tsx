@@ -38,6 +38,7 @@ import AutorenewIcon from '@mui/icons-material/Autorenew'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import DownloadIcon from '@mui/icons-material/Download'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import VisibilityIcon from '@mui/icons-material/VisibilityOutlined'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -53,6 +54,7 @@ import {
   renewCert,
   updateDNSCred,
   type Cert,
+  type CertPEM,
   type CertTask,
   type DNSCredential,
   type DNSProviderInfo,
@@ -87,6 +89,30 @@ function DetailRow({ md, label, children }: { md: Record<string, string>; label:
     <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start' }}>
       <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, minWidth: 96, pt: 0.25 }}>{label}</Typography>
       <Box sx={{ fontSize: 13, flex: 1, minWidth: 0 }}>{children}</Box>
+    </Box>
+  )
+}
+
+// PemBox renders one read-only PEM block with a copy button in its header —
+// the cert-chain / private-key reveal in the "View certificate & key" popup.
+function PemBox({ md, label, value, copyTitle, danger }: {
+  md: Record<string, string>; label: string; value: string; copyTitle: string; danger?: boolean
+}) {
+  return (
+    <Box>
+      <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+        <Typography sx={{ fontSize: 12, fontWeight: 600, color: danger ? md.error : md.onSurfaceVariant, flex: 1 }}>{label}</Typography>
+        <Tooltip title={copyTitle}>
+          <IconButton size="small" onClick={() => copyToClipboard(value)}><ContentCopyIcon fontSize="small" /></IconButton>
+        </Tooltip>
+      </Box>
+      <Box sx={{
+        p: 1.25, borderRadius: 1.5, bgcolor: md.surfaceContainerHighest ?? 'rgba(0,0,0,.25)',
+        border: danger ? `1px solid ${md.error}` : undefined,
+        maxHeight: 200, overflow: 'auto',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 11.5,
+        whiteSpace: 'pre', color: md.onSurface,
+      }}>{value}</Box>
     </Box>
   )
 }
@@ -198,6 +224,25 @@ export default function CertificatesView() {
   const [detailTask, setDetailTask] = useState<CertTask | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  // ---- PEM viewer (reveal cert chain + private key, copyable) ----
+  const [pemOpen, setPemOpen] = useState(false)
+  const [pemData, setPemData] = useState<CertPEM | null>(null)
+  const [pemLoading, setPemLoading] = useState(false)
+
+  // Hover detail for the status chip (like the SSO-method chip): the failure
+  // reason when failed, otherwise the validity window.
+  function certStatusTooltip(c: Cert): string {
+    switch (c.status) {
+      case 'failed':
+        return c.last_error || t('admin:certs.status.failed')
+      case 'expired':
+        return `${t('admin:certs.status.expired')} · ${formatDualTz(c.not_after, panelTz)}`
+      case 'active':
+        return c.not_after ? `${t('admin:certs.col_expiry')}: ${formatDualTz(c.not_after, panelTz)}` : t('admin:certs.status.active')
+      default:
+        return t('admin:certs.status.pending')
+    }
+  }
 
   async function openDetail(c: Cert) {
     setDetailCert(c)
@@ -227,15 +272,19 @@ export default function CertificatesView() {
     URL.revokeObjectURL(url)
   }
 
-  async function onCopyCert(id: number) {
-    setDownloading(true)
+  // openPEM reveals the full chain + private key in a copyable popup (the
+  // explicit admin "show me the material" action). Distinct from the list/detail
+  // DTOs, which never carry PEMs — this hits the dedicated download endpoint.
+  async function openPEM(id: number) {
+    setPemData(null)
+    setPemOpen(true)
+    setPemLoading(true)
     try {
-      const pem = await downloadCert(id)
-      await copyToClipboard(pem.cert_pem)
+      setPemData(await downloadCert(id))
     } catch {
-      /* toast */
+      setPemOpen(false)
     } finally {
-      setDownloading(false)
+      setPemLoading(false)
     }
   }
 
@@ -261,6 +310,8 @@ export default function CertificatesView() {
   // Named-provider inputs keyed by env var; custom (exec/httpreq/unknown) inputs.
   const [credValues, setCredValues] = useState<Record<string, string>>({})
   const [credPairs, setCredPairs] = useState<{ k: string; v: string }[]>([{ k: '', v: '' }])
+  // Named fields whose stored secret the admin chose to replace (clicked "Change").
+  const [credChanged, setCredChanged] = useState<Set<string>>(new Set())
   const [credBusy, setCredBusy] = useState(false)
 
   // The schema for the chosen provider; null/undefined or custom=true → free-form KV.
@@ -275,6 +326,7 @@ export default function CertificatesView() {
     // Secret VALUES are write-only — on edit the inputs start blank, and a blank
     // value means "keep the stored secret" (the backend merges it).
     setCredValues({})
+    setCredChanged(new Set())
     setCredPairs(c && c.keys.length ? c.keys.map(k => ({ k, v: '' })) : [{ k: '', v: '' }])
     setCredOpen(true)
   }
@@ -284,6 +336,7 @@ export default function CertificatesView() {
   function changeProvider(name: string) {
     setCredProvider(name)
     setCredValues({})
+    setCredChanged(new Set())
     setCredPairs([{ k: '', v: '' }])
   }
 
@@ -434,7 +487,7 @@ export default function CertificatesView() {
                       <TableCell>{c.name}</TableCell>
                       <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>{c.domains.join(', ')}</TableCell>
                       <TableCell>
-                        <Tooltip title={c.last_error || ''} disableHoverListener={!c.last_error}>
+                        <Tooltip title={certStatusTooltip(c)} arrow>
                           <Chip
                             label={t(`admin:certs.status.${c.status}`, { defaultValue: c.status })}
                             size="small"
@@ -645,8 +698,8 @@ export default function CertificatesView() {
                 <>
                   <Divider sx={{ my: 0.5 }} />
                   <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Button size="small" variant="outlined" startIcon={<ContentCopyIcon />} disabled={downloading} onClick={() => onCopyCert(detailCert.id)}>
-                      {t('admin:certs.copy_cert')}
+                    <Button size="small" variant="outlined" startIcon={<VisibilityIcon />} onClick={() => openPEM(detailCert.id)}>
+                      {t('admin:certs.view_pem')}
                     </Button>
                     <Button size="small" variant="outlined" startIcon={<DownloadIcon />} disabled={downloading} onClick={() => onDownloadPEM(detailCert.id, 'cert')}>
                       {t('admin:certs.download_cert')}
@@ -662,6 +715,24 @@ export default function CertificatesView() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDetailOpen(false)}>{t('common:actions.close')}</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* PEM viewer — reveal full chain + private key, copyable (explicit admin action) */}
+      <Dialog open={pemOpen} onClose={() => setPemOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>{t('admin:certs.pem_title')}{pemData ? ` — ${pemData.name}` : ''}</DialogTitle>
+        <DialogContent>
+          {pemLoading || !pemData ? (
+            <Box sx={{ display: 'grid', placeItems: 'center', py: 3 }}><CircularProgress size={24} /></Box>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+              <PemBox md={md} label={t('admin:certs.cert_chain_label')} value={pemData.cert_pem} copyTitle={t('admin:certs.copy_cert')} />
+              <PemBox md={md} label={t('admin:certs.private_key_label')} value={pemData.key_pem} copyTitle={t('admin:certs.copy_key')} danger />
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPemOpen(false)}>{t('common:actions.close')}</Button>
         </DialogActions>
       </Dialog>
 
@@ -723,23 +794,43 @@ export default function CertificatesView() {
             renderInput={params => <TextField {...params} label={t('admin:certs.cred_provider')} size="small" helperText={t('admin:certs.provider_help')} />}
           />
 
-          {credEditing && (
+          {credEditing && isCustomProvider && (
             <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>{t('admin:certs.cred_edit_keep_hint')}</Typography>
           )}
 
           {/* Named fields for a curated provider; free-form KV for exec/httpreq/unknown. */}
           {!isCustomProvider ? (
-            (selProvider!.fields ?? []).map(f => (
-              <TextField
-                key={f.key}
-                label={f.label + (f.optional ? ` (${t('admin:certs.optional')})` : '')}
-                value={credValues[f.key] ?? ''}
-                onChange={e => setCredValues(prev => ({ ...prev, [f.key]: e.target.value }))}
-                size="small"
-                type={f.secret ? 'password' : 'text'}
-                helperText={f.key}
-              />
-            ))
+            (selProvider!.fields ?? []).map(f => {
+              // Stored secret on an existing credential: show the "saved / Change"
+              // state (the app's write-only-secret convention, same as the SMTP
+              // password) instead of a blank input — until the admin clicks Change
+              // to enter a new value.
+              const stored = !!credEditing && credEditing.keys.includes(f.key) && !credChanged.has(f.key)
+              if (stored) {
+                return (
+                  <Box key={f.key}>
+                    <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.5 }}>{f.label}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, minHeight: 40, px: 1.75, py: 0.5, borderRadius: 1.5, border: `1px solid ${md.outlineVariant}` }}>
+                      <Typography variant="body2">{t('admin:certs.field_kept')}</Typography>
+                      <Button size="small" variant="text" onClick={() => setCredChanged(prev => new Set(prev).add(f.key))}>
+                        {t('admin:certs.field_change')}
+                      </Button>
+                    </Box>
+                  </Box>
+                )
+              }
+              return (
+                <TextField
+                  key={f.key}
+                  label={f.label + (f.optional ? ` (${t('admin:certs.optional')})` : '')}
+                  value={credValues[f.key] ?? ''}
+                  onChange={e => setCredValues(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  size="small"
+                  type={f.secret ? 'password' : 'text'}
+                  helperText={f.key}
+                />
+              )
+            })
           ) : (
             <>
               <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{t('admin:certs.cred_kv_help')}</Typography>

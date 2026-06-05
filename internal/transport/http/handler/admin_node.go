@@ -62,6 +62,11 @@ type nodeDTO struct {
 	HealthState     string     `json:"health_state,omitempty"`
 	HealthCheckedAt *time.Time `json:"health_checked_at,omitempty"`
 	HealthDetail    string     `json:"health_detail,omitempty"`
+	// CertSource/CertID surface the managed-certificate binding so the
+	// node-edit form can pre-select the current source (psp_managed + which
+	// cert). "" = unmanaged. Never carries any PEM/secret — just the binding.
+	CertSource string `json:"cert_source,omitempty"`
+	CertID     int64  `json:"cert_id,omitempty"`
 }
 
 type inboundDTO struct {
@@ -737,6 +742,8 @@ func (h *AdminNodeHandler) toNodeDTO(n *domain.Node, panelNames map[int64]string
 		HealthCheckedAt: n.HealthCheckedAt,
 		HealthDetail:    n.HealthDetail,
 		Kind:            string(n.Kind),
+		CertSource:      string(n.CertSource),
+		CertID:          n.CertID,
 	}
 }
 

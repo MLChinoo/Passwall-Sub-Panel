@@ -104,6 +104,11 @@ export interface Node {
   health_checked_at?: string | null
   /** Error string for the most recent failed probe; empty when healthy. */
   health_detail?: string
+  /** Managed-certificate binding. "" / undefined = unmanaged (manual /
+   *  historical). 'psp_managed' means cert_id points to a PSP-managed cert
+   *  that the renewal worker keeps deployed. Never carries any PEM. */
+  cert_source?: '' | 'manual' | 'from_panel' | 'psp_managed'
+  cert_id?: number
 }
 
 export type SyncTaskStatus = 'pending' | 'running' | 'succeeded' | 'canceled'
