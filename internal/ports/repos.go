@@ -505,6 +505,9 @@ type WebAuthnCredentialRepo interface {
 	// only mutate their own credentials.
 	Rename(ctx context.Context, id, userID int64, name string) error
 	Delete(ctx context.Context, id, userID int64) error
+	// DeleteAllByUserID drops every credential for a user — the admin "revoke
+	// all passkeys" break-glass. Returns the number of credentials removed.
+	DeleteAllByUserID(ctx context.Context, userID int64) (int, error)
 }
 
 type SubLogRepo interface {

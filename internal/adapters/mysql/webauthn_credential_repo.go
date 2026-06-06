@@ -109,3 +109,16 @@ func (r *webauthnCredentialRepo) Delete(ctx context.Context, id, userID int64) e
 		Where("id = ? AND user_id = ?", id, userID).
 		Delete(&webauthnCredentialRow{}).Error
 }
+
+// DeleteAllByUserID removes every credential owned by a user and returns the
+// count deleted. Used by the admin "revoke all passkeys" break-glass; the
+// user_id scope keeps it from touching anyone else's credentials.
+func (r *webauthnCredentialRepo) DeleteAllByUserID(ctx context.Context, userID int64) (int, error) {
+	res := r.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Delete(&webauthnCredentialRow{})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return int(res.RowsAffected), nil
+}

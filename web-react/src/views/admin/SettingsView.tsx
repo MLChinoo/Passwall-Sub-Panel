@@ -91,7 +91,7 @@ import { useTabParam } from '@/hooks/useTabParam'
 import { listGroups } from '@/api/groups'
 import type { Group } from '@/api/types'
 
-type TabKey = 'general' | 'brand' | 'subscription' | 'portal' | 'mail' | 'sso'
+type TabKey = 'general' | 'security' | 'brand' | 'subscription' | 'portal' | 'mail' | 'sso'
 
 // COMMON_TIMEZONES is the option set in the Settings → 面板时区 picker.
 // Uses the browser's own IANA database via Intl.supportedValuesOf, which
@@ -162,7 +162,7 @@ export default function SettingsView() {
   const site = useSiteStore()
 
   const [tab, setTab] = useTabParam<TabKey>('tab', 'general',
-    ['general', 'brand', 'subscription', 'portal', 'mail', 'sso'])
+    ['general', 'security', 'brand', 'subscription', 'portal', 'mail', 'sso'])
   const [settings, setSettings] = useState<UISettings | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -327,6 +327,7 @@ export default function SettingsView() {
 
   const tabs: { key: TabKey; labelKey: string }[] = [
     { key: 'general', labelKey: 'settings.tab_general' },
+    { key: 'security', labelKey: 'settings.tab_security' },
     { key: 'brand', labelKey: 'settings.tab_brand' },
     { key: 'subscription', labelKey: 'settings.tab_subscription' },
     { key: 'portal', labelKey: 'settings.tab_portal' },
@@ -351,7 +352,7 @@ export default function SettingsView() {
         {tabs.map(tb => <Tab key={tb.key} value={tb.key} label={t(tb.labelKey)} />)}
       </Tabs>
 
-      {tab === 'general' && (
+      {tab === 'security' && (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
           {saveBar}
           <Section title={t('settings.general.section_login')} md={md}>
@@ -579,7 +580,12 @@ export default function SettingsView() {
                 onChange={v => patch('login_per_ip_per_min', v)} />
             </Pair>
           </Section>
+        </Box>
+      )}
 
+      {tab === 'general' && (
+        <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {saveBar}
           <Section title={t('settings.general.section_runtime')} md={md}>
             <Autocomplete
               freeSolo

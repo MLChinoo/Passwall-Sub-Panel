@@ -16,6 +16,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/passkey"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/twofa"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/middleware"
@@ -90,10 +91,11 @@ type AdminUserHandler struct {
 	mailer   *mailer.Service
 	async    AsyncDispatcher
 	twofa    *twofa.Service
+	passkey  *passkey.Service
 }
 
-func NewAdminUserHandler(userSvc *user.Service, settings ports.SettingsRepo, mailerSvc *mailer.Service, async AsyncDispatcher, twofaSvc *twofa.Service) *AdminUserHandler {
-	return &AdminUserHandler{user: userSvc, settings: settings, mailer: mailerSvc, async: async, twofa: twofaSvc}
+func NewAdminUserHandler(userSvc *user.Service, settings ports.SettingsRepo, mailerSvc *mailer.Service, async AsyncDispatcher, twofaSvc *twofa.Service, passkeySvc *passkey.Service) *AdminUserHandler {
+	return &AdminUserHandler{user: userSvc, settings: settings, mailer: mailerSvc, async: async, twofa: twofaSvc, passkey: passkeySvc}
 }
 
 // ---- DTOs ----

@@ -62,6 +62,7 @@
   "settings": {
     "title": "系统设置",
     "tab_general": "基本设置",
+    "tab_security": "登录与安全",
     "tab_brand": "站点品牌",
     "tab_subscription": "订阅管理",
     "tab_portal": "用户门户",
@@ -1140,7 +1141,8 @@
       "reset_credentials": "重置凭证",
       "reset_emergency": "重置紧急访问次数",
       "reset_2fa": "重置两步验证",
-      "unlink_sso": "解除 SSO 绑定"
+      "unlink_sso": "解除 SSO 绑定",
+      "passkeys": "管理通行密钥"
     },
     "reset_password": {
       "title": "重置登录密码",
@@ -1193,6 +1195,24 @@
       "result": "已重置！新 UUID: {{uuid}}",
       "emergency_reset": "已重置紧急使用次数",
       "twofa_reset": "已重置两步验证"
+    },
+    "passkeys": {
+      "title": "通行密钥",
+      "intro": "管理员可查看并吊销该用户的通行密钥（WebAuthn）。无法代为注册——注册需要用户本人的设备。",
+      "empty": "该用户尚未注册任何通行密钥。",
+      "added_at": "添加于 {{date}}",
+      "last_used": "最近使用 {{date}}",
+      "revoke": "吊销",
+      "revoke_title": "吊销通行密钥",
+      "revoke_message": "将吊销 {{upn}} 的通行密钥「{{name}}」。该设备将无法再用于登录。",
+      "revoked": "已吊销通行密钥",
+      "revoke_failed": "吊销失败",
+      "revoke_all": "全部吊销",
+      "revoke_all_title": "吊销全部通行密钥",
+      "revoke_all_message": "将吊销 {{upn}} 的全部 {{count}} 个通行密钥。仅在账号丢失全部设备或疑似被盗时使用。",
+      "revoked_all": "已吊销 {{count}} 个通行密钥",
+      "load_failed": "加载通行密钥失败",
+      "close": "关闭"
     }
   },
   "groups": {

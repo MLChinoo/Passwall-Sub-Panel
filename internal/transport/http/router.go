@@ -268,7 +268,7 @@ func NewRouter(d Deps) *gin.Engine {
 		middleware.RequireRole(domain.RoleAdmin),
 	)
 	{
-		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings, d.Mail, d.Async, twofaSvc)
+		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings, d.Mail, d.Async, twofaSvc, passkeySvc)
 		// User CRUD is the operator's bread and butter. Handler-level guard
 		// in users.Update prevents operators from creating/promoting other
 		// admins or modifying an existing admin's role.
@@ -281,6 +281,11 @@ func NewRouter(d Deps) *gin.Engine {
 		staffGroup.POST("/users/:id/reset-password", users.ResetPassword)
 		staffGroup.POST("/users/:id/reset-emergency-usage", users.ResetEmergencyUsage)
 		staffGroup.POST("/users/:id/reset-2fa", users.Reset2FA)
+		// Passkey management (v3.7.0). List is read-only metadata; the revoke
+		// paths are break-glass for a lost/compromised authenticator.
+		staffGroup.GET("/users/:id/passkeys", users.ListUserPasskeys)
+		staffGroup.DELETE("/users/:id/passkeys", users.RevokeAllUserPasskeys)
+		staffGroup.DELETE("/users/:id/passkeys/:pkid", users.RevokeUserPasskey)
 		staffGroup.POST("/users/:id/unlink-sso", users.UnlinkSSO)
 		staffGroup.POST("/users/:id/set-enabled", users.SetEnabled)
 		staffGroup.GET("/users/:id/rules", users.GetRules)

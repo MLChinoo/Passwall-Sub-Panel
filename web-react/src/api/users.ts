@@ -3,6 +3,7 @@ import type {
   CreateUserRequest,
   CreateUserResponse,
   ListResponse,
+  PasskeyCredential,
   ResetPeriod,
   Role,
   User,
@@ -91,6 +92,23 @@ export async function reset2FA(id: number) {
 
 export async function unlinkSSO(id: number) {
   await client.post(`/admin/users/${id}/unlink-sso`)
+}
+
+// Admin passkey management (v3.7.0). Admins can view and revoke a user's
+// passkeys (break-glass for a lost/compromised device) but cannot enroll on
+// their behalf — enrollment needs the user's own authenticator.
+export async function listUserPasskeys(id: number) {
+  const { data } = await client.get<{ passkeys: PasskeyCredential[] }>(`/admin/users/${id}/passkeys`)
+  return data.passkeys ?? []
+}
+
+export async function revokeUserPasskey(id: number, passkeyId: number) {
+  await client.delete(`/admin/users/${id}/passkeys/${passkeyId}`)
+}
+
+export async function revokeAllUserPasskeys(id: number) {
+  const { data } = await client.delete<{ revoked: number }>(`/admin/users/${id}/passkeys`)
+  return data.revoked
 }
 
 export async function getUserRules(id: number) {

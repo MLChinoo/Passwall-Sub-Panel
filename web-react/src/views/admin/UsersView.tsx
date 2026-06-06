@@ -50,6 +50,7 @@ import RuleIcon from '@mui/icons-material/Rule'
 import EmergencyIcon from '@mui/icons-material/MedicalServices'
 import LinkOffIcon from '@mui/icons-material/LinkOff'
 import ShieldIcon from '@mui/icons-material/GppMaybe'
+import FingerprintIcon from '@mui/icons-material/Fingerprint'
 import SyncIcon from '@mui/icons-material/Sync'
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
 import { useTranslation } from 'react-i18next'
@@ -75,6 +76,7 @@ import { setUserTraffic, topTraffic, type TrafficRow } from '@/api/traffic'
 import type { Group, ResetPeriod, Role, User } from '@/api/types'
 import type { ReconcileReport } from '@/api/reconcile'
 import { UserActivity } from './UserActivity'
+import AdminPasskeysDialog from './AdminPasskeysDialog'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { useCan } from '@/utils/permissions'
@@ -322,6 +324,7 @@ export default function UsersView() {
   // Per-row More menu
   const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null)
   const [moreUser, setMoreUser] = useState<User | null>(null)
+  const [passkeysUser, setPasskeysUser] = useState<User | null>(null)
   // Batch More menu
   const [batchMoreAnchor, setBatchMoreAnchor] = useState<HTMLElement | null>(null)
 
@@ -787,6 +790,11 @@ export default function UsersView() {
     await load()
   }
 
+  function actionManagePasskeys(u: User) {
+    closeMore()
+    setPasskeysUser(u)
+  }
+
   async function batchResetEmergency() {
     setBatchMoreAnchor(null)
     const rows = selectedRows
@@ -1222,7 +1230,16 @@ export default function UsersView() {
             <ListItemText>{t('admin:users.more_menu.reset_2fa', { defaultValue: '重置两步验证' })}</ListItemText>
           </MenuItem>
         )}
+        {/* Always available: disabling the passkey feature does NOT remove
+            already-enrolled credentials, so the admin still needs a revoke path. */}
+        <MenuItem onClick={() => moreUser && actionManagePasskeys(moreUser)}>
+          <ListItemIcon><FingerprintIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{t('admin:users.more_menu.passkeys', { defaultValue: '管理通行密钥' })}</ListItemText>
+        </MenuItem>
       </Menu>
+
+      <AdminPasskeysDialog open={!!passkeysUser} user={passkeysUser} md={md}
+        onClose={() => setPasskeysUser(null)} />
 
       {/* Create dialog */}
       <Dialog open={createOpen} onClose={() => !createBusy && setCreateOpen(false)}

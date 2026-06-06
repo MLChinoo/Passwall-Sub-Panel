@@ -33,6 +33,7 @@ type CredStore interface {
 	UpdateAfterLogin(ctx context.Context, id int64, credential []byte, newSignCount int64, lastUsed time.Time) (bool, error)
 	Rename(ctx context.Context, id, userID int64, name string) error
 	Delete(ctx context.Context, id, userID int64) error
+	DeleteAllByUserID(ctx context.Context, userID int64) (int, error)
 }
 
 type UserGetter interface {
@@ -349,4 +350,12 @@ func (s *Service) Rename(ctx context.Context, id, userID int64, name string) err
 
 func (s *Service) Delete(ctx context.Context, id, userID int64) error {
 	return s.d.Creds.Delete(ctx, id, userID)
+}
+
+// RevokeAll removes every passkey on an account — the admin break-glass for a
+// lost-all-devices / compromised user, mirroring twofa AdminReset. Returns the
+// number of credentials removed. The caller (admin handler) decides who may run
+// it; this method itself is identity-agnostic and just targets userID.
+func (s *Service) RevokeAll(ctx context.Context, userID int64) (int, error) {
+	return s.d.Creds.DeleteAllByUserID(ctx, userID)
 }

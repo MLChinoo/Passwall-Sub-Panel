@@ -78,7 +78,11 @@ func (f stubSettings) Load(context.Context, ports.UISettings) (ports.UISettings,
 	return f.s, nil
 }
 
-type stubCredStore struct{ updated bool }
+type stubCredStore struct {
+	updated     bool
+	revokedUser int64
+	revokeN     int
+}
 
 func (s *stubCredStore) Save(context.Context, *domain.PasskeyCredential) error { return nil }
 func (s *stubCredStore) FindByUserID(context.Context, int64) ([]*domain.PasskeyCredential, error) {
@@ -93,6 +97,27 @@ func (s *stubCredStore) UpdateAfterLogin(context.Context, int64, []byte, int64, 
 }
 func (s *stubCredStore) Rename(context.Context, int64, int64, string) error { return nil }
 func (s *stubCredStore) Delete(context.Context, int64, int64) error         { return nil }
+func (s *stubCredStore) DeleteAllByUserID(_ context.Context, userID int64) (int, error) {
+	s.revokedUser = userID
+	return s.revokeN, nil
+}
+
+// RevokeAll is the admin break-glass that drops every passkey on an account; it
+// must target the requested user and surface the deleted count unchanged.
+func TestRevokeAll(t *testing.T) {
+	cs := &stubCredStore{revokeN: 3}
+	svc := New(Deps{Creds: cs, Settings: stubSettings{}})
+	n, err := svc.RevokeAll(context.Background(), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("RevokeAll returned %d, want 3", n)
+	}
+	if cs.revokedUser != 42 {
+		t.Fatalf("RevokeAll must delete the target user's creds, got user %d", cs.revokedUser)
+	}
+}
 
 // A cloned/replayed authenticator (sign-count regression) is flagged by
 // go-webauthn via CloneWarning, NOT an error — finalizeAssertion must refuse the

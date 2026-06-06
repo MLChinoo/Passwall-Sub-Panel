@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.7.0-beta.8 — 2026-06-06
+
+「账号安全」专题收尾打磨：设置页**「登录与安全」独立 tab** + 管理员**查看 / 吊销用户的通行密钥**。`go test ./...` / `go vet` / `tsc` / `npm build` 全绿（passkey 仓储「按用户清空」+ 服务 `RevokeAll` 先红后绿 TDD）。
+
+### Changed
+
+- **设置页拆出「登录与安全」tab** —— 原「基本设置」tab 过载（登录方式 / 登录安全 / 安全 / 运行时 / 紧急访问 / IP 地区 六块）。把**登录方式**（登录模式、禁止本地登录/改密、个人规则开关）、**登录安全**（验证码 / 失败锁定 / 邮箱找回 / 自助注册 / 2FA / Passkey）、**安全**（JWT issuer/TTL、订阅与登录限流）三块挪进新 tab；「基本设置」只留运行时 / 紧急访问 / IP 地区。纯前端重组——`save` 仍提交整份 settings、走同一 PUT，后端零改动。
+
+### Added
+
+- **管理员管理用户的通行密钥** —— 用户列表 ⋮ 菜单新增「管理通行密钥」，对话框列出该用户已绑定的 passkey（名称 / 添加时间 / 最近使用），可**逐个吊销**或**一键全部吊销**（账号丢失全部设备 / 疑似被盗时的破窗，与 `Reset2FA` 同款语义）。管理员**不能代为注册**（注册需用户本人的认证器）。后端 `GET / DELETE /admin/users/:id/passkeys[/:pkid]` 挂 `staffGroup` 并经 `ensureOperatorAllowed`——operator 不能吊销 admin/operator 账号的 passkey；列表为只读元数据（仅 id/名称/时间，不泄露原始凭据/公钥）故不额外设限。吊销复用仓储 `(id,user_id)` 双作用域，并新增 `DeleteAllByUserID`（按 user_id 单作用域、返回删除数、幂等）。关闭 passkey 总开关**不**移除已绑定凭据，故该入口常驻可用。中英 i18n 齐。
+
 ## v3.7.0-beta.7 — 2026-06-06
 
 修复 beta.5 引入的 **MySQL 迁移崩溃**（SQLite/Postgres 不受影响，故早测未抓到）。

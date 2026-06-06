@@ -62,6 +62,7 @@
   "settings": {
     "title": "System settings",
     "tab_general": "General",
+    "tab_security": "Login & Security",
     "tab_brand": "Brand",
     "tab_subscription": "Subscription",
     "tab_portal": "User portal",
@@ -1140,7 +1141,8 @@
       "reset_credentials": "Reset credentials",
       "reset_emergency": "Reset emergency-access count",
       "reset_2fa": "Reset two-factor auth",
-      "unlink_sso": "Unlink SSO binding"
+      "unlink_sso": "Unlink SSO binding",
+      "passkeys": "Manage passkeys"
     },
     "reset_password": {
       "title": "Reset login password",
@@ -1193,6 +1195,24 @@
       "result": "Reset OK! New UUID: {{uuid}}",
       "emergency_reset": "Emergency-access count reset",
       "twofa_reset": "Two-factor auth reset"
+    },
+    "passkeys": {
+      "title": "Passkeys",
+      "intro": "View and revoke this user's passkeys (WebAuthn). You can't enroll one on their behalf — that needs the user's own authenticator.",
+      "empty": "This user has no registered passkeys.",
+      "added_at": "Added {{date}}",
+      "last_used": "Last used {{date}}",
+      "revoke": "Revoke",
+      "revoke_title": "Revoke passkey",
+      "revoke_message": "This revokes {{upn}}'s passkey \"{{name}}\". That device can no longer be used to sign in.",
+      "revoked": "Passkey revoked",
+      "revoke_failed": "Revoke failed",
+      "revoke_all": "Revoke all",
+      "revoke_all_title": "Revoke all passkeys",
+      "revoke_all_message": "This revokes all {{count}} of {{upn}}'s passkeys. Use only when the account lost every device or is suspected compromised.",
+      "revoked_all": "Revoked {{count}} passkey(s)",
+      "load_failed": "Failed to load passkeys",
+      "close": "Close"
     }
   },
   "groups": {

@@ -108,3 +108,51 @@ func TestWebAuthnCredentialRepo(t *testing.T) {
 		t.Fatal("owner delete should remove the credential")
 	}
 }
+
+// TestWebAuthnCredentialRepo_DeleteAllByUserID covers the admin "revoke all
+// passkeys" break-glass: it must drop every credential of the target user, leave
+// other users untouched, return the deleted count, and be idempotent.
+func TestWebAuthnCredentialRepo_DeleteAllByUserID(t *testing.T) {
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if s, e := db.DB(); e == nil {
+			_ = s.Close()
+		}
+	})
+	repo := NewRepos(db).WebAuthn
+	ctx := context.Background()
+
+	mk := func(uid int64, cred string) {
+		if err := repo.Save(ctx, &domain.PasskeyCredential{UserID: uid, CredentialID: cred, Credential: []byte(`{}`)}); err != nil {
+			t.Fatalf("save %s: %v", cred, err)
+		}
+	}
+	mk(7, "a")
+	mk(7, "b")
+	mk(7, "c")
+	mk(9, "d")
+
+	n, err := repo.DeleteAllByUserID(ctx, 7)
+	if err != nil {
+		t.Fatalf("DeleteAllByUserID: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("DeleteAllByUserID returned %d, want 3", n)
+	}
+	if list, _ := repo.FindByUserID(ctx, 7); len(list) != 0 {
+		t.Fatalf("user 7 should have no passkeys left, got %d", len(list))
+	}
+	if list, _ := repo.FindByUserID(ctx, 9); len(list) != 1 {
+		t.Fatalf("another user's passkey must survive, got %d", len(list))
+	}
+	// Idempotent: a second sweep removes nothing and doesn't error.
+	if n, err := repo.DeleteAllByUserID(ctx, 7); err != nil || n != 0 {
+		t.Fatalf("second DeleteAllByUserID = (%d, %v), want (0, nil)", n, err)
+	}
+}
