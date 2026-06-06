@@ -665,9 +665,10 @@ type AuthMethod string
 type AuthOutcome string
 
 const (
-	AuthMethodLocal AuthMethod = "local"
-	AuthMethodSAML  AuthMethod = "saml"
-	AuthMethodOIDC  AuthMethod = "oidc"
+	AuthMethodLocal   AuthMethod = "local"
+	AuthMethodSAML    AuthMethod = "saml"
+	AuthMethodOIDC    AuthMethod = "oidc"
+	AuthMethodPasskey AuthMethod = "passkey"
 
 	AuthOutcomeSuccess AuthOutcome = "success"
 	AuthOutcomeFailure AuthOutcome = "failure"
@@ -727,6 +728,25 @@ const (
 	AuthTokenPurposePasswordReset = "password_reset"
 	AuthTokenPurposeEmailVerify   = "email_verify"
 )
+
+// PasskeyCredential is one registered WebAuthn credential (a "passkey") bound to
+// a local-password account. Credential holds the full opaque webauthn.Credential
+// record as JSON (the library's recommended storage shape — preserving it intact
+// is what keeps re-verification, the clone/sign-count check, and AAGUID working);
+// CredentialID (base64url of the raw credential ID) is the globally-unique lookup
+// key used by discoverable (usernameless) login; SignCount is denormalized out of
+// the record so the repo can gate the anti-rollback update on it. Name is a
+// user-chosen label. The public key is not a secret, so nothing here is encrypted.
+type PasskeyCredential struct {
+	ID           int64
+	UserID       int64
+	CredentialID string // base64url(raw credential id); globally unique
+	Credential   []byte // JSON of the full webauthn.Credential record
+	SignCount    int64
+	Name         string
+	CreatedAt    time.Time
+	LastUsedAt   *time.Time
+}
 
 // GeoLocation is a resolved geolocation for an IP. Empty fields mean
 // "unknown" (private/reserved IP, lookup disabled, or provider failure).

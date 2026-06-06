@@ -1107,6 +1107,7 @@ func EnsureSchema(db *gorm.DB) error {
 		&auditRow{},
 		&authEventRow{},
 		&authTokenRow{},
+		&webauthnCredentialRow{},
 		&subLogRow{},
 		&syncTaskRow{},
 		&xuiPanelRow{},

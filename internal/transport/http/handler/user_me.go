@@ -13,6 +13,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/paneltz"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/passkey"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/twofa"
@@ -29,10 +30,11 @@ type UserMeHandler struct {
 	nodes     ports.NodeRepo
 	ownership ports.OwnershipRepo
 	twofa     *twofa.Service
+	passkey   *passkey.Service
 }
 
-func NewUserMeHandler(userSvc *user.Service, trafficSvc *traffic.Service, settings ports.SettingsRepo, nodes ports.NodeRepo, ownership ports.OwnershipRepo, twofaSvc *twofa.Service) *UserMeHandler {
-	return &UserMeHandler{user: userSvc, traffic: trafficSvc, settings: settings, nodes: nodes, ownership: ownership, twofa: twofaSvc}
+func NewUserMeHandler(userSvc *user.Service, trafficSvc *traffic.Service, settings ports.SettingsRepo, nodes ports.NodeRepo, ownership ports.OwnershipRepo, twofaSvc *twofa.Service, passkeySvc *passkey.Service) *UserMeHandler {
+	return &UserMeHandler{user: userSvc, traffic: trafficSvc, settings: settings, nodes: nodes, ownership: ownership, twofa: twofaSvc, passkey: passkeySvc}
 }
 
 func (h *UserMeHandler) Profile(c *gin.Context) {
@@ -65,6 +67,10 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 	if settingsErr == nil {
 		emergencyStatus = user.EmergencyAccessStatusForUserWithTrafficLimit(u, settings, time.Now(), h.trafficLimitExceeded(c.Request.Context(), u))
 	}
+	// Passkeys (best-effort): the sanitized credential list for the management
+	// dialog. Never expose the raw credential record — only id/name/timestamps.
+	passkeyAvailable := u.HasLocalPassword() && settingsErr == nil && settings.PasskeyEnabled
+	passkeyList := h.passkeyList(c.Request.Context(), u.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"id":           u.ID,
 		"display_name": u.DisplayName,
@@ -101,6 +107,12 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		// accounts can't enroll). totp_enabled is this user's current state.
 		"totp_available": u.HasLocalPassword() && settingsErr == nil && settings.TOTPEnabled,
 		"totp_enabled":   u.TOTPEnabled,
+		// Passkeys: passkey_available gates the "add passkey" affordance;
+		// passkey_credentials is the sanitized list; passkey_enabled is whether
+		// any are registered.
+		"passkey_available":   passkeyAvailable,
+		"passkey_enabled":     len(passkeyList) > 0,
+		"passkey_credentials": passkeyList,
 		// can_edit_personal_rules drives the portal's rules dialog: when
 		// false the textarea renders read-only and the Save button hides.
 		// Admins always can; for non-admins it follows the global flag.

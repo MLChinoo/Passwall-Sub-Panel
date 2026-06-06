@@ -52,7 +52,30 @@
   "actions": {
     "change_password": "修改密码",
     "personal_rules": "个人规则",
-    "two_factor": "两步验证"
+    "two_factor": "两步验证",
+    "passkeys": "通行密钥"
+  },
+  "passkey": {
+    "count": "已绑定 {{count}} 个",
+    "title": "通行密钥（Passkey）",
+    "intro": "通行密钥用设备的指纹/面容或安全密钥登录，无需记密码，且能抗钓鱼。绑定后可在登录页一键免密登录。",
+    "list_empty": "尚未绑定任何通行密钥。",
+    "add": "添加通行密钥",
+    "name_label": "名称（便于识别，如「我的手机」）",
+    "default_name": "通行密钥",
+    "continue": "继续",
+    "cancel": "取消",
+    "close": "关闭",
+    "rename": "重命名",
+    "delete": "删除",
+    "added_at": "添加于 {{date}}",
+    "added": "通行密钥已添加",
+    "deleted": "通行密钥已删除",
+    "confirm_delete_title": "删除通行密钥",
+    "confirm_delete_message": "确定删除「{{name}}」？该设备将无法再用它登录。",
+    "add_failed": "添加通行密钥失败，请重试。",
+    "rename_failed": "重命名失败，请重试。",
+    "delete_failed": "删除失败，请重试。"
   },
   "twofa": {
     "status_on": "已开启",

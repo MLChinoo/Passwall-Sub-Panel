@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { localLogin, ssoComplete, verify2FA } from '@/api/auth'
+import { startAuthentication } from '@simplewebauthn/browser'
+import { localLogin, passkeyLoginBegin, passkeyLoginFinish, ssoComplete, verify2FA } from '@/api/auth'
 import { isTwoFAChallenge } from '@/api/types'
 import type { AuthLoginResponse, LoginCaptcha, Role } from '@/api/types'
 
@@ -18,6 +19,9 @@ interface AuthState {
   // login / loginSSO / logout / the cross-tab storage listener.
   hasToken: boolean
   login: (upn: string, password: string, captcha?: LoginCaptcha) => Promise<LoginOutcome>
+  // loginPasskey runs a usernameless WebAuthn login. Same outcome contract as
+  // login() — it may surface a 2FA challenge for accounts that also enrolled TOTP.
+  loginPasskey: () => Promise<LoginOutcome>
   // complete2FA finishes a login that returned a 2FA challenge: it exchanges the
   // pending token + code for a real session.
   complete2FA: (pendingToken: string, code: string) => Promise<void>
@@ -72,6 +76,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const res = await localLogin(upn, password, captcha)
     // A 2FA-enabled account returns a challenge, not a session: hold the
     // pending token and let the form collect the second factor.
+    if (isTwoFAChallenge(res)) {
+      return { twoFA: true, pendingToken: res.pending_token }
+    }
+    applySession(res, set)
+    return { twoFA: false }
+  },
+
+  async loginPasskey() {
+    const { session_id, publicKey } = await passkeyLoginBegin()
+    // The browser WebAuthn ceremony runs outside React/axios.
+    const assertion = await startAuthentication({ optionsJSON: publicKey })
+    const res = await passkeyLoginFinish(session_id, assertion)
     if (isTwoFAChallenge(res)) {
       return { twoFA: true, pendingToken: res.pending_token }
     }

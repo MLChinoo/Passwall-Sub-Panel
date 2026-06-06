@@ -213,6 +213,12 @@ export interface UISettings {
   /** Master switch for 2FA enrollment. Off blocks new enrollment panel-wide but
    *  does NOT strip 2FA from already-enrolled accounts. */
   totp_enabled: boolean
+
+  // ---- Passkeys / WebAuthn (v3.7.0) ----
+  /** Allow local accounts to register passkeys on their profile page. */
+  passkey_enabled: boolean
+  /** Additionally allow usernameless passkey login from the login page. */
+  passkey_passwordless: boolean
 }
 
 export async function getUISettings() {

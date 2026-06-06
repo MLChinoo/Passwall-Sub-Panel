@@ -13,6 +13,7 @@ import {
 } from '@mui/material'
 import LoginIcon from '@mui/icons-material/Login'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
+import FingerprintIcon from '@mui/icons-material/Fingerprint'
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { AxiosError } from 'axios'
@@ -198,6 +199,30 @@ export default function LoginView() {
     setPassword('')
   }
 
+  async function onPasskeyLogin() {
+    setBusy(true)
+    setLockedMsg('')
+    try {
+      const outcome = await auth.loginPasskey()
+      if (outcome.twoFA) {
+        setTwoFAPending(outcome.pendingToken)
+        setTwoFACode('')
+        setTwoFAError('')
+        return
+      }
+      goHome()
+    } catch (err) {
+      // A user who cancels the browser prompt (or has no matching passkey)
+      // shouldn't see a scary error; only surface genuine failures.
+      const name = (err as { name?: string })?.name
+      if (name !== 'NotAllowedError' && name !== 'AbortError') {
+        pushSnack(t('auth:passkey_failed'), 'error')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function ssoLogin(provider: 'saml' | 'oidc') {
     const url = provider === 'saml'
       ? samlLoginURL(returnTo ?? '/user/me')
@@ -316,6 +341,15 @@ export default function LoginView() {
     </Box>
   )
 
+  const passkeyBlock = localEnabled && methods?.passkey_passwordless && (
+    <Button type="button" variant="outlined" fullWidth size="large"
+      onClick={onPasskeyLogin} disabled={busy}
+      startIcon={<FingerprintIcon />}
+      sx={{ mt: 1.5 }}>
+      {t('auth:passkey_login')}
+    </Button>
+  )
+
   const ssoBlock = (samlEnabled || oidcEnabled) && (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
       {samlEnabled && (
@@ -375,9 +409,9 @@ export default function LoginView() {
           {twoFAPending ? (
             twoFAFormBlock
           ) : ssoFirst ? (
-            <>{ssoBlock}{dividerBlock}{localFormBlock}</>
+            <>{ssoBlock}{dividerBlock}{localFormBlock}{passkeyBlock}</>
           ) : (
-            <>{localFormBlock}{dividerBlock}{ssoBlock}</>
+            <>{localFormBlock}{passkeyBlock}{dividerBlock}{ssoBlock}</>
           )}
         </Card>
       </Box>

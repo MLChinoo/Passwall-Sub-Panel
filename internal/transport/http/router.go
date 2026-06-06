@@ -24,6 +24,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/loginguard"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/passkey"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/recovery"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/registration"
@@ -149,6 +150,10 @@ func NewRouter(d Deps) *gin.Engine {
 	// enrollment endpoints, and the admin break-glass reset.
 	twofaSvc := twofa.New(twofa.Deps{Users: d.Repos.User, Settings: d.Repos.Settings})
 
+	// Passkey (WebAuthn) service — shared by the usernameless login endpoints and
+	// the profile-page enrollment/management endpoints.
+	passkeySvc := passkey.New(passkey.Deps{Creds: d.Repos.WebAuthn, Users: d.Repos.User, Settings: d.Repos.Settings})
+
 	// Auth endpoints
 	authLocal := handler.NewAuthLocalHandler(d.Auth, d.User, d.SAML, d.OIDC, d.Repos.Settings, d.Repos.AuthEvent,
 		loginguard.New(d.Repos.AuthEvent), captcha.NewService(), twofaSvc)
@@ -164,6 +169,11 @@ func NewRouter(d Deps) *gin.Engine {
 		// Second factor of a 2FA login — exchanges the pending token + code for a
 		// real session. Behind the login limiter so the code can't be brute-forced.
 		authGroup.POST("/2fa/verify", loginLimiter.Handler(), authLocal.TwoFAVerify)
+		// Usernameless (discoverable) passkey login. Behind the login limiter so
+		// /begin isn't a free challenge-churn / DoS surface.
+		passkeyAuth := handler.NewAuthPasskeyHandler(passkeySvc, d.Auth, d.Repos.Settings, d.Repos.AuthEvent)
+		authGroup.POST("/passkey/begin", loginLimiter.Handler(), passkeyAuth.LoginBegin)
+		authGroup.POST("/passkey/finish", loginLimiter.Handler(), passkeyAuth.LoginFinish)
 		// Refresh shares the login limiter — refresh storms from a misbehaving
 		// client should be throttled just like brute-force login attempts.
 		authGroup.POST("/refresh", loginLimiter.Handler(), authLocal.Refresh)
@@ -209,7 +219,7 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	// Authenticated user self-service
-	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.Settings, d.Repos.Node, d.Repos.Ownership, twofaSvc)
+	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.Settings, d.Repos.Node, d.Repos.Ownership, twofaSvc, passkeySvc)
 	userGroup := g.Group("/api/user/me",
 		middleware.RequireAuth(d.Auth, d.User),
 		middleware.RequireRole(domain.RoleUser, domain.RoleAdmin),
@@ -228,6 +238,12 @@ func NewRouter(d Deps) *gin.Engine {
 		userGroup.POST("/2fa/begin", userMe.Begin2FA)
 		userGroup.POST("/2fa/enable", userMe.Enable2FA)
 		userGroup.POST("/2fa/disable", userMe.Disable2FA)
+		// Passkey (WebAuthn) self-service enrollment / management.
+		userGroup.GET("/passkeys", userMe.ListPasskeys)
+		userGroup.POST("/passkeys/begin", userMe.BeginPasskeyEnroll)
+		userGroup.POST("/passkeys/finish", userMe.FinishPasskeyEnroll)
+		userGroup.PATCH("/passkeys/:id", userMe.RenamePasskey)
+		userGroup.DELETE("/passkeys/:id", userMe.DeletePasskey)
 	}
 
 	// Admin API.

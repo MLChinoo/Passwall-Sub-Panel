@@ -264,6 +264,20 @@ export interface AuthMethods {
   registration_enabled?: boolean
   registration_require_email_verification?: boolean
   registration_delivery?: 'link' | 'otp'
+  // Passkeys (v3.7.0). passkey_passwordless gates the login page's "Sign in with
+  // a passkey" button (usernameless login); passkey_enabled alone only allows
+  // enrollment as a second factor from the profile page.
+  passkey_enabled?: boolean
+  passkey_passwordless?: boolean
+}
+
+// PasskeyCredential is the sanitized view of a registered passkey shown in the
+// profile management dialog — never the raw credential record or public key.
+export interface PasskeyCredential {
+  id: number
+  name: string
+  created_at: string
+  last_used_at?: string | null
 }
 
 export type CaptchaProvider = 'image' | 'turnstile' | 'recaptcha' | 'hcaptcha'

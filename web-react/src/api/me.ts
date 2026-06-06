@@ -1,4 +1,10 @@
+import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  RegistrationResponseJSON,
+} from '@simplewebauthn/browser'
+
 import { client } from './client'
+import type { PasskeyCredential } from './types'
 
 export interface SubImportClient {
   name: string
@@ -71,6 +77,11 @@ export interface MeProfile {
    *  local password (SSO-only accounts can't enroll). totp_enabled: current state. */
   totp_available?: boolean
   totp_enabled?: boolean
+  /** passkey_available: admin enabled passkeys + account has a local password.
+   *  passkey_enabled: at least one is registered. passkey_credentials: the list. */
+  passkey_available?: boolean
+  passkey_enabled?: boolean
+  passkey_credentials?: PasskeyCredential[]
   emergency_access: {
     enabled: boolean
     available: boolean
@@ -171,4 +182,43 @@ export async function enable2FA(code: string) {
 // disable2FA turns 2FA off, requiring a valid current TOTP or recovery code.
 export async function disable2FA(code: string) {
   await client.post('/user/me/2fa/disable', { code }, { _skipErrorToast: true })
+}
+
+// ---- Passkeys (WebAuthn) self-service ----
+
+export async function beginPasskeyEnroll(): Promise<{
+  session_id: string
+  publicKey: PublicKeyCredentialCreationOptionsJSON
+}> {
+  const { data } = await client.post('/user/me/passkeys/begin', {}, { _skipErrorToast: true })
+  return data
+}
+
+// finishPasskeyEnroll posts the attestation (body) with the session id + chosen
+// name in the query, and returns the updated credential list.
+export async function finishPasskeyEnroll(
+  sessionId: string,
+  name: string,
+  attestation: RegistrationResponseJSON,
+): Promise<PasskeyCredential[]> {
+  const q = `session=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(name)}`
+  const { data } = await client.post<{ passkeys: PasskeyCredential[] }>(
+    `/user/me/passkeys/finish?${q}`,
+    attestation,
+    { _skipErrorToast: true },
+  )
+  return data.passkeys
+}
+
+export async function listPasskeys(): Promise<PasskeyCredential[]> {
+  const { data } = await client.get<{ passkeys: PasskeyCredential[] }>('/user/me/passkeys')
+  return data.passkeys
+}
+
+export async function renamePasskey(id: number, name: string) {
+  await client.patch(`/user/me/passkeys/${id}`, { name }, { _skipErrorToast: true })
+}
+
+export async function deletePasskey(id: number) {
+  await client.delete(`/user/me/passkeys/${id}`, { _skipErrorToast: true })
 }

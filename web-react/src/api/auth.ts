@@ -1,3 +1,8 @@
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from '@simplewebauthn/browser'
+
 import { client } from './client'
 import type {
   AuthLoginResponse,
@@ -49,6 +54,33 @@ export async function refreshTokens(refreshToken: string): Promise<AuthLoginResp
     '/auth/refresh',
     { refresh_token: refreshToken },
     { _skipRefresh: true, _skipErrorToast: true },
+  )
+  return data
+}
+
+// passkeyLoginBegin asks for usernameless (discoverable) login options. The
+// returned session_id must come back to passkeyLoginFinish. Skips the error
+// toast so the login page can localize a failure inline.
+export async function passkeyLoginBegin(): Promise<{
+  session_id: string
+  publicKey: PublicKeyCredentialRequestOptionsJSON
+}> {
+  const { data } = await client.post('/auth/passkey/begin', {}, { _skipErrorToast: true })
+  return data
+}
+
+// passkeyLoginFinish posts the authenticator assertion (as the request body, with
+// the session id in the query) and returns either a full session or a 2FA
+// challenge. _skipRefresh is mandatory: this is a pre-session exchange, so a 401
+// must not trip the shared refresh interceptor.
+export async function passkeyLoginFinish(
+  sessionId: string,
+  assertion: AuthenticationResponseJSON,
+): Promise<AuthLoginResult> {
+  const { data } = await client.post<AuthLoginResult>(
+    `/auth/passkey/finish?session=${encodeURIComponent(sessionId)}`,
+    assertion,
+    { _skipErrorToast: true, _skipRefresh: true },
   )
   return data
 }

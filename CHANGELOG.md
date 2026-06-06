@@ -4,6 +4,23 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.7.0-beta.6 — 2026-06-06
+
+「账号安全」专题第六块（收官功能）：**通行密钥 / Passkey（WebAuthn）**（可配，默认关，仅本地密码账号）。用户在「我的账号」用设备指纹/面容或安全密钥绑定 passkey，绑定后可在登录页**一键免密登录**（无需输入用户名，discoverable/usernameless）。SSO 账号不叠加（交由 IdP）。后端 `go-webauthn` + 前端 `@simplewebauthn/browser`。RP 标识严格由「订阅基础 URL」派生（绝不信任请求 Host，防 RP-ID 投毒）；挑战服务端单次使用；凭据整条 JSON 存库以保证重验/防克隆有效。全程 TDD（仓储/服务各自先红后绿）+ 连线 smoke（设置往返、`/auth/methods` 暴露、profile 字段、begin 端点、**无基础 URL 时硬失败**8 检全过；WebAuthn 浏览器 ceremony 留真机验）。`go test ./...` / `go vet` / `tsc` / `npm build` 全绿。
+
+### Added
+
+- **通行密钥服务 `internal/service/passkey` + 表 `webauthn_credentials`** —— 注册（begin 出 creation options、finish 验 attestation 存凭据）、**无密码 discoverable 登录**（begin 出无 allow-list 的 request options、finish 经 `DiscoverableUserHandler` 据 `credential_id` 反解出用户并验 assertion）、列出/重命名/删除。凭据以**完整 `webauthn.Credential` JSON**落库（库推荐的存储形态，保留 Flags/Authenticator/CloneWarning 使重验与防克隆有效）；`credential_id`（base64url）**全局唯一**（一个 passkey 对一个账号、且作 discoverable 反解键）；`sign_count` 反范式化出来供防回滚门。挑战存内存**单次** session store（`take` 即删、5min TTL、绝不放进 JWT）。RP ID/Origin 由 `SubBaseURL` 派生（裸主机名 + scheme://host），**空则硬失败**不回退 Host。
+- **登录两段式接入 + 自助管理 + 设置** —— `/auth/passkey/{begin,finish}`（共用登录限流；finish 复用密码登录同款 loginResponse + 停用闸 + 非管理员 `DisallowUserLocalLogin` 闸 + 2FA 闸——已开 TOTP 则回 `2fa_required`）；`/user/me/passkeys/{begin,finish,list,rename,delete}`（均 RequireAuth + 用户作用域、绑定要求 `HasLocalPassword` 排除 SSO 账号）；设置「登录安全」加 `passkey_enabled` + `passkey_passwordless` 两开关；`/auth/methods` 暴露 `passkey_passwordless` 驱动登录页按钮；`/user/me` 暴露 `passkey_available/passkey_enabled/passkey_credentials`（凭据只回 id/名称/时间，绝不泄露原始凭据/公钥）。
+- **前端 passkey UI** —— 登录页「使用通行密钥登录」按钮（usernameless，用户取消静默处理）+ auth store `loginPasskey`（复用 `applySession`/`isTwoFAChallenge`，2FA 走同款挑战步）；「我的账号」passkey 管理对话框（列出/添加/重命名/删除，`@simplewebauthn/browser` 跑浏览器 ceremony）；中英 i18n 齐。
+
+### 安全加固（19-agent 对抗审查后）
+
+- **拒绝克隆/重放的认证器（防回滚）** —— `go-webauthn` 对 sign-count 回退**不报错**、而是置 `cred.Authenticator.CloneWarning` 并保留旧计数（且刻意豁免全零计数的平台认证器）。原 `FinishLogin` 既忽略仓储门的 `advanced` 布尔、也没看 `CloneWarning`，致被克隆/重放的认证器仍能登录。现抽 `finalizeAssertion`：**`CloneWarning` 为真即拒登**（`ErrUnauthorized`）——这才是真正的克隆信号（仓储 `sign_count<=` 门因库保留旧计数对主回放案不触发，只作单调写不致登录失败、避免并发登录误杀）。配 TDD（克隆置 `CloneWarning`→拒且不进计数；干净登录→进计数）。
+- （审查 12 项证伪，含「RP 严格取自 SubBaseURL 无 Host 绕过」「凭据→用户绑定正确」「TokenVersion 语义误解」等正向确认。）
+
+> 已知取舍：sign-count 防克隆仅对维护单调计数的认证器有效（多数平台/resident passkey 恒报 0，按 WebAuthn 设计此处本就是 no-op），且需物理克隆前提——属规范定义的纵深防御。
+
 ## v3.7.0-beta.5 — 2026-06-05
 
 「账号安全」专题第五块：**两步验证（2FA / TOTP）**（可配，默认关，仅本地密码账号）。用户在「我的账号」用身份验证器 App（Google Authenticator / 1Password / Authy 等）绑定 TOTP，绑定时一次性下发 10 个恢复码；之后本地登录走「密码 → 两步验证码」两段式。SSO 账号不叠加 2FA（交由 IdP）。全程 TDD（twofa 服务 + 恢复码 CAS 仓储各自先红后绿）+ 真机端到端验（启用→绑定→重登出挑战→TOTP 验过→恢复码验过且单次失效→自助关闭→管理员重置 全链路通，TOTP 用 pquerna/otp 真算码）。`go test ./...` / `go vet` / `tsc` / `npm build` 全绿。

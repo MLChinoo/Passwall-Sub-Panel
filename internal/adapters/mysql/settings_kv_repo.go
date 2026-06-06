@@ -248,6 +248,9 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		intField("security", "registration_default_expire_days", &s.RegistrationDefaultExpireDays),
 		// security --- two-factor auth / TOTP (v3.7.0)
 		boolField("security", "totp_enabled", &s.TOTPEnabled),
+		// security --- passkeys / WebAuthn (v3.7.0)
+		boolField("security", "passkey_enabled", &s.PasskeyEnabled),
+		boolField("security", "passkey_passwordless", &s.PasskeyPasswordless),
 
 		// runtime --- cron / performance / tz / global toggles
 		strField("runtime", "timezone", &s.Timezone),

@@ -486,6 +486,27 @@ type AuthTokenRepo interface {
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
+// WebAuthnCredentialRepo stores registered passkeys (WebAuthn credentials).
+type WebAuthnCredentialRepo interface {
+	// Save persists a newly-registered credential (sets ID/CreatedAt back).
+	Save(ctx context.Context, c *domain.PasskeyCredential) error
+	// FindByUserID lists a user's credentials (profile management, and the
+	// WebAuthnCredentials() the library needs for that user).
+	FindByUserID(ctx context.Context, userID int64) ([]*domain.PasskeyCredential, error)
+	// FindByCredentialID resolves a credential globally by its CredentialID —
+	// the credential→user lookup for usernameless (discoverable) login.
+	FindByCredentialID(ctx context.Context, credentialID string) (*domain.PasskeyCredential, error)
+	// UpdateAfterLogin writes back the post-assertion credential record + sign
+	// count, GATED on the new count not regressing (WHERE sign_count <= newCount):
+	// a decreasing/equal count signals a cloned authenticator, so the gated write
+	// is the anti-clone seam. Returns whether the row advanced.
+	UpdateAfterLogin(ctx context.Context, id int64, credential []byte, newSignCount int64, lastUsed time.Time) (bool, error)
+	// Rename / Delete are user-scoped (WHERE id=? AND user_id=?) so a caller can
+	// only mutate their own credentials.
+	Rename(ctx context.Context, id, userID int64, name string) error
+	Delete(ctx context.Context, id, userID int64) error
+}
+
 type SubLogRepo interface {
 	Insert(ctx context.Context, log *domain.SubLog) error
 	List(ctx context.Context, filter SubLogFilter) (items []*domain.SubLog, total int64, err error)
@@ -808,6 +829,14 @@ type UISettings struct {
 	// if the admin later turns this off (you can't bypass an active factor).
 	TOTPEnabled bool `json:"totp_enabled"`
 
+	// PasskeyEnabled lets local-password accounts register WebAuthn passkeys on
+	// their profile page (a possession factor). PasskeyPasswordless additionally
+	// allows a usernameless passkey to mint a session directly from the login
+	// page (discoverable login); with it off, passkeys only serve as a second
+	// factor. Both default off; SSO-only accounts can't enroll (no local password).
+	PasskeyEnabled      bool `json:"passkey_enabled"`
+	PasskeyPasswordless bool `json:"passkey_passwordless"`
+
 	// ---- IP geolocation (access-log region display, offline .mmdb) ----
 	// Resolution is fully offline against a local .mmdb in <ConfigDir>/geoip/;
 	// no per-IP external calls. GeoIPEnabled gates the whole feature (default
@@ -1113,6 +1142,7 @@ type Repos struct {
 	Audit       AuditRepo
 	AuthEvent   AuthEventRepo
 	AuthToken   AuthTokenRepo
+	WebAuthn    WebAuthnCredentialRepo
 	SubLog      SubLogRepo
 	SyncTask    SyncTaskRepo
 	RuleSet     RuleSetRepo

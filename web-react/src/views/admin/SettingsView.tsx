@@ -544,6 +544,21 @@ export default function SettingsView() {
             <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
               {t('settings.general.totp_hint', { defaultValue: '允许有本地密码的账号在「我的账号」里用身份验证器 App 开启两步验证。关闭仅阻止新开启，不会移除已启用账号的两步验证。SSO 账号不受影响。' })}
             </Typography>
+            <Divider sx={{ my: 0.5, borderColor: md.outlineVariant }} />
+            {/* Passkeys / WebAuthn */}
+            <FormControlLabel label={t('settings.general.passkey_enabled', { defaultValue: '允许通行密钥（Passkey）' })}
+              control={<Switch checked={settings.passkey_enabled}
+                onChange={(_, c) => patch('passkey_enabled', c)} />}
+              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            {settings.passkey_enabled && (
+              <FormControlLabel label={t('settings.general.passkey_passwordless', { defaultValue: '允许通行密钥免密登录（无需用户名）' })}
+                control={<Switch checked={settings.passkey_passwordless}
+                  onChange={(_, c) => patch('passkey_passwordless', c)} />}
+                sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+            )}
+            <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
+              {t('settings.general.passkey_hint', { defaultValue: '允许有本地密码的账号在「我的账号」里绑定通行密钥（WebAuthn）。开启免密登录后，登录页会显示「使用通行密钥登录」按钮、无需输入用户名。需先配置「订阅基础 URL」（用于确定 RP 域名），且站点须为 HTTPS（localhost 除外）。SSO 账号不受影响。' })}
+            </Typography>
           </Section>
 
           <Section title={t('settings.general.section_security')} md={md}>

@@ -28,6 +28,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import KeyIcon from '@mui/icons-material/VpnKey'
 import LockIcon from '@mui/icons-material/Lock'
 import SecurityIcon from '@mui/icons-material/Security'
+import FingerprintIcon from '@mui/icons-material/Fingerprint'
 import RuleIcon from '@mui/icons-material/Rule'
 import EmergencyIcon from '@mui/icons-material/MedicalServices'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
@@ -75,6 +76,7 @@ import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import { copyToClipboard } from '@/utils/clipboard'
 import TwoFactorDialog from './TwoFactorDialog'
+import PasskeyDialog from './PasskeyDialog'
 
 function bytesToHuman(n: number) {
   if (n === 0) return '0'
@@ -255,6 +257,7 @@ export default function MeView() {
   const [pwdConfirm, setPwdConfirm] = useState('')
 
   const [twoFAOpen, setTwoFAOpen] = useState(false)
+  const [passkeyOpen, setPasskeyOpen] = useState(false)
 
   const [rulesOpen, setRulesOpen] = useState(false)
   const [rulesText, setRulesText] = useState('')
@@ -650,7 +653,7 @@ export default function MeView() {
             (local accounts where admin allows it). 个人规则 + 重置凭证 both
             live inside the Sub URL card now — they affect the subscription
             content directly so co-locating makes the consequence obvious. */}
-        {(profile.can_change_password || profile.totp_available || profile.totp_enabled) && (<>
+        {(profile.can_change_password || profile.totp_available || profile.totp_enabled || profile.passkey_available || profile.passkey_enabled) && (<>
           <IconButton onClick={(e: MouseEvent<HTMLElement>) => setMenuAnchor(e.currentTarget)}>
             <MoreVertIcon />
           </IconButton>
@@ -670,6 +673,15 @@ export default function MeView() {
                 <ListItemText
                   primary={t('actions.two_factor')}
                   secondary={profile.totp_enabled ? t('twofa.status_on') : t('twofa.status_off')}
+                />
+              </MenuItem>
+            )}
+            {(profile.passkey_available || profile.passkey_enabled) && (
+              <MenuItem onClick={() => { setMenuAnchor(null); setPasskeyOpen(true) }}>
+                <ListItemIcon><FingerprintIcon fontSize="small" /></ListItemIcon>
+                <ListItemText
+                  primary={t('actions.passkeys')}
+                  secondary={t('passkey.count', { count: profile.passkey_credentials?.length ?? 0 })}
                 />
               </MenuItem>
             )}
@@ -1226,6 +1238,16 @@ export default function MeView() {
         enabled={!!profile.totp_enabled}
         md={md}
         onClose={() => setTwoFAOpen(false)}
+        onChanged={() => { void load() }}
+      />
+
+      {/* Passkey management dialog */}
+      <PasskeyDialog
+        open={passkeyOpen}
+        available={!!profile.passkey_available}
+        credentials={profile.passkey_credentials ?? []}
+        md={md}
+        onClose={() => setPasskeyOpen(false)}
         onChanged={() => { void load() }}
       />
 

@@ -52,7 +52,30 @@
   "actions": {
     "change_password": "Change password",
     "personal_rules": "Personal rules",
-    "two_factor": "Two-factor auth"
+    "two_factor": "Two-factor auth",
+    "passkeys": "Passkeys"
+  },
+  "passkey": {
+    "count": "{{count}} registered",
+    "title": "Passkeys",
+    "intro": "Passkeys let you sign in with your device's fingerprint/face or a security key — no password to remember, and phishing-resistant. Once added, you can sign in from the login page with one tap.",
+    "list_empty": "No passkeys registered yet.",
+    "add": "Add passkey",
+    "name_label": "Name (e.g. \"My phone\")",
+    "default_name": "Passkey",
+    "continue": "Continue",
+    "cancel": "Cancel",
+    "close": "Close",
+    "rename": "Rename",
+    "delete": "Delete",
+    "added_at": "Added {{date}}",
+    "added": "Passkey added",
+    "deleted": "Passkey deleted",
+    "confirm_delete_title": "Delete passkey",
+    "confirm_delete_message": "Delete \"{{name}}\"? That device will no longer be able to sign in with it.",
+    "add_failed": "Could not add the passkey. Please try again.",
+    "rename_failed": "Could not rename. Please try again.",
+    "delete_failed": "Could not delete. Please try again."
   },
   "twofa": {
     "status_on": "Enabled",

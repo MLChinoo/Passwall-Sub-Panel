@@ -124,6 +124,10 @@ type settingsDTO struct {
 	// enrollment panel-wide; it does NOT silently strip 2FA from already-enrolled
 	// accounts (their login challenge still applies until they disable it).
 	TOTPEnabled bool `json:"totp_enabled"`
+	// Passkeys / WebAuthn (v3.7.0). PasskeyEnabled lets local accounts register
+	// passkeys; PasskeyPasswordless additionally allows usernameless passkey login.
+	PasskeyEnabled      bool `json:"passkey_enabled"`
+	PasskeyPasswordless bool `json:"passkey_passwordless"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -236,6 +240,8 @@ func settingsToDTO(s ports.UISettings) settingsDTO {
 		RegistrationDefaultTrafficGB:         s.RegistrationDefaultTrafficGB,
 		RegistrationDefaultExpireDays:        s.RegistrationDefaultExpireDays,
 		TOTPEnabled:                          s.TOTPEnabled,
+		PasskeyEnabled:                       s.PasskeyEnabled,
+		PasskeyPasswordless:                  s.PasskeyPasswordless,
 	}
 }
 
@@ -338,6 +344,8 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		RegistrationDefaultTrafficGB:  req.RegistrationDefaultTrafficGB,
 		RegistrationDefaultExpireDays: req.RegistrationDefaultExpireDays,
 		TOTPEnabled:                   req.TOTPEnabled,
+		PasskeyEnabled:                req.PasskeyEnabled,
+		PasskeyPasswordless:           req.PasskeyPasswordless,
 		// GeoIPUpdateToken / CaptchaSecretKey resolved below ("empty = keep existing").
 	}
 	// Update token is write-only: a blank field on save means the admin didn't
