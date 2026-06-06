@@ -20,6 +20,7 @@ import {
   Menu,
   MenuItem,
   Popover,
+  Stack,
   Switch,
   Tab,
   Tabs,
@@ -568,15 +569,17 @@ export default function SettingsView() {
                 <Typography variant="body2" sx={{ fontWeight: 500 }}>
                   {t('settings.general.twofa_methods_title', { defaultValue: '两步验证的备选方式' })}
                 </Typography>
-                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.5 }}>
+                <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 1 }}>
                   {t('settings.general.twofa_methods_hint', { defaultValue: '验证器代码和一次性备用码始终可用。可额外允许用户在登录挑战时改用：' })}
                 </Typography>
-                <FormControlLabel label={t('settings.general.twofa_allow_passkey', { defaultValue: '通行密钥验证（仅密码登录时可用）' })}
-                  control={<Switch checked={settings.twofa_allow_passkey} onChange={(_, c) => patch('twofa_allow_passkey', c)} />}
-                  sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
-                <FormControlLabel label={t('settings.general.twofa_allow_email', { defaultValue: '邮箱一次性验证码（较弱，需配置 SMTP）' })}
-                  control={<Switch checked={settings.twofa_allow_email} onChange={(_, c) => patch('twofa_allow_email', c)} />}
-                  sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+                <Stack spacing={1}>
+                  <FormControlLabel label={t('settings.general.twofa_allow_passkey', { defaultValue: '通行密钥验证（仅密码登录时可用）' })}
+                    control={<Switch checked={settings.twofa_allow_passkey} onChange={(_, c) => patch('twofa_allow_passkey', c)} />}
+                    sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+                  <FormControlLabel label={t('settings.general.twofa_allow_email', { defaultValue: '邮箱一次性验证码（较弱，需配置 SMTP）' })}
+                    control={<Switch checked={settings.twofa_allow_email} onChange={(_, c) => patch('twofa_allow_email', c)} />}
+                    sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+                </Stack>
               </Box>
             )}
             <Divider sx={{ my: 0.5, borderColor: md.outlineVariant }} />
@@ -594,6 +597,12 @@ export default function SettingsView() {
             <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mt: -1 }}>
               {t('settings.general.passkey_hint', { defaultValue: '允许有本地密码的账号在「我的账号」里绑定通行密钥（WebAuthn）。开启免密登录后，登录页会显示「使用通行密钥登录」按钮、无需输入用户名。需先配置「订阅基础 URL」（用于确定 RP 域名），且站点须为 HTTPS（localhost 除外）。SSO 账号不受影响。' })}
             </Typography>
+            <Box sx={{ mt: 0.5, p: 1.25, borderRadius: 1.5, bgcolor: md.surfaceContainerHighest, display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+              <InfoOutlinedIcon sx={{ fontSize: 18, color: md.onSurfaceVariant, mt: '1px', flexShrink: 0 }} />
+              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
+                {t('settings.general.local_auth_scope_hint', { defaultValue: '两步验证与通行密钥只作用于本地登录；通过 SSO 登录的二次验证由身份提供商（IdP）负责，PSP 不重复施加。同时拥有本地密码与 SSO 绑定的账号，走 SSO 登录时不受此处约束。' })}
+              </Typography>
+            </Box>
           </Section>
 
           <Section title={t('settings.general.section_security')} md={md}>

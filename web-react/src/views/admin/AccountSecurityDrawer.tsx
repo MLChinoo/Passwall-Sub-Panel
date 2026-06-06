@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Chip,
-  Divider,
   Drawer,
   IconButton,
   Stack,
@@ -17,7 +17,9 @@ import ShieldIcon from '@mui/icons-material/GppGood'
 import FingerprintIcon from '@mui/icons-material/Fingerprint'
 import KeyIcon from '@mui/icons-material/VpnKey'
 import LinkOffIcon from '@mui/icons-material/LinkOff'
+import LinkIcon from '@mui/icons-material/Link'
 import EmergencyIcon from '@mui/icons-material/MedicalServices'
+import PasswordIcon from '@mui/icons-material/Password'
 import { useTranslation } from 'react-i18next'
 
 import { regenerateUser2FARecovery } from '@/api/users'
@@ -65,6 +67,7 @@ export default function AccountSecurityDrawer({
   if (!user) return null
   const u = user
   const hasSSO = !!u.sso_provider && u.sso_provider !== 'local'
+  const initial = (u.display_name || u.upn || '?').trim().charAt(0).toUpperCase()
 
   async function copy(text: string) {
     try {
@@ -91,36 +94,41 @@ export default function AccountSecurityDrawer({
 
   return (
     <Drawer anchor="right" open={open} onClose={onClose}
-      PaperProps={{ sx: { width: 460, maxWidth: '92vw', bgcolor: md.surfaceContainerLow, p: 0 } }}>
-      <Box sx={{ p: 2.5, display: 'flex', alignItems: 'center', gap: 1.5, borderBottom: `1px solid ${md.outlineVariant}` }}>
+      PaperProps={{ sx: { width: 480, maxWidth: '94vw', bgcolor: md.surfaceContainerLow, borderTopLeftRadius: 16, borderBottomLeftRadius: 16 } }}>
+      {/* Header */}
+      <Box sx={{ p: 2.5, pb: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
+        <Avatar sx={{ bgcolor: md.primaryContainer, color: md.onPrimaryContainer, width: 44, height: 44, fontWeight: 700 }}>
+          {initial}
+        </Avatar>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle1" fontWeight={700} noWrap>{u.upn}</Typography>
+          <Typography variant="subtitle1" fontWeight={700} noWrap>{u.display_name || u.upn}</Typography>
+          {u.display_name && <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>{u.upn}</Typography>}
           <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
-            <Chip size="small" label={u.role} />
-            {u.totp_enabled && <Chip size="small" color="success" label={t('users.security.twofa_on', { defaultValue: '2FA 已启用' })} />}
-            {hasSSO && <Chip size="small" variant="outlined" label={u.sso_provider} />}
+            <Chip size="small" label={u.role} sx={{ height: 22 }} />
+            {u.totp_enabled && <Chip size="small" color="success" label={t('users.security.twofa_on', { defaultValue: '2FA 已启用' })} sx={{ height: 22 }} />}
+            {hasSSO && <Chip size="small" variant="outlined" icon={<LinkIcon sx={{ fontSize: 14 }} />} label={u.sso_provider} sx={{ height: 22 }} />}
           </Stack>
         </Box>
-        <IconButton onClick={onClose}><CloseIcon /></IconButton>
+        <IconButton onClick={onClose} sx={{ alignSelf: 'flex-start' }}><CloseIcon /></IconButton>
       </Box>
 
-      <Box sx={{ p: 2.5, display: 'flex', flexDirection: 'column', gap: 2.5, overflowY: 'auto' }}>
-        <Typography variant="caption" color="text.secondary">
+      <Box sx={{ px: 2.5, pb: 3, display: 'flex', flexDirection: 'column', gap: 1.5, overflowY: 'auto' }}>
+        <Typography variant="caption" color="text.secondary" sx={{ px: 0.5, mb: 0.5 }}>
           {t('users.security.subtitle', { defaultValue: '管理员可重置 / 吊销 / 重新生成凭据，但无法代用户新增 2FA 或通行密钥（需要用户本人的设备）。' })}
         </Typography>
 
-        <Section title={t('users.security.section_password', { defaultValue: '登录密码' })}>
+        <SectionCard md={md} icon={<PasswordIcon fontSize="small" />}
+          title={t('users.security.section_password', { defaultValue: '登录密码' })}>
           <Button size="small" variant="outlined" startIcon={<LockResetIcon />} onClick={() => onResetPassword(u)}>
             {t('users.more_menu.reset_password', { defaultValue: '重置密码' })}
           </Button>
-        </Section>
+        </SectionCard>
 
-        <Divider />
-
-        <Section title={t('users.security.section_2fa', { defaultValue: '两步验证 (2FA)' })}
+        <SectionCard md={md} icon={<ShieldIcon fontSize="small" />}
+          title={t('users.security.section_2fa', { defaultValue: '两步验证 (2FA)' })}
           status={u.totp_enabled
-            ? t('users.security.twofa_on', { defaultValue: '2FA 已启用' })
-            : t('users.security.twofa_off', { defaultValue: '未启用' })}>
+            ? <Chip size="small" color="success" label={t('users.security.twofa_on', { defaultValue: '2FA 已启用' })} sx={{ height: 22 }} />
+            : <Typography variant="caption" color="text.secondary">{t('users.security.twofa_off', { defaultValue: '未启用' })}</Typography>}>
           {u.totp_enabled ? (
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button size="small" variant="outlined" disabled={busy} onClick={doRegenRecovery}>
@@ -136,7 +144,7 @@ export default function AccountSecurityDrawer({
             </Typography>
           )}
           {recoveryCodes && (
-            <Alert severity="success" sx={{ mt: 1.5 }}
+            <Alert severity="success" sx={{ mt: 1.5, borderRadius: 2 }}
               action={<IconButton size="small" onClick={() => copy(recoveryCodes.join('\n'))}><ContentCopyIcon fontSize="small" /></IconButton>}>
               <Typography variant="caption" sx={{ fontWeight: 700 }}>
                 {t('users.security.regen_recovery_done', { defaultValue: '新备用码（只显示一次，请转交用户）：' })}
@@ -146,52 +154,57 @@ export default function AccountSecurityDrawer({
               </Box>
             </Alert>
           )}
-        </Section>
+        </SectionCard>
 
-        <Divider />
-
-        <Section title={t('users.security.section_passkeys', { defaultValue: '通行密钥' })}>
+        <SectionCard md={md} icon={<FingerprintIcon fontSize="small" />}
+          title={t('users.security.section_passkeys', { defaultValue: '通行密钥' })}>
           <Button size="small" variant="outlined" startIcon={<FingerprintIcon />} onClick={() => onManagePasskeys(u)}>
             {t('users.more_menu.passkeys', { defaultValue: '管理通行密钥' })}
           </Button>
-        </Section>
+        </SectionCard>
 
-        <Divider />
-
-        <Section title={t('users.security.section_credentials', { defaultValue: '订阅凭证' })}>
+        <SectionCard md={md} icon={<KeyIcon fontSize="small" />}
+          title={t('users.security.section_credentials', { defaultValue: '订阅凭证' })}>
           <Button size="small" variant="outlined" color="error" startIcon={<KeyIcon />} onClick={() => onResetCredentials(u)}>
             {t('users.more_menu.reset_credentials')}
           </Button>
-        </Section>
+        </SectionCard>
 
-        <Divider />
-
-        <Section title={t('users.security.section_sso', { defaultValue: 'SSO 绑定' })}
-          status={hasSSO ? (u.sso_provider || '') : t('users.security.sso_none', { defaultValue: '未绑定' })}>
+        <SectionCard md={md} icon={<LinkIcon fontSize="small" />}
+          title={t('users.security.section_sso', { defaultValue: 'SSO 绑定' })}
+          status={<Typography variant="caption" color="text.secondary">
+            {hasSSO ? (u.sso_provider || '') : t('users.security.sso_none', { defaultValue: '未绑定' })}
+          </Typography>}>
           <Button size="small" variant="outlined" color="error" startIcon={<LinkOffIcon />}
             disabled={!hasSSO} onClick={() => onUnlinkSSO(u)}>
             {t('users.more_menu.unlink_sso')}
           </Button>
-        </Section>
+        </SectionCard>
 
-        <Divider />
-
-        <Section title={t('users.security.section_emergency', { defaultValue: '紧急访问' })}>
+        <SectionCard md={md} icon={<EmergencyIcon fontSize="small" />}
+          title={t('users.security.section_emergency', { defaultValue: '紧急访问' })}>
           <Button size="small" variant="outlined" startIcon={<EmergencyIcon />} onClick={() => onResetEmergency(u)}>
             {t('users.more_menu.reset_emergency')}
           </Button>
-        </Section>
+        </SectionCard>
       </Box>
     </Drawer>
   )
 }
 
-function Section({ title, status, children }: { title: string; status?: string; children: React.ReactNode }) {
+function SectionCard({ md, icon, title, status, children }: {
+  md: M3Tokens
+  icon: React.ReactNode
+  title: string
+  status?: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
-    <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2" fontWeight={700}>{title}</Typography>
-        {status && <Typography variant="caption" color="text.secondary">{status}</Typography>}
+    <Box sx={{ bgcolor: md.surfaceContainer, borderRadius: 3, p: 2 }}>
+      <Stack direction="row" alignItems="center" spacing={1.25} sx={{ mb: 1.25 }}>
+        <Box sx={{ color: md.onSurfaceVariant, display: 'flex' }}>{icon}</Box>
+        <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>{title}</Typography>
+        {status}
       </Stack>
       {children}
     </Box>

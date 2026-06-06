@@ -36,7 +36,11 @@ interface LocationState {
   returnTo?: string
 }
 
-export default function LoginView() {
+// forceLocal renders the local-login entry (/login/local): the local form +
+// passkey button only, never auto-redirecting to SSO and never showing SSO
+// buttons. It reuses all of LoginView's machinery (passkey, 2FA challenge,
+// captcha) so the admin break-glass entry stays in sync with the main page.
+export default function LoginView({ forceLocal = false }: { forceLocal?: boolean } = {}) {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['auth', 'common'])
@@ -67,7 +71,7 @@ export default function LoginView() {
   // The verification methods the server accepts for this challenge, and which
   // code-entry method the user currently has selected.
   const [twoFAMethods, setTwoFAMethods] = useState<TwoFAMethod[]>([])
-  const [twoFAMode, setTwoFAMode] = useState<'totp' | 'recovery' | 'email'>('totp')
+  const [twoFAMode, setTwoFAMode] = useState<TwoFAMethod>('totp')
   // Set when the user clicks the SSO button in sso_first / dual mode. We
   // render the same "正在前往 SSO" intermediate as sso_redirect so every
   // SSO entry point (auto-bounce OR explicit click) feels the same.
@@ -94,7 +98,7 @@ export default function LoginView() {
         setMethods(m)
         // "always" mode demands a captcha before the first attempt.
         if (m.captcha_enabled && m.captcha_required) setShowCaptcha(true)
-        if (m.login_mode === 'sso_redirect' && m.sso) {
+        if (!forceLocal && m.login_mode === 'sso_redirect' && m.sso) {
           // Show the redirect-pending screen (rendered when methods is set
           // and login_mode === sso_redirect). 3s gives the user enough time
           // to register what's happening and read the message before the
@@ -206,9 +210,11 @@ export default function LoginView() {
     setPassword('')
   }
 
-  // Switch the code-entry method (totp ⇄ recovery). Email needs a send first.
-  function switchTwoFAMode(mode: 'totp' | 'recovery') {
-    setTwoFAMode(mode)
+  // selectMethod is the 2FA method picker: email needs a code sent first; passkey
+  // just switches to its button; totp/recovery switch the code field.
+  function selectMethod(m: TwoFAMethod) {
+    if (m === 'email') { void onUseEmail(); return }
+    setTwoFAMode(m)
     setTwoFACode('')
     setTwoFAError('')
   }
@@ -290,14 +296,15 @@ export default function LoginView() {
     setTimeout(() => { window.location.href = url }, 3000)
   }
 
-  const localEnabled = methods?.local !== false  // default to true if probe failed
-  const samlEnabled = !!methods?.saml
-  const oidcEnabled = !!methods?.oidc
+  // forceLocal (the /login/local entry) forces the local form on and hides SSO.
+  const localEnabled = forceLocal || methods?.local !== false  // default to true if probe failed
+  const samlEnabled = !forceLocal && !!methods?.saml
+  const oidcEnabled = !forceLocal && !!methods?.oidc
   // sso_first: SSO buttons render BEFORE the local form so admins who picked
   // this mode get the prominent placement they wanted. dual / local_only
   // keep the original local-form-first layout.
-  const ssoFirst = methods?.login_mode === 'sso_first'
-  const isRedirecting = (methods?.login_mode === 'sso_redirect' && methods?.sso) || manualSsoRedirect
+  const ssoFirst = !forceLocal && methods?.login_mode === 'sso_first'
+  const isRedirecting = !forceLocal && ((methods?.login_mode === 'sso_redirect' && methods?.sso) || manualSsoRedirect)
 
   if (probing) {
     return (
@@ -369,61 +376,76 @@ export default function LoginView() {
     </Box>
   )
 
-  // Per-method copy for the code field. Passkey has no code field (it's an
-  // immediate ceremony), so it's only an alternative-method button.
-  const twoFAModeUI = {
+  // 2FA verification methods are equal choices, not "TOTP with fallbacks": the
+  // user picks one. Ordered TOTP → passkey → email → recovery, filtered to what
+  // the server allows for this challenge.
+  const methodLabel: Record<TwoFAMethod, string> = {
+    totp: t('auth:twofa_m_totp'),
+    passkey: t('auth:twofa_m_passkey'),
+    email: t('auth:twofa_m_email'),
+    recovery: t('auth:twofa_m_recovery'),
+  }
+  const methodOrder = (['totp', 'passkey', 'email', 'recovery'] as TwoFAMethod[]).filter(m => twoFAMethods.includes(m))
+  // Code-field copy (passkey has no code field, so reuse totp's shape for typing).
+  const codeUI = {
     totp: { prompt: t('auth:twofa_prompt'), label: t('auth:twofa_code'), placeholder: '123456' },
     recovery: { prompt: t('auth:twofa_recovery_prompt'), label: t('auth:twofa_recovery_label'), placeholder: 'XXXXX-XXXXX' },
     email: { prompt: t('auth:twofa_email_prompt'), label: t('auth:twofa_email_label'), placeholder: '123456' },
-  }[twoFAMode]
-
-  // Alternative-method buttons, excluding whatever is currently active.
-  const altButtons: React.ReactNode[] = []
-  if (twoFAMode !== 'totp') {
-    altButtons.push(<Button key="totp" size="small" onClick={() => switchTwoFAMode('totp')} disabled={busy}>{t('auth:twofa_use_totp')}</Button>)
-  }
-  if (twoFAMethods.includes('recovery') && twoFAMode !== 'recovery') {
-    altButtons.push(<Button key="recovery" size="small" onClick={() => switchTwoFAMode('recovery')} disabled={busy}>{t('auth:twofa_use_recovery')}</Button>)
-  }
-  if (twoFAMethods.includes('email') && twoFAMode !== 'email') {
-    altButtons.push(<Button key="email" size="small" onClick={onUseEmail} disabled={busy}>{t('auth:twofa_use_email')}</Button>)
-  }
-  if (twoFAMethods.includes('passkey')) {
-    altButtons.push(<Button key="passkey" size="small" startIcon={<FingerprintIcon />} onClick={onUsePasskey2FA} disabled={busy}>{t('auth:twofa_use_passkey')}</Button>)
-  }
+  }[twoFAMode === 'passkey' ? 'totp' : twoFAMode]
 
   const twoFAFormBlock = (
-    <Box component="form" onSubmit={submit2FA} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <Typography variant="body2" sx={{ color: md.onSurfaceVariant }}>
-        {twoFAModeUI.prompt}
-      </Typography>
-      <TextField
-        label={twoFAModeUI.label}
-        value={twoFACode}
-        onChange={e => setTwoFACode(e.target.value)}
-        autoFocus
-        fullWidth
-        autoComplete="one-time-code"
-        inputProps={{ inputMode: 'text', autoCapitalize: 'characters' }}
-        placeholder={twoFAModeUI.placeholder}
-      />
-      {twoFAError && <Alert severity="error" sx={{ py: 0 }}>{twoFAError}</Alert>}
-      <Button type="submit" variant="contained" fullWidth size="large"
-        disabled={busy}
-        startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}
-        sx={{ mt: 1 }}>
-        {t('auth:twofa_submit')}
-      </Button>
-      {altButtons.length > 0 && (
-        <Box sx={{ mt: 0.5 }}>
-          <Typography variant="caption" sx={{ color: md.onSurfaceVariant, display: 'block', textAlign: 'center', mb: 0.5 }}>
-            {t('auth:twofa_use_another')}
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {methodOrder.length > 1 && (
+        <Box>
+          <Typography variant="caption" sx={{ color: md.onSurfaceVariant, display: 'block', mb: 0.75 }}>
+            {t('auth:twofa_choose_method')}
           </Typography>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, justifyContent: 'center' }}>
-            {altButtons}
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+            {methodOrder.map(m => (
+              <Button key={m} size="small"
+                variant={twoFAMode === m ? 'contained' : 'outlined'}
+                startIcon={m === 'passkey' ? <FingerprintIcon /> : undefined}
+                onClick={() => selectMethod(m)} disabled={busy}>
+                {methodLabel[m]}
+              </Button>
+            ))}
           </Box>
         </Box>
       )}
+
+      {twoFAMode === 'passkey' ? (
+        <>
+          <Typography variant="body2" sx={{ color: md.onSurfaceVariant }}>
+            {t('auth:twofa_passkey_prompt')}
+          </Typography>
+          {twoFAError && <Alert severity="error" sx={{ py: 0 }}>{twoFAError}</Alert>}
+          <Button variant="contained" fullWidth size="large" disabled={busy}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <FingerprintIcon />}
+            onClick={onUsePasskey2FA}>
+            {t('auth:twofa_use_passkey')}
+          </Button>
+        </>
+      ) : (
+        <Box component="form" onSubmit={submit2FA} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <Typography variant="body2" sx={{ color: md.onSurfaceVariant }}>{codeUI.prompt}</Typography>
+          <TextField
+            label={codeUI.label}
+            value={twoFACode}
+            onChange={e => setTwoFACode(e.target.value)}
+            autoFocus
+            fullWidth
+            autoComplete="one-time-code"
+            inputProps={{ inputMode: 'text', autoCapitalize: 'characters' }}
+            placeholder={codeUI.placeholder}
+          />
+          {twoFAError && <Alert severity="error" sx={{ py: 0 }}>{twoFAError}</Alert>}
+          <Button type="submit" variant="contained" fullWidth size="large" disabled={busy}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}>
+            {t('auth:twofa_submit')}
+          </Button>
+        </Box>
+      )}
+
       <Button variant="text" fullWidth size="small" onClick={cancel2FA} disabled={busy}>
         {t('auth:twofa_back')}
       </Button>
@@ -492,7 +514,7 @@ export default function LoginView() {
             <Typography variant="h5" sx={{ fontWeight: 500, color: md.onSurface, mt: 1.5 }}>
               {site.appTitle || site.siteTitle}
             </Typography>
-            <Typography variant="body2" sx={{ mt: 0.5 }}>{t('auth:subtitle')}</Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>{t(forceLocal ? 'auth:local_only_subtitle' : 'auth:subtitle')}</Typography>
           </Box>
 
           {twoFAPending ? (

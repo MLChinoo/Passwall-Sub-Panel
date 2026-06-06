@@ -6,7 +6,6 @@ import { homeForRole } from './home'
 import { useAuthStore } from '@/stores/auth'
 
 const LoginView = lazy(() => import('@/views/LoginView'))
-const LoginLocalView = lazy(() => import('@/views/LoginLocalView'))
 const SsoCallbackView = lazy(() => import('@/views/SsoCallbackView'))
 const SsoNoAccountView = lazy(() => import('@/views/SsoNoAccountView'))
 const SsoErrorView = lazy(() => import('@/views/SsoErrorView'))
@@ -64,7 +63,7 @@ export const router = createBrowserRouter([
         element: <RootRedirect />,
       },
   { path: '/login', element: <LoginView /> },
-  { path: '/login/local', element: <LoginLocalView /> },
+  { path: '/login/local', element: <LoginView forceLocal /> },
   { path: '/sso-callback', element: <SsoCallbackView /> },
   { path: '/sso-no-account', element: <SsoNoAccountView /> },
   { path: '/sso-error', element: <SsoErrorView /> },

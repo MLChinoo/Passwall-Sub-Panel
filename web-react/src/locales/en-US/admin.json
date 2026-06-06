@@ -115,6 +115,7 @@
       "twofa_methods_hint": "Authenticator codes and one-time recovery codes are always available. You can additionally let users switch at the login challenge to:",
       "twofa_allow_passkey": "Passkey verification (only after a password login)",
       "twofa_allow_email": "Email one-time code (weaker; requires SMTP)",
+      "local_auth_scope_hint": "Two-factor auth and passkeys apply to LOCAL login only. MFA for SSO sign-ins is the identity provider's (IdP's) responsibility — PSP doesn't add its own. An account that has both a local password and an SSO binding is not subject to these when it signs in via SSO.",
       "passkey_enabled": "Allow passkeys (WebAuthn)",
       "passkey_passwordless": "Allow usernameless passkey login (no username)",
       "passkey_hint": "Lets accounts with a local password register passkeys (WebAuthn) from My Account. With usernameless login on, the login page shows a \"Sign in with a passkey\" button that needs no username. Requires the subscription base URL to be set (it determines the RP domain) and an HTTPS site (localhost excepted). SSO accounts are unaffected.",

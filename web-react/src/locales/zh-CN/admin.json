@@ -118,6 +118,7 @@
       "passkey_enabled": "允许通行密钥（Passkey）",
       "passkey_passwordless": "允许通行密钥免密登录（无需用户名）",
       "passkey_hint": "允许有本地密码的账号在「我的账号」里绑定通行密钥（WebAuthn）。开启免密登录后，登录页会显示「使用通行密钥登录」按钮、无需输入用户名。需先配置「订阅基础 URL」（用于确定 RP 域名），且站点须为 HTTPS（localhost 除外）。SSO 账号不受影响。",
+      "local_auth_scope_hint": "两步验证与通行密钥只作用于本地登录；通过 SSO 登录的二次验证由身份提供商（IdP）负责，PSP 不重复施加。同时拥有本地密码与 SSO 绑定的账号，走 SSO 登录时不受此处约束。",
       "login_mode": "登录模式",
       "login_mode_dual": "本地 + SSO（默认）",
       "login_mode_sso_first": "SSO 优先",
