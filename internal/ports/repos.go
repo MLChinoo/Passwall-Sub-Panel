@@ -880,6 +880,10 @@ type UISettings struct {
 	// an opt-in weaker fallback (default off): a one-time code by email — whoever
 	// holds the password+inbox passes — rate-limited, single-use, short TTL.
 	TwoFAAllowEmail bool `json:"twofa_allow_email"`
+	// TwoFAEmailResendCooldownSec throttles how often a login email code may be
+	// re-sent to one account (anti mail-bombing + drives the login page's resend
+	// countdown). 0 → defaulted to 60s.
+	TwoFAEmailResendCooldownSec int `json:"twofa_email_resend_cooldown_sec"`
 
 	// Require2FAForStaff forces every admin/operator account (with a local
 	// password) to enroll a second factor before using the panel — a panel-wide

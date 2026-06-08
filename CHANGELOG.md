@@ -4,6 +4,19 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.7.0-beta.21 — 2026-06-07
+
+登录 2FA「邮箱验证码」防刷（可见冷却 + 管理员可配）+ 安全设置 UI 细节。`go test ./...` / `go vet` / `tsc` / `npm build` / 二进制全绿。
+
+### Added
+
+- **邮箱验证码重发冷却——可见 + 管理员可配** —— 登录 2FA 选「邮箱验证码」后，发送 / 重新发送按钮进入**倒计时禁用**（「重新发送（Ns）」），不能再连点狂发；再次点「邮箱验证码」方式按钮只切到输入框、不重发。冷却秒数新增管理员设置 `twofa_email_resend_cooldown_sec`（默认 60；「安全」设置 → Email 方式下可填），登录页倒计时与后端节流取同一值（经 `/methods` 下发）。修正 beta.18 的后端**静默**冷却（no-op 但返回成功、UI 无体现 → 看着仍能一直发）。
+
+### Changed
+
+- **Email 按钮加图标** —— 登录 2FA 的方式选择器 / 发送 / 重新发送统一加 MailOutline 图标。
+- **「安全」设置 passkey 两个开关重排** —— 改成与其它方式一致的「开关 → 说明」结构；「免密登录」子项移到说明下方并加左边框缩进，明确为子选项（修复「两个开关看着很奇怪」）。
+
 ## v3.7.0-beta.20 — 2026-06-07
 
 修复「开启验证器（TOTP）时输错验证码被直接登出」的 bug + 管理端「安全」设置 2FA 区间距放松。`tsc` / `npm build` / 二进制全绿；2 维度子代理对抗 review（拦截器回归 + 5 条 2FA 流端到端）零 findings。

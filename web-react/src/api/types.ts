@@ -290,6 +290,9 @@ export interface AuthMethods {
   // enrollment as a second factor from the profile page.
   passkey_enabled?: boolean
   passkey_passwordless?: boolean
+  /** Per-account email-code resend cooldown (seconds); drives the login page's
+   *  resend countdown so it matches the server-side throttle. */
+  twofa_email_resend_cooldown_sec?: number
 }
 
 // PasskeyCredential is the sanitized view of a registered passkey shown in the

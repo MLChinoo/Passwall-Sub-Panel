@@ -116,6 +116,7 @@
       "twofa_allow_email": "Email one-time code (weaker; requires SMTP)",
       "twofa_allow_email_hint": "A peer login-challenge method, available once the account has another factor (TOTP / passkey) enrolled. It's weaker — whoever has the password and inbox gets in — so it's off by default.",
       "twofa_policy_subheading": "Enrollment policy",
+      "twofa_email_cooldown": "Code resend cooldown (sec)",
       "require_2fa_for_staff": "Require two-factor for all admins/operators",
       "require_2fa_for_staff_hint": "When on, an admin/operator without TOTP or a passkey is required to finish setup right after login before using the panel. You can also require it per group (Groups) or per user (Account Security). Local accounts only.",
       "local_auth_scope_hint": "Two-factor auth and passkeys apply to LOCAL login only. MFA for SSO sign-ins is the identity provider's (IdP's) responsibility — PSP doesn't add its own. An account that has both a local password and an SSO binding is not subject to these when it signs in via SSO.",

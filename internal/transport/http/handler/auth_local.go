@@ -122,6 +122,9 @@ func (h *AuthLocalHandler) Methods(c *gin.Context) {
 		// login). passkey_enabled alone only allows enrollment as a 2nd factor.
 		"passkey_enabled":      s.PasskeyEnabled,
 		"passkey_passwordless": s.PasskeyEnabled && s.PasskeyPasswordless,
+		// Drives the login page's "resend email code" countdown so it matches the
+		// server-side per-account cooldown.
+		"twofa_email_resend_cooldown_sec": s.TwoFAEmailResendCooldownSec,
 	})
 }
 

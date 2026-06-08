@@ -227,6 +227,8 @@ export interface UISettings {
    *  TOTP, recovery codes, and an enrolled passkey are always available — a
    *  passkey is itself a second factor, so there is no separate allow toggle. */
   twofa_allow_email: boolean
+  /** Per-account cooldown (seconds) between email-code resends. 0 = default 60. */
+  twofa_email_resend_cooldown_sec: number
   /** Force every admin/operator (local-password) account to enroll a second
    *  factor before using the panel. */
   require_2fa_for_staff: boolean

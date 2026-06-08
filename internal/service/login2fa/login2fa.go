@@ -26,12 +26,13 @@ import (
 
 const defaultCodeTTL = 10 * time.Minute
 
-// resendCooldown throttles how often a fresh code may be emailed to one account.
-// The send is already password-gated (a valid pending token), but without a
-// per-account cooldown a holder could trigger repeated mails to the victim's
-// inbox; a short window also avoids accidental double-sends. The outstanding code
-// stays valid through the cooldown, so suppressing a re-send is harmless.
-const resendCooldown = 60 * time.Second
+// defaultResendCooldown is the fallback when the admin hasn't set
+// TwoFAEmailResendCooldownSec. The send is already password-gated (a valid
+// pending token), but without a per-account cooldown a holder could trigger
+// repeated mails to the victim's inbox; a window also avoids accidental
+// double-sends. The outstanding code stays valid through it, so suppressing a
+// re-send is harmless.
+const defaultResendCooldown = 60 * time.Second
 
 // Sender delivers the one-time login code email.
 type Sender interface {
@@ -101,12 +102,17 @@ func (s *Service) SendCode(ctx context.Context, u *domain.User) error {
 	if to == "" {
 		return fmt.Errorf("%w: no email address on file", domain.ErrValidation)
 	}
-	// Per-account resend cooldown: a recent code is still valid, so suppress a
-	// rapid re-send (anti email-bombing). Recorded at the gate so a burst of
-	// concurrent requests can't all slip through before the first send lands.
+	// Per-account resend cooldown (admin-configurable; falls back to the default):
+	// a recent code is still valid, so suppress a rapid re-send (anti email-
+	// bombing). Recorded at the gate so a burst of concurrent requests can't all
+	// slip through before the first send lands.
+	cd := time.Duration(set.TwoFAEmailResendCooldownSec) * time.Second
+	if cd <= 0 {
+		cd = defaultResendCooldown
+	}
 	now := s.now()
 	s.mu.Lock()
-	if last, ok := s.lastSent[u.ID]; ok && now.Sub(last) < resendCooldown {
+	if last, ok := s.lastSent[u.ID]; ok && now.Sub(last) < cd {
 		s.mu.Unlock()
 		return nil
 	}

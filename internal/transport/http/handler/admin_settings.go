@@ -133,8 +133,9 @@ type settingsDTO struct {
 	// Email-OTP as an opt-in weaker 2FA fallback at the login challenge (v3.7.0),
 	// on top of the factors the account already has (TOTP / passkey / recovery).
 	// Default off.
-	TwoFAAllowEmail    bool `json:"twofa_allow_email"`
-	Require2FAForStaff bool `json:"require_2fa_for_staff"`
+	TwoFAAllowEmail             bool `json:"twofa_allow_email"`
+	TwoFAEmailResendCooldownSec int  `json:"twofa_email_resend_cooldown_sec"`
+	Require2FAForStaff          bool `json:"require_2fa_for_staff"`
 }
 
 func (h *AdminSettingsHandler) defaults() ports.UISettings {
@@ -250,6 +251,7 @@ func settingsToDTO(s ports.UISettings) settingsDTO {
 		PasskeyEnabled:                       s.PasskeyEnabled,
 		PasskeyPasswordless:                  s.PasskeyPasswordless,
 		TwoFAAllowEmail:                      s.TwoFAAllowEmail,
+		TwoFAEmailResendCooldownSec:          s.TwoFAEmailResendCooldownSec,
 		Require2FAForStaff:                   s.Require2FAForStaff,
 	}
 }
@@ -356,6 +358,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		PasskeyEnabled:                req.PasskeyEnabled,
 		PasskeyPasswordless:           req.PasskeyPasswordless,
 		TwoFAAllowEmail:               req.TwoFAAllowEmail,
+		TwoFAEmailResendCooldownSec:   req.TwoFAEmailResendCooldownSec,
 		Require2FAForStaff:            req.Require2FAForStaff,
 		// GeoIPUpdateToken / CaptchaSecretKey resolved below ("empty = keep existing").
 	}

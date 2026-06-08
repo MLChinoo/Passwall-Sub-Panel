@@ -14,6 +14,7 @@ import {
 import LoginIcon from '@mui/icons-material/Login'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import FingerprintIcon from '@mui/icons-material/Fingerprint'
+import MailOutlineIcon from '@mui/icons-material/MailOutline'
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { AxiosError } from 'axios'
@@ -107,6 +108,16 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
   // Email is the one method that needs a code dispatched first — track whether
   // we've sent one so the email view shows "send code" vs the code input.
   const [emailSent, setEmailSent] = useState(false)
+  // Email-code resend cooldown: seconds remaining before a resend is allowed.
+  // Mirrors the server-side per-account throttle; the duration comes from the
+  // /methods config (twofa_email_resend_cooldown_sec) so admins can tune it. This
+  // is what stops "可以一直发" — the button is disabled with a live countdown.
+  const [emailCd, setEmailCd] = useState(0)
+  useEffect(() => {
+    if (emailCd <= 0) return
+    const id = setTimeout(() => setEmailCd(s => s - 1), 1000)
+    return () => clearTimeout(id)
+  }, [emailCd])
   // Set when the user clicks the SSO button in sso_first / dual mode. We
   // render the same "正在前往 SSO" intermediate as sso_redirect so every
   // SSO entry point (auto-bounce OR explicit click) feels the same.
@@ -249,6 +260,7 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
     setTwoFAMode('totp')
     setShowMethodPicker(false)
     setEmailSent(false)
+    setEmailCd(0)
     setPassword('')
   }
 
@@ -257,7 +269,14 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
   // the chooser back down after a pick.
   function selectMethod(m: TwoFAMethod) {
     setShowMethodPicker(false)
-    if (m === 'email') { void onUseEmail(); return }
+    if (m === 'email') {
+      // Switch to the email step; only auto-send the FIRST time. Re-selecting
+      // email later just shows the code input (resend is the explicit button,
+      // gated by the cooldown) — so picking the method can't re-spam mail.
+      setTwoFAMode('email')
+      if (!emailSent) void onUseEmail()
+      return
+    }
     setTwoFAMode(m)
     setTwoFACode('')
     setTwoFAError('')
@@ -266,7 +285,7 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
   // onUseEmail switches to the email step and requests a one-time code. Sets
   // emailSent so the view flips from "send code" to the code input.
   async function onUseEmail() {
-    if (!twoFAPending) return
+    if (!twoFAPending || emailCd > 0) return
     setTwoFAMode('email')
     setTwoFACode('')
     setTwoFAError('')
@@ -274,6 +293,7 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
     try {
       await send2FAEmail(twoFAPending)
       setEmailSent(true)
+      setEmailCd(methods?.twofa_email_resend_cooldown_sec || 60)
       pushSnack(t('auth:twofa_email_sent'), 'success')
     } catch {
       setTwoFAError(t('auth:twofa_email_failed'))
@@ -466,10 +486,12 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
             {t('auth:twofa_email_prompt')}
           </Typography>
           {twoFAError && <Alert severity="error" sx={{ py: 0 }}>{twoFAError}</Alert>}
-          <Button variant="contained" fullWidth size="large" disabled={busy}
-            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
+          <Button variant="contained" fullWidth size="large" disabled={busy || emailCd > 0}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <MailOutlineIcon />}
             onClick={() => void onUseEmail()}>
-            {t('auth:twofa_email_send', { defaultValue: '发送验证码' })}
+            {emailCd > 0
+              ? t('auth:twofa_email_resend_wait', { sec: emailCd, defaultValue: '重新发送（{{sec}}s）' })
+              : t('auth:twofa_email_send', { defaultValue: '发送验证码' })}
           </Button>
         </>
       ) : (
@@ -490,6 +512,15 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
             startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <LoginIcon />}>
             {t('auth:twofa_submit')}
           </Button>
+          {twoFAMode === 'email' && (
+            <Button variant="text" size="small" fullWidth disabled={busy || emailCd > 0}
+              startIcon={<MailOutlineIcon fontSize="small" />}
+              onClick={() => void onUseEmail()}>
+              {emailCd > 0
+                ? t('auth:twofa_email_resend_wait', { sec: emailCd, defaultValue: '重新发送（{{sec}}s）' })
+                : t('auth:twofa_email_resend', { defaultValue: '重新发送验证码' })}
+            </Button>
+          )}
         </Box>
       )}
 
@@ -505,7 +536,7 @@ export default function LoginView({ forceLocal = false }: { forceLocal?: boolean
               {methodOrder.map(m => (
                 <Button key={m} size="small"
                   variant={twoFAMode === m ? 'contained' : 'outlined'}
-                  startIcon={m === 'passkey' ? <FingerprintIcon /> : undefined}
+                  startIcon={m === 'passkey' ? <FingerprintIcon /> : m === 'email' ? <MailOutlineIcon /> : undefined}
                   onClick={() => selectMethod(m)} disabled={busy}>
                   {methodLabel[m]}
                 </Button>

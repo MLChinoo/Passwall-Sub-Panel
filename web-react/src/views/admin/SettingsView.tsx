@@ -583,21 +583,25 @@ export default function SettingsView() {
                 </Typography>
               </Box>
 
-              {/* Method: Passkey (WebAuthn) */}
+              {/* Method: Passkey (WebAuthn). Same [toggle] -> [hint] shape as the
+                  other methods; the passwordless refinement is a clearly-nested
+                  sub-toggle AFTER the hint (only shown once passkeys are on). */}
               <Box>
                 <FormControlLabel label={t('settings.general.passkey_enabled', { defaultValue: '允许通行密钥（Passkey）' })}
                   control={<Switch checked={settings.passkey_enabled}
                     onChange={(_, c) => patch('passkey_enabled', c)} />}
                   sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
-                {settings.passkey_enabled && (
-                  <FormControlLabel label={t('settings.general.passkey_passwordless', { defaultValue: '允许通行密钥免密登录（无需用户名）' })}
-                    control={<Switch checked={settings.passkey_passwordless}
-                      onChange={(_, c) => patch('passkey_passwordless', c)} />}
-                    sx={{ ml: 3, mt: 0.5, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
-                )}
                 <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, ml: 0.25, mt: 0.5 }}>
                   {t('settings.general.passkey_hint', { defaultValue: '允许有本地密码的账号在「我的账号」里绑定通行密钥（WebAuthn）。开启免密登录后，登录页会显示「使用通行密钥登录」按钮、无需输入用户名。需先配置「订阅基础 URL」（用于确定 RP 域名），且站点须为 HTTPS（localhost 除外）。SSO 账号不受影响。' })}
                 </Typography>
+                {settings.passkey_enabled && (
+                  <Box sx={{ ml: 3, mt: 1, pl: 1.5, borderLeft: `2px solid ${md.outlineVariant}` }}>
+                    <FormControlLabel label={t('settings.general.passkey_passwordless', { defaultValue: '允许通行密钥免密登录（无需用户名）' })}
+                      control={<Switch checked={settings.passkey_passwordless}
+                        onChange={(_, c) => patch('passkey_passwordless', c)} />}
+                      sx={{ ml: 0, display: 'flex', '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
+                  </Box>
+                )}
               </Box>
 
               {/* Method: Email one-time code — a weaker challenge-time fallback,
@@ -610,6 +614,13 @@ export default function SettingsView() {
                   <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, ml: 0.25, mt: 0.5 }}>
                     {t('settings.general.twofa_allow_email_hint', { defaultValue: '作为登录挑战时的备选验证方式（账号需已启用上面任一方式）。它较弱——掌握密码 + 邮箱即可通过，故默认关闭。' })}
                   </Typography>
+                  {settings.twofa_allow_email && (
+                    <Box sx={{ mt: 1, maxWidth: 280 }}>
+                      <NumField label={t('settings.general.twofa_email_cooldown', { defaultValue: '验证码重发冷却（秒）' })}
+                        value={settings.twofa_email_resend_cooldown_sec}
+                        onChange={v => patch('twofa_email_resend_cooldown_sec', v)} />
+                    </Box>
+                  )}
                 </Box>
               )}
             </Stack>
