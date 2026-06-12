@@ -787,6 +787,11 @@ func (h *AdminUserHandler) toDTOWith(u *domain.User, st ports.UISettings, loc *t
 	if loc == nil {
 		loc = time.Local
 	}
+	// Cosmetic admin-view field, deliberately the GLOBAL quota: toDTOWith is the
+	// pure no-I/O mapping the List loop reuses with one shared settings load, so
+	// resolving a per-user (group-scoped) quota here would mean a per-row Load.
+	// Enforcement (user.emergencyFloor / /sub / the traffic-poll teardown) already
+	// honors the per-group quota; this display can lag without functional impact.
 	quotaBytes := int64(st.EmergencyAccessQuotaGB * 1024 * 1024 * 1024)
 	var expireDate string
 	if u.ExpireAt != nil {

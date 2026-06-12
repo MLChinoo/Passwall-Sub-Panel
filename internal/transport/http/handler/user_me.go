@@ -93,7 +93,7 @@ func (h *UserMeHandler) Profile(c *gin.Context) {
 		// sub_update_interval_hours surfaces the admin-configured value so
 		// import-URL templates can embed it (CMfA reads `update-interval`
 		// from the intent URI in minutes; the frontend converts on render).
-		"sub_update_interval_hours": settings.SubUpdateIntervalHours,
+		"sub_update_interval_hours": suEff.SubUpdateIntervalHours, // group-scoped (matches the rendered sub)
 		"sub_import_clients":        enabledImportApps(settings.SubClients),
 		"sub_import_tutorial_url":   settings.SubImportTutorialURL,
 		"quick_links":               enabledQuickLinks(settings.QuickLinks),

@@ -246,7 +246,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	syncSvc := syncsvc.New(pool, repos.Ownership)
 	userSvc := user.New(repos.User, repos.Group, repos.Ownership, repos.SyncTask, groupSvc, syncSvc, pool, repos.ScopedSettings)
 	nodeSvc := node.New(repos.Node, repos.Separator, pool, syncSvc, repos.SyncTask, repos.Group, repos.User, syncSvc, repos.Settings)
-	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, repos.Node, repos.NodeTraffic, pool, userSvc).WithSettings(repos.Settings)
+	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, repos.Node, repos.NodeTraffic, pool, userSvc).WithSettings(repos.ScopedSettings)
 	// Wire the two-way dependency for the traffic-floor safety net: user
 	// needs traffic to compute current-period usage; traffic needs user to
 	// push the resulting floor into 3X-UI after each poll. Both fields are

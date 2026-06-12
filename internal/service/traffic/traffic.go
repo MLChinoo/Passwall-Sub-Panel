@@ -54,10 +54,13 @@ type Service struct {
 	nodeTraffic ports.NodeTrafficRepo
 	pool        ports.XUIPool
 	disabler    UserDisabler
-	// settings is optional — only used to look up EmergencyAccessQuotaGB so the
-	// poll can end an emergency window early when the per-window cap is hit.
-	// Nil-tolerant: when absent, emergency access is uncapped (legacy behavior).
-	settings ports.SettingsRepo
+	// settings is optional — used for the bulk per-cycle config Load AND, for an
+	// active-emergency user, a per-user LoadForUser so the poll ends the window at
+	// THIS user's effective EmergencyAccessQuotaGB (global ⊕ group override). That
+	// keeps the poll teardown in lockstep with user.emergencyFloor / the /sub gate,
+	// which both resolve the same per-group quota. Nil-tolerant: when absent,
+	// emergency access is uncapped (legacy behavior).
+	settings ports.ScopedSettings
 	// configPusher is wired lazily (user.Service is the implementor and
 	// is created before traffic.Service). nil = skip floor refresh on poll.
 	configPusher UserConfigPusher
@@ -190,7 +193,7 @@ func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.Traf
 // emergency-access traffic quota. Optional — leaving it nil preserves the
 // previous "uncapped emergency window" behavior. Returns the service for
 // chaining at construction sites.
-func (s *Service) WithSettings(settings ports.SettingsRepo) *Service {
+func (s *Service) WithSettings(settings ports.ScopedSettings) *Service {
 	s.settings = settings
 	return s
 }
@@ -1088,8 +1091,19 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 	// check below will then auto-disable them (they're still over their period
 	// limit, which is why they were granted emergency access in the first
 	// place).
-	if emergencyActive && cfg.EmergencyAccessQuotaGB > 0 {
-		quotaBytes := int64(cfg.EmergencyAccessQuotaGB * 1024 * 1024 * 1024)
+	// Resolve THIS user's effective quota (global ⊕ group override). Gating on the
+	// per-user value, not cfg's global one, is what lets a group set a quota where
+	// the global is 0 (uncapped) — or vice-versa — without the poll silently using
+	// the wrong cap. Only active-emergency users (a tiny subset) pay the lookup,
+	// and the override set is cached, so it's a near-free merge.
+	effQuotaGB := cfg.EmergencyAccessQuotaGB
+	if emergencyActive && s.settings != nil {
+		if eff, err := s.settings.LoadForUser(ctx, u, ports.UISettings{}); err == nil {
+			effQuotaGB = eff.EmergencyAccessQuotaGB
+		}
+	}
+	if emergencyActive && effQuotaGB > 0 {
+		quotaBytes := int64(effQuotaGB * 1024 * 1024 * 1024)
 		used := u.LifetimeTotalBytes - u.EmergencyBaselineBytes
 		if used >= quotaBytes {
 			log.Info("emergency access quota exhausted",

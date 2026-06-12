@@ -222,6 +222,31 @@ func (d *fakeDisabler) SetEnabledAndSync(ctx context.Context, userID int64, enab
 	return nil
 }
 
+// fakeScopedSettings is a ports.ScopedSettings stub: Load/LoadForGroup return the
+// global value; LoadForUser returns a per-user override when present. Lets the
+// poll-teardown test prove it resolves THIS user's effective emergency quota.
+type fakeScopedSettings struct {
+	global  ports.UISettings
+	perUser map[int64]ports.UISettings
+}
+
+func (f fakeScopedSettings) Load(_ context.Context, _ ports.UISettings) (ports.UISettings, error) {
+	return f.global, nil
+}
+
+func (f fakeScopedSettings) LoadForGroup(_ context.Context, _ int64, _ ports.UISettings) (ports.UISettings, error) {
+	return f.global, nil
+}
+
+func (f fakeScopedSettings) LoadForUser(_ context.Context, u *domain.User, _ ports.UISettings) (ports.UISettings, error) {
+	if u != nil {
+		if s, ok := f.perUser[u.ID]; ok {
+			return s, nil
+		}
+	}
+	return f.global, nil
+}
+
 type fakeTrafficRepo struct {
 	snapshots       []*domain.TrafficSnapshot
 	hourly          []domain.HourlyTraffic // rolled-up hourly deltas, source for HistoryFor
@@ -623,6 +648,36 @@ func TestRecordAndEnforceLifetimeMonotonicAcrossCounterReset(t *testing.T) {
 	// Lifetime should grow by the post-reset value (0.5 GB), not shrink.
 	if got := users.users[1].LifetimeTotalBytes; got != 100_500_000_000 {
 		t.Fatalf("after counter reset lifetime = %d, want 100.5GB (no rollback)", got)
+	}
+}
+
+// TestRecordAndEnforce_EmergencyTeardown_UsesGroupQuota pins that the poll ends
+// an emergency window at THIS user's effective (group-scoped) quota, not the
+// global one. Global quota is 0 (uncapped) but the user's group caps it at 1 GB;
+// the window must be torn down once usage crosses the GROUP cap. With the old
+// global-only gate (cfg.EmergencyAccessQuotaGB > 0 == false) it never fired, so
+// the poll drifted from user.emergencyFloor / the /sub gate (both per-group).
+func TestRecordAndEnforce_EmergencyTeardown_UsesGroupQuota(t *testing.T) {
+	const oneGB = int64(1) * 1024 * 1024 * 1024
+	until := time.Now().Add(2 * time.Hour)
+	u := &domain.User{
+		ID: 7, Enabled: true, GroupID: 3,
+		EmergencyUntil:         &until,
+		EmergencyBaselineBytes: 0,
+		LifetimeTotalBytes:     oneGB + 100, // over the 1 GB group cap
+	}
+	users := &fakeUserRepo{users: map[int64]*domain.User{7: u}}
+	svc := New(users, nil, &fakeTrafficRepo{}, nil, nil, nil, &fakeDisabler{}).
+		WithSettings(fakeScopedSettings{
+			global:  ports.UISettings{EmergencyAccessQuotaGB: 0}, // uncapped globally
+			perUser: map[int64]ports.UISettings{7: {EmergencyAccessQuotaGB: 1}},
+		})
+
+	if err := svc.recordAndEnforce(context.Background(), u, trafficTotals{hits: 0}); err != nil {
+		t.Fatalf("recordAndEnforce: %v", err)
+	}
+	if u.EmergencyUntil != nil {
+		t.Error("group quota exceeded → poll must tear down the emergency window (drifted from floor/sub)")
 	}
 }
 
