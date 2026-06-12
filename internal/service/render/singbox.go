@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,13 @@ func (s *Service) renderSingBox(ctx context.Context, u *domain.User, tpl *domain
 	body = substituteInlinePlaceholders(body, mergePlaceholders(s.profilePlaceholders(u, st), map[string]string{
 		"final_outbound": finalJSON,
 	}))
+	// Emit the route.rule_set definitions required by the route rules
+	// (GEOSITE/GEOIP) and the template's dns.rules split. Downloads route
+	// through the primary proxy group so the .srs files reach GitHub.
+	body, err = assembleSingBoxRuleSets(body, singBoxRuleSetDetour(proxyGroupOrder))
+	if err != nil {
+		return nil, fmt.Errorf("assemble sing-box rule_set: %w", err)
+	}
 
 	// Build profile name for Content-Disposition header.
 	profileName := buildProfileName(u, st)
@@ -407,17 +415,28 @@ func singBoxRouteRule(kind, value string) map[string]any {
 		return map[string]any{"ip_cidr": []string{value}}
 	case "SRC-IP-CIDR", "SOURCE-IP-CIDR":
 		return map[string]any{"source_ip_cidr": []string{value}}
-	case "GEOIP", "GEOSITE":
-		// Deprecated in sing-box 1.8.0, REMOVED in 1.12.0. The migration
-		// path is the rule_set block at the top level of route, which
-		// requires the template to also carry the corresponding
-		// rule_set definitions (urls, download_detour, formats…) —
-		// that's a bigger refactor. For now: silently drop GEOIP /
-		// GEOSITE entries so configs at least parse on 1.12+. Users
-		// who want IP-based CN routing back can replace
-		// `GEOIP,CN,...` with concrete IP-CIDR rules in their ruleset
-		// until rule_set support lands.
-		return nil
+	case "GEOSITE":
+		// sing-box 1.8.0 deprecated the inline `geosite` key and 1.12.0
+		// removed it; the migration is a remote rule_set reference whose
+		// definition assembleSingBoxRuleSets emits. `geosite-<category>`
+		// maps to SagerNet's sing-geosite .srs files. Attribute-filtered
+		// categories (e.g. `microsoft@cn`) have no standalone .srs, so we
+		// still drop those rather than emit a reference that 404s on
+		// download.
+		cat := strings.ToLower(strings.TrimSpace(value))
+		if cat == "" || strings.Contains(cat, "@") {
+			return nil
+		}
+		return map[string]any{"rule_set": []string{"geosite-" + cat}}
+	case "GEOIP":
+		// Same rule_set migration as GEOSITE; `geoip-<country>` maps to
+		// SagerNet's sing-geoip .srs files. Restores IP-based CN routing
+		// that the old silent-drop behavior lost on sing-box 1.12+.
+		cc := strings.ToLower(strings.TrimSpace(value))
+		if cc == "" {
+			return nil
+		}
+		return map[string]any{"rule_set": []string{"geoip-" + cc}}
 	case "PROCESS-NAME":
 		return map[string]any{"process_name": []string{value}}
 	case "DST-PORT":
@@ -451,6 +470,116 @@ func singBoxOutboundTag(target string) string {
 	default:
 		return target
 	}
+}
+
+const (
+	singGeositeRuleSetBase = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/"
+	singGeoipRuleSetBase   = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/"
+)
+
+// assembleSingBoxRuleSets fills the `{{ rule_sets }}` placeholder with the
+// route.rule_set definitions the config needs. It collects every rule_set tag
+// referenced anywhere in the body — both the template's dns.rules split and the
+// route rules emitted from GEOSITE/GEOIP — so definitions stay in lockstep with
+// whatever is actually referenced, with no hardcoded category list to drift.
+func assembleSingBoxRuleSets(body, downloadDetour string) (string, error) {
+	// Empty the rule_set array first so the body parses as JSON, then collect
+	// references and emit the real definitions.
+	probe := substituteBlockPlaceholders(body, map[string]string{"rule_sets": "[]"})
+	tags, err := collectSingBoxRuleSetRefs(probe)
+	if err != nil {
+		return "", err
+	}
+	defsJSON, err := marshalJSONBlock(buildSingBoxRuleSetDefs(tags, downloadDetour))
+	if err != nil {
+		return "", err
+	}
+	return substituteBlockPlaceholders(body, map[string]string{"rule_sets": defsJSON}), nil
+}
+
+// collectSingBoxRuleSetRefs walks the parsed config and returns the sorted,
+// deduped set of tags referenced by `rule_set: [...]` fields. The route-level
+// rule_set DEFINITION array holds objects (not strings) under the same key, so
+// it is naturally skipped — only string references are collected.
+func collectSingBoxRuleSetRefs(jsonStr string) ([]string, error) {
+	var root any
+	if err := json.Unmarshal([]byte(jsonStr), &root); err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	var walk func(any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, val := range t {
+				if k == "rule_set" {
+					if arr, ok := val.([]any); ok {
+						for _, e := range arr {
+							if s, ok := e.(string); ok {
+								set[s] = true
+							}
+						}
+					}
+				}
+				walk(val)
+			}
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(root)
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// buildSingBoxRuleSetDefs turns rule_set tags into remote rule_set definitions.
+// `geosite-*` / `geoip-*` tags resolve to SagerNet's compiled .srs files;
+// unknown prefixes are skipped (no URL to point at). http_client.detour routes
+// the .srs download through the proxy so it works from behind the GFW — this is
+// the 1.14+ form; the older download_detour was removed in sing-box 1.16.
+func buildSingBoxRuleSetDefs(tags []string, downloadDetour string) []map[string]any {
+	sorted := append([]string(nil), tags...)
+	sort.Strings(sorted)
+	out := make([]map[string]any, 0, len(sorted))
+	for _, tag := range sorted {
+		var srcURL string
+		switch {
+		case strings.HasPrefix(tag, "geosite-"):
+			srcURL = singGeositeRuleSetBase + tag + ".srs"
+		case strings.HasPrefix(tag, "geoip-"):
+			srcURL = singGeoipRuleSetBase + tag + ".srs"
+		default:
+			continue
+		}
+		out = append(out, map[string]any{
+			"tag":             tag,
+			"type":            "remote",
+			"format":          "binary",
+			"url":             srcURL,
+			"http_client":     map[string]any{"detour": downloadDetour},
+			"update_interval": "1d",
+		})
+	}
+	return out
+}
+
+// singBoxRuleSetDetour picks the outbound used to download remote rule_sets:
+// the ruleset's primary proxy group (first non-empty entry of the declared
+// proxy-group order), falling back to the conventional main selector. It must
+// name a real selectable proxy outbound so the .srs download reaches GitHub.
+func singBoxRuleSetDetour(proxyGroupOrder []string) string {
+	for _, g := range proxyGroupOrder {
+		if strings.TrimSpace(g) != "" {
+			return g
+		}
+	}
+	return "🚀 节点选择"
 }
 
 func marshalJSONBlock(v any) (string, error) {

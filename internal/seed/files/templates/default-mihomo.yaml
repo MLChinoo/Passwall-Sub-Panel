@@ -11,8 +11,10 @@ content: |
   mode: rule
   log-level: info
   external-controller: 127.0.0.1:46011
+
   clash-for-android:
     append-system-dns: false
+
   sniffer:
     enable: true
     parse-pure-ip: true
@@ -35,59 +37,63 @@ content: |
     - +.claude.com
     - +.anthropic.com
     - +.claudeusercontent.com
+
   dns:
-    default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-    - 1.1.1.1
-    - 8.8.8.8
-    - 2400:3200::1
-    - '2402:4e00::'
-    - 2606:4700:4700::1111
-    - 2001:4860:4860::8888
-    direct-nameserver: []
-    direct-nameserver-follow-policy: false
     enable: true
+    listen: :53
+    ipv6: false                    # No IPv6 egress; turn on only if you have one
+    prefer-h3: false
     enhanced-mode: fake-ip
-    fake-ip-filter:
+    fake-ip-range: 198.18.0.1/16
+    fake-ip-filter-mode: blacklist
+    fake-ip-filter:                # These return real IPs, bypassing fake-ip
     - '*.lan'
     - '*.local'
     - '*.arpa'
     - time.*.com
     - ntp.*.com
-    - time.*.com
     - +.market.xiaomi.com
     - localhost.ptlogin2.qq.com
-    - '*.msftncsi.com'
+    - +.msftncsi.com
     - www.msftconnecttest.com
-    fake-ip-filter-mode: blacklist
-    fake-ip-range: 198.18.0.1/16
-    fallback:
-    - https://v5brh3pn84.cloudflare-gateway.com/dns-query
-    - https://cloudflare-dns.com/dns-query
-    fallback-filter:
-      domain:
-      - +.google.com
-      - +.facebook.com
-      - +.youtube.com
-      geoip: true
-      geoip-code: CN
-      ipcidr:
-      - 240.0.0.0/4
-      - 0.0.0.0/32
-    ipv6: true
-    listen: :53
+
+    use-hosts: false
+    use-system-hosts: false
+    respect-rules: false
+    direct-nameserver: []
+    direct-nameserver-follow-policy: false
+
+    # Bootstrap: resolves the DoH hostnames below; must be plain IPs
+    default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+
+    # Resolves proxy-node domains; must be bare-reachable domestic DoH,
+    # otherwise you can't connect to the nodes in the first place
+    proxy-server-nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+
+    # Fallback for domains not matched by any policy below; kept domestic
+    # to avoid leaking long-tail/unknown lookups abroad
     nameserver:
     - https://dns.alidns.com/dns-query
     - https://doh.pub/dns-query
-    - https://v5brh3pn84.cloudflare-gateway.com/dns-query
-    prefer-h3: false
-    proxy-server-nameserver:
-    - https://v5brh3pn84.cloudflare-gateway.com/dns-query
-    - https://cloudflare-dns.com/dns-query
-    respect-rules: false
-    use-hosts: false
-    use-system-hosts: false
+
+    # Per-domain split resolution. mihomo queries all servers in a list
+    # concurrently and takes the fastest valid reply — so the primary is
+    # used whenever healthy, and the backups seamlessly cover for it.
+    nameserver-policy:
+      # Domestic domains -> domestic DoH
+      "geosite:cn,private,apple-cn,microsoft@cn":
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+      # Foreign domains -> org Cloudflare Gateway (primary), public CF/Google as backup.
+      # Bare resolution verified working on this line (TCP ping + full DoH Status:0).
+      "geosite:geolocation-!cn":
+      - https://v5brh3pn84.cloudflare-gateway.com/dns-query
+      - https://1.1.1.1/dns-query
+      - https://8.8.8.8/dns-query
 
   proxies:
     {{ proxies }}

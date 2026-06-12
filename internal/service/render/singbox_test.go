@@ -2,8 +2,11 @@ package render
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
+
+	yaml "gopkg.in/yaml.v3"
 )
 
 // TestBuildSingBoxHysteria2Outbound checks the sing-box outbound JSON
@@ -67,11 +70,11 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 		t.Fatalf("final = %q, want 漏网之鱼", final)
 	}
 	// rules[0] is the sniff action prepended for the sing-box >= 1.11
-	// inbound-field migration. After that: the 3 parsed entries — GEOIP
-	// is intentionally dropped because sing-box 1.12+ removed the
-	// `geoip` rule key in favor of rule_set references.
-	if len(rules) != 4 {
-		t.Fatalf("rules len = %d, want 4 (sniff + 3, GEOIP dropped): %#v", len(rules), rules)
+	// inbound-field migration. After that: 4 parsed entries — GEOIP,CN is
+	// now mapped to a rule_set reference (geoip-cn) instead of being
+	// dropped, so the CN routing it expresses survives on sing-box 1.12+.
+	if len(rules) != 5 {
+		t.Fatalf("rules len = %d, want 5 (sniff + 4): %#v", len(rules), rules)
 	}
 	if got := rules[0]["action"]; got != "sniff" {
 		t.Fatalf("rules[0] action = %q, want sniff", got)
@@ -85,10 +88,92 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 	if _, ok := rules[3]["ip_cidr"]; !ok {
 		t.Fatalf("ip-cidr rule missing ip_cidr: %#v", rules[3])
 	}
-	for _, r := range rules {
-		if _, has := r["geoip"]; has {
-			t.Fatalf("geoip rule should be dropped for sing-box 1.12+: %#v", r)
+	rs, ok := rules[4]["rule_set"].([]string)
+	if !ok || len(rs) != 1 || rs[0] != "geoip-cn" {
+		t.Fatalf("GEOIP,CN should map to rule_set [geoip-cn]: %#v", rules[4])
+	}
+	if got := rules[4]["outbound"]; got != "🇨🇳 中国大陆" {
+		t.Fatalf("geoip rule_set outbound = %q, want 🇨🇳 中国大陆", got)
+	}
+}
+
+// GEOSITE maps to a geosite-<category> rule_set; attribute-filtered categories
+// (microsoft@cn) have no standalone .srs and must still be dropped to keep the
+// rendered config downloadable.
+func TestBuildSingBoxRouteRulesGeositeMapsToRuleSet(t *testing.T) {
+	rules, _ := buildSingBoxRouteRules(`
+- GEOSITE,geolocation-cn,🇨🇳 中国大陆
+- GEOSITE,microsoft@cn,🇨🇳 中国大陆
+- MATCH,🐟 漏网之鱼
+`)
+	// sniff + geolocation-cn only; the @cn attribute rule is dropped.
+	if len(rules) != 2 {
+		t.Fatalf("rules len = %d, want 2 (sniff + geolocation-cn; @cn dropped): %#v", len(rules), rules)
+	}
+	rs, ok := rules[1]["rule_set"].([]string)
+	if !ok || len(rs) != 1 || rs[0] != "geosite-geolocation-cn" {
+		t.Fatalf("GEOSITE,geolocation-cn should map to rule_set [geosite-geolocation-cn]: %#v", rules[1])
+	}
+}
+
+func TestBuildSingBoxRuleSetDefs(t *testing.T) {
+	defs := buildSingBoxRuleSetDefs([]string{"geoip-cn", "geosite-geolocation-cn", "geosite-geolocation-!cn"}, "🚀 节点选择")
+	if len(defs) != 3 {
+		t.Fatalf("defs len = %d, want 3: %#v", len(defs), defs)
+	}
+	byTag := map[string]map[string]any{}
+	for _, d := range defs {
+		byTag[d["tag"].(string)] = d
+	}
+	cases := map[string]string{
+		"geoip-cn":                "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+		"geosite-geolocation-cn":  "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-cn.srs",
+		"geosite-geolocation-!cn": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+	}
+	for tag, url := range cases {
+		d, ok := byTag[tag]
+		if !ok {
+			t.Fatalf("missing def for %q: %#v", tag, defs)
 		}
+		if d["type"] != "remote" || d["format"] != "binary" {
+			t.Fatalf("def %q type/format = %v/%v, want remote/binary", tag, d["type"], d["format"])
+		}
+		if d["url"] != url {
+			t.Fatalf("def %q url = %q, want %q", tag, d["url"], url)
+		}
+		// Downloads route through the proxy via http_client.detour (the
+		// 1.14+ form; download_detour was removed in 1.16).
+		hc, ok := d["http_client"].(map[string]any)
+		if !ok || hc["detour"] != "🚀 节点选择" {
+			t.Fatalf("def %q http_client.detour = %#v, want 🚀 节点选择", tag, d["http_client"])
+		}
+		if _, dep := d["download_detour"]; dep {
+			t.Fatalf("def %q must not carry the removed download_detour field", tag)
+		}
+	}
+}
+
+func TestCollectSingBoxRuleSetRefs(t *testing.T) {
+	body := `{
+	  "dns": {"rules": [
+	    {"rule_set": ["geosite-geolocation-cn"], "server": "alidns"},
+	    {"rule_set": ["geosite-geolocation-!cn"], "server": "cf"}
+	  ]},
+	  "route": {
+	    "rule_set": [],
+	    "rules": [
+	      {"rule_set": ["geoip-cn"], "outbound": "x"},
+	      {"rule_set": ["geosite-geolocation-cn"], "outbound": "x"}
+	    ]
+	  }
+	}`
+	tags, err := collectSingBoxRuleSetRefs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"geoip-cn", "geosite-geolocation-!cn", "geosite-geolocation-cn"}
+	if !reflect.DeepEqual(tags, want) {
+		t.Fatalf("tags = %#v, want %#v (sorted, deduped)", tags, want)
 	}
 }
 
@@ -203,5 +288,106 @@ func TestMarshalJSONBlockProducesValidReadableJSON(t *testing.T) {
 	}
 	if decoded[0]["tag"] != "🚀 节点选择" {
 		t.Fatalf("decoded tag = %q", decoded[0]["tag"])
+	}
+}
+
+// TestSeedSingBoxRuleSetReferentialIntegrity renders the shipped sing-box seed
+// template end-to-end (outbounds + route rules + dynamic rule_set assembly) and
+// asserts the invariant sing-box itself enforces: EVERY rule_set referenced in
+// dns.rules or route.rules must have a matching definition in route.rule_set.
+// This is the drift guard tying the template's DNS split rules and singbox.go's
+// route-rule mapping to the dynamic rule_set emission — rename or add a rule_set
+// in either place without wiring its definition and this goes red, not the user.
+func TestSeedSingBoxRuleSetReferentialIntegrity(t *testing.T) {
+	raw, err := os.ReadFile("../../seed/files/templates/default-sing-box.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Content string `yaml:"content"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("seed doc not valid YAML: %v", err)
+	}
+
+	rules, final := buildSingBoxRouteRules(`
+- DOMAIN-SUFFIX,example.com,🚀 节点选择
+- GEOSITE,geolocation-cn,🇨🇳 中国大陆
+- GEOIP,CN,🇨🇳 中国大陆
+- MATCH,🐟 漏网之鱼
+`)
+	outbounds := []map[string]any{
+		{"type": "direct", "tag": "direct"},
+		{"type": "block", "tag": "block"},
+		{"type": "vless", "tag": "🇯🇵 JP-01", "server": "a.example.com", "server_port": 443, "uuid": "x"},
+		{"type": "selector", "tag": "🚀 节点选择", "outbounds": []string{"🇯🇵 JP-01", "direct"}},
+		{"type": "selector", "tag": "🇨🇳 中国大陆", "outbounds": []string{"direct"}},
+		{"type": "selector", "tag": "🐟 漏网之鱼", "outbounds": []string{"🚀 节点选择", "direct"}},
+	}
+	outboundsJSON, _ := marshalJSONBlock(outbounds)
+	rulesJSON, _ := marshalJSONBlock(rules)
+	finalJSON, _ := marshalJSONString(final)
+
+	body := substituteBlockPlaceholders(doc.Content, map[string]string{
+		"outbounds":   outboundsJSON,
+		"route_rules": rulesJSON,
+	})
+	body = substituteInlinePlaceholders(body, map[string]string{"final_outbound": finalJSON})
+	body, err = assembleSingBoxRuleSets(body, "🚀 节点选择")
+	if err != nil {
+		t.Fatalf("assembleSingBoxRuleSets: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
+		t.Fatalf("rendered sing-box config not valid JSON: %v\n---\n%s", err, body)
+	}
+
+	// Every referenced rule_set tag must be defined in route.rule_set.
+	refs, err := collectSingBoxRuleSetRefs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, _ := cfg["route"].(map[string]any)
+	defArr, _ := route["rule_set"].([]any)
+	defined := map[string]bool{}
+	detours := map[string]bool{}
+	for _, d := range defArr {
+		dm, _ := d.(map[string]any)
+		if tag, ok := dm["tag"].(string); ok {
+			defined[tag] = true
+		}
+		if hc, ok := dm["http_client"].(map[string]any); ok {
+			if dt, ok := hc["detour"].(string); ok {
+				detours[dt] = true
+			}
+		}
+	}
+	for _, ref := range refs {
+		if !defined[ref] {
+			t.Fatalf("rule_set %q referenced but not defined in route.rule_set (defined=%v)", ref, defined)
+		}
+	}
+	// The CN-routing + split-DNS rule_sets must all be present.
+	for _, want := range []string{"geoip-cn", "geosite-geolocation-cn", "geosite-geolocation-!cn"} {
+		found := false
+		for _, ref := range refs {
+			if ref == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected rule_set %q to be referenced (refs=%v)", want, refs)
+		}
+	}
+	// download_detour on every definition must name a real outbound.
+	outTags := map[string]bool{}
+	for _, o := range outbounds {
+		outTags[o["tag"].(string)] = true
+	}
+	for dt := range detours {
+		if !outTags[dt] {
+			t.Fatalf("download_detour %q is not a defined outbound", dt)
+		}
 	}
 }

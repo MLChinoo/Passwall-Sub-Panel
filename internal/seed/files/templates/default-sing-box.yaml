@@ -10,6 +10,11 @@ content: |
       "level": "info",
       "timestamp": true
     },
+    "experimental": {
+      "cache_file": {
+        "enabled": true
+      }
+    },
     "dns": {
       "servers": [
         {
@@ -33,15 +38,13 @@ content: |
           "tag": "cloudflare-gateway",
           "type": "https",
           "server": "v5brh3pn84.cloudflare-gateway.com",
-          "domain_resolver": "bootstrap",
-          "detour": "🚀 节点选择"
+          "domain_resolver": "bootstrap"
         },
         {
           "tag": "cloudflare",
           "type": "https",
           "server": "cloudflare-dns.com",
-          "domain_resolver": "bootstrap",
-          "detour": "🚀 节点选择"
+          "domain_resolver": "bootstrap"
         }
       ],
       "rules": [
@@ -52,6 +55,18 @@ content: |
             "arpa"
           ],
           "server": "alidns"
+        },
+        {
+          "rule_set": [
+            "geosite-geolocation-cn"
+          ],
+          "server": "alidns"
+        },
+        {
+          "rule_set": [
+            "geosite-geolocation-!cn"
+          ],
+          "server": "cloudflare-gateway"
         }
       ],
       "final": "alidns",
@@ -78,6 +93,8 @@ content: |
     "outbounds":
       {{ outbounds }},
     "route": {
+      "rule_set":
+        {{ rule_sets }},
       "rules":
         {{ route_rules }},
       "final": {{ final_outbound }},
