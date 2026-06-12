@@ -95,6 +95,14 @@ func TestBuildSingBoxRouteRules(t *testing.T) {
 	if got := rules[4]["outbound"]; got != "🇨🇳 中国大陆" {
 		t.Fatalf("geoip rule_set outbound = %q, want 🇨🇳 中国大陆", got)
 	}
+	// Every routing rule must carry the explicit "action":"route" — the
+	// canonical sing-box form; the bare-outbound shorthand is the legacy
+	// (deprecation-warning) variant.
+	for i := 1; i < len(rules); i++ {
+		if rules[i]["action"] != "route" {
+			t.Fatalf("rules[%d] must carry action:route (canonical), got %#v", i, rules[i])
+		}
+	}
 }
 
 // GEOSITE maps to a geosite-<category> rule_set; attribute-filtered categories
@@ -141,14 +149,15 @@ func TestBuildSingBoxRuleSetDefs(t *testing.T) {
 		if d["url"] != url {
 			t.Fatalf("def %q url = %q, want %q", tag, d["url"], url)
 		}
-		// Downloads route through the proxy via http_client.detour (the
-		// 1.14+ form; download_detour was removed in 1.16).
-		hc, ok := d["http_client"].(map[string]any)
-		if !ok || hc["detour"] != "🚀 节点选择" {
-			t.Fatalf("def %q http_client.detour = %#v, want 🚀 节点选择", tag, d["http_client"])
+		// Downloads route through the proxy via download_detour — the field
+		// the current STABLE line (1.13.x) understands. http_client is
+		// 1.14-alpha-only, and sing-box's strict DisallowUnknownFields parser
+		// makes an unknown http_client key a FATAL load error on stable.
+		if d["download_detour"] != "🚀 节点选择" {
+			t.Fatalf("def %q download_detour = %q, want 🚀 节点选择", tag, d["download_detour"])
 		}
-		if _, dep := d["download_detour"]; dep {
-			t.Fatalf("def %q must not carry the removed download_detour field", tag)
+		if _, fut := d["http_client"]; fut {
+			t.Fatalf("def %q must not carry http_client (1.14-alpha only; breaks stable 1.13.x)", tag)
 		}
 	}
 }
@@ -357,10 +366,8 @@ func TestSeedSingBoxRuleSetReferentialIntegrity(t *testing.T) {
 		if tag, ok := dm["tag"].(string); ok {
 			defined[tag] = true
 		}
-		if hc, ok := dm["http_client"].(map[string]any); ok {
-			if dt, ok := hc["detour"].(string); ok {
-				detours[dt] = true
-			}
+		if dt, ok := dm["download_detour"].(string); ok {
+			detours[dt] = true
 		}
 	}
 	for _, ref := range refs {
@@ -390,4 +397,22 @@ func TestSeedSingBoxRuleSetReferentialIntegrity(t *testing.T) {
 			t.Fatalf("download_detour %q is not a defined outbound", dt)
 		}
 	}
+
+	// Canonical-form guard: every dns.rules and route.rules entry must carry an
+	// explicit "action" (no bare server/outbound shorthand, which deprecation-
+	// warns on current sing-box). Drift here means a rule slipped back to the
+	// legacy form in the template or the generator.
+	assertAllRulesHaveAction := func(where string, arr []any) {
+		for i, r := range arr {
+			rm, _ := r.(map[string]any)
+			if _, ok := rm["action"].(string); !ok {
+				t.Fatalf("%s[%d] missing explicit action (legacy shorthand): %#v", where, i, rm)
+			}
+		}
+	}
+	dnsBlock, _ := cfg["dns"].(map[string]any)
+	dnsRules, _ := dnsBlock["rules"].([]any)
+	assertAllRulesHaveAction("dns.rules", dnsRules)
+	routeRules, _ := route["rules"].([]any)
+	assertAllRulesHaveAction("route.rules", routeRules)
 }

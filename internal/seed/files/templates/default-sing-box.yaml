@@ -54,18 +54,21 @@ content: |
             "local",
             "arpa"
           ],
+          "action": "route",
           "server": "alidns"
         },
         {
           "rule_set": [
             "geosite-geolocation-cn"
           ],
+          "action": "route",
           "server": "alidns"
         },
         {
           "rule_set": [
             "geosite-geolocation-!cn"
           ],
+          "action": "route",
           "server": "cloudflare-gateway"
         }
       ],

@@ -356,6 +356,10 @@ func buildSingBoxRouteRules(ruleParts ...string) ([]map[string]any, string) {
 			if len(rule) == 0 {
 				continue
 			}
+			// Explicit "action":"route" is the canonical sing-box rule form;
+			// the bare-outbound shorthand still works but emits a deprecation
+			// warning as the rule-action migration continues.
+			rule["action"] = "route"
 			rule["outbound"] = outbound
 			rules = append(rules, rule)
 		}
@@ -540,9 +544,12 @@ func collectSingBoxRuleSetRefs(jsonStr string) ([]string, error) {
 
 // buildSingBoxRuleSetDefs turns rule_set tags into remote rule_set definitions.
 // `geosite-*` / `geoip-*` tags resolve to SagerNet's compiled .srs files;
-// unknown prefixes are skipped (no URL to point at). http_client.detour routes
-// the .srs download through the proxy so it works from behind the GFW — this is
-// the 1.14+ form; the older download_detour was removed in sing-box 1.16.
+// unknown prefixes are skipped (no URL to point at). download_detour routes the
+// .srs download through the proxy so it works from behind the GFW. We use
+// download_detour (not the newer http_client.detour) because the current STABLE
+// line is 1.13.x — http_client only exists in 1.14-alpha, and sing-box's strict
+// DisallowUnknownFields parser would make it a FATAL load error on stable.
+// download_detour stays valid through 1.15 (deprecated in 1.14, removed in 1.16).
 func buildSingBoxRuleSetDefs(tags []string, downloadDetour string) []map[string]any {
 	sorted := append([]string(nil), tags...)
 	sort.Strings(sorted)
@@ -562,7 +569,7 @@ func buildSingBoxRuleSetDefs(tags []string, downloadDetour string) []map[string]
 			"type":            "remote",
 			"format":          "binary",
 			"url":             srcURL,
-			"http_client":     map[string]any{"detour": downloadDetour},
+			"download_detour": downloadDetour,
 			"update_interval": "1d",
 		})
 	}
