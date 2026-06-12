@@ -1275,14 +1275,18 @@
       "require_2fa": "强制本组成员启用两步验证"
     },
     "scope": {
-      "title": "2FA 方式（按组覆盖，否则继承全局）",
+      "title": "按组覆盖（否则继承全局）",
+      "cat_2fa": "两步验证 (2FA) 方式",
+      "cat_notify": "通知阈值",
       "totp": "验证器 App (TOTP)",
       "passkey": "通行密钥",
       "email": "邮箱验证码",
+      "expire_before": "到期前提醒（天）",
+      "traffic_remain": "剩余流量提醒（%）",
       "override": "覆盖",
       "inherit": "继承",
       "global_prefix": "全局",
-      "save_error": "部分 2FA 覆盖保存失败，请重新打开核对"
+      "save_error": "部分覆盖保存失败，请重新打开核对"
     },
     "placeholder": {
       "tags": "从下拉选 region:XX / tag:YY，或自由输入"

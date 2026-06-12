@@ -74,13 +74,19 @@ const EMPTY_FORM: FormState = {
 // (admin_scope_settings.go overridableScopeKeys). Each maps a scope key to its
 // global UISettings field + the control kind so the editor renders inherit /
 // override per setting. A key the backend stops advertising is filtered out.
-const SCOPE_2FA_KEYS: {
-  key: string; type: string; name: string; kind: 'bool' | 'int'
+const SCOPE_CATEGORIES: { id: string; labelKey: string; def: string }[] = [
+  { id: '2fa', labelKey: 'cat_2fa', def: '两步验证 (2FA) 方式' },
+  { id: 'notify', labelKey: 'cat_notify', def: '通知阈值' },
+]
+const SCOPE_KEYS: {
+  cat: string; key: string; type: string; name: string; kind: 'bool' | 'int'
   field: keyof UISettings; labelKey: string; def: string
 }[] = [
-  { key: 'security.totp_enabled', type: 'security', name: 'totp_enabled', kind: 'bool', field: 'totp_enabled', labelKey: 'totp', def: '验证器 App (TOTP)' },
-  { key: 'security.passkey_enabled', type: 'security', name: 'passkey_enabled', kind: 'bool', field: 'passkey_enabled', labelKey: 'passkey', def: '通行密钥' },
-  { key: 'security.twofa_allow_email', type: 'security', name: 'twofa_allow_email', kind: 'bool', field: 'twofa_allow_email', labelKey: 'email', def: '邮箱验证码' },
+  { cat: '2fa', key: 'security.totp_enabled', type: 'security', name: 'totp_enabled', kind: 'bool', field: 'totp_enabled', labelKey: 'totp', def: '验证器 App (TOTP)' },
+  { cat: '2fa', key: 'security.passkey_enabled', type: 'security', name: 'passkey_enabled', kind: 'bool', field: 'passkey_enabled', labelKey: 'passkey', def: '通行密钥' },
+  { cat: '2fa', key: 'security.twofa_allow_email', type: 'security', name: 'twofa_allow_email', kind: 'bool', field: 'twofa_allow_email', labelKey: 'email', def: '邮箱验证码' },
+  { cat: 'notify', key: 'notify.expire_before_days', type: 'notify', name: 'expire_before_days', kind: 'int', field: 'expire_before_days', labelKey: 'expire_before', def: '到期前提醒（天）' },
+  { cat: 'notify', key: 'notify.traffic_remain_percent', type: 'notify', name: 'traffic_remain_percent', kind: 'int', field: 'traffic_remain_percent', labelKey: 'traffic_remain', def: '剩余流量提醒（%）' },
 ]
 
 interface ScopeState {
@@ -322,7 +328,7 @@ export default function GroupsView() {
       const [ss, gs] = await Promise.all([getGroupScopeSettings(groupId), getUISettings()])
       const global: Record<string, string> = {}
       const edit: Record<string, { on: boolean; value: string }> = {}
-      for (const k of SCOPE_2FA_KEYS) {
+      for (const k of SCOPE_KEYS) {
         global[k.key] = kvFromGlobal(k.kind, gs[k.field])
         const ov = ss.overrides[k.key]
         edit[k.key] = ov !== undefined ? { on: true, value: ov } : { on: false, value: global[k.key] }
@@ -338,7 +344,7 @@ export default function GroupsView() {
   async function applyScopeOverrides(groupId: number) {
     if (!scope) return
     try {
-      for (const k of SCOPE_2FA_KEYS) {
+      for (const k of SCOPE_KEYS) {
         if (!scope.overridable.includes(k.key)) continue
         const st = scope.edit[k.key]
         const wasOverridden = scope.orig[k.key] !== undefined
@@ -725,44 +731,55 @@ export default function GroupsView() {
             {editing && scope && (
               <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 2, mt: 0.5 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                  {t('admin:groups.scope.title', { defaultValue: '2FA 方式（按组覆盖，否则继承全局）' })}
+                  {t('admin:groups.scope.title', { defaultValue: '按组覆盖（否则继承全局）' })}
                 </Typography>
-                {SCOPE_2FA_KEYS.filter(k => scope.overridable.includes(k.key)).map(k => {
-                  const st = scope.edit[k.key]
-                  const setEdit = (v: { on: boolean; value: string }) =>
-                    setScope(s => (s ? { ...s, edit: { ...s.edit, [k.key]: v } } : s))
+                {SCOPE_CATEGORIES.map(cat => {
+                  const keys = SCOPE_KEYS.filter(k => k.cat === cat.id && scope.overridable.includes(k.key))
+                  if (!keys.length) return null
                   return (
-                    <Box key={k.key} sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: 40 }}>
-                      <Box sx={{ flex: 1, fontSize: 14 }}>
-                        {t(`admin:groups.scope.${k.labelKey}`, { defaultValue: k.def })}
-                      </Box>
-                      <FormControlLabel
-                        sx={{ mr: 0 }}
-                        control={
-                          <Switch size="small" checked={st.on}
-                            onChange={(_, c) => setEdit({ on: c, value: c ? st.value : scope.global[k.key] })} />
-                        }
-                        label={
-                          <Typography variant="caption">
-                            {st.on
-                              ? t('admin:groups.scope.override', { defaultValue: '覆盖' })
-                              : t('admin:groups.scope.inherit', { defaultValue: '继承' })}
-                          </Typography>
-                        }
-                      />
-                      {st.on ? (
-                        k.kind === 'bool' ? (
-                          <Switch size="small" checked={st.value === '1'}
-                            onChange={(_, c) => setEdit({ on: true, value: c ? '1' : '0' })} />
-                        ) : (
-                          <TextField size="small" type="number" value={st.value}
-                            onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 96 }} />
+                    <Box key={cat.id} sx={{ mt: 1 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary' }}>
+                        {t(`admin:groups.scope.${cat.labelKey}`, { defaultValue: cat.def })}
+                      </Typography>
+                      {keys.map(k => {
+                        const st = scope.edit[k.key]
+                        const setEdit = (v: { on: boolean; value: string }) =>
+                          setScope(s => (s ? { ...s, edit: { ...s.edit, [k.key]: v } } : s))
+                        return (
+                          <Box key={k.key} sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: 40 }}>
+                            <Box sx={{ flex: 1, fontSize: 14 }}>
+                              {t(`admin:groups.scope.${k.labelKey}`, { defaultValue: k.def })}
+                            </Box>
+                            <FormControlLabel
+                              sx={{ mr: 0 }}
+                              control={
+                                <Switch size="small" checked={st.on}
+                                  onChange={(_, c) => setEdit({ on: c, value: c ? st.value : scope.global[k.key] })} />
+                              }
+                              label={
+                                <Typography variant="caption">
+                                  {st.on
+                                    ? t('admin:groups.scope.override', { defaultValue: '覆盖' })
+                                    : t('admin:groups.scope.inherit', { defaultValue: '继承' })}
+                                </Typography>
+                              }
+                            />
+                            {st.on ? (
+                              k.kind === 'bool' ? (
+                                <Switch size="small" checked={st.value === '1'}
+                                  onChange={(_, c) => setEdit({ on: true, value: c ? '1' : '0' })} />
+                              ) : (
+                                <TextField size="small" type="number" value={st.value}
+                                  onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 96 }} />
+                              )
+                            ) : (
+                              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 96, textAlign: 'right' }}>
+                                {t('admin:groups.scope.global_prefix', { defaultValue: '全局' })}: {fmtScope(k.kind, scope.global[k.key])}
+                              </Typography>
+                            )}
+                          </Box>
                         )
-                      ) : (
-                        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 96, textAlign: 'right' }}>
-                          {t('admin:groups.scope.global_prefix', { defaultValue: '全局' })}: {fmtScope(k.kind, scope.global[k.key])}
-                        </Typography>
-                      )}
+                      })}
                     </Box>
                   )
                 })}

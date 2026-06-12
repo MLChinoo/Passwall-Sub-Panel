@@ -29,7 +29,7 @@ type Service struct {
 	repo     ports.MailRepo
 	users    ports.UserRepo
 	traffic  ports.TrafficRepo
-	settings ports.SettingsRepo
+	settings ports.ScopedSettings
 	tasks    ports.SyncTaskRepo
 }
 
@@ -38,7 +38,7 @@ type TemplatePreview struct {
 	Body    string `json:"body"`
 }
 
-func New(repo ports.MailRepo, users ports.UserRepo, traffic ports.TrafficRepo, settings ports.SettingsRepo, tasks ports.SyncTaskRepo) *Service {
+func New(repo ports.MailRepo, users ports.UserRepo, traffic ports.TrafficRepo, settings ports.ScopedSettings, tasks ports.SyncTaskRepo) *Service {
 	return &Service{repo: repo, users: users, traffic: traffic, settings: settings, tasks: tasks}
 }
 
@@ -1209,27 +1209,36 @@ func (s *Service) processUser(ctx context.Context, settings domain.MailSettings,
 	if to == "" {
 		return nil
 	}
-	data := s.templateData(ctx, settings, uiCfg, u)
+	// Per-group reminder thresholds: a group can set its own expire / traffic-low
+	// warning windows. eff = global (+) this user's group overrides; non-overridable
+	// fields (branding/sub) equal the global uiCfg.
+	eff := uiCfg
+	if s.settings != nil {
+		if e, lerr := s.settings.LoadForUser(ctx, u, ports.UISettings{}); lerr == nil {
+			eff = e
+		}
+	}
+	data := s.templateData(ctx, settings, eff, u)
 	if u.ExpireAt != nil {
 		window := strconv.FormatInt(u.ExpireAt.Unix(), 10)
 		if !u.ExpireAt.After(now) {
 			if err := s.maybeSend(ctx, settings, templates[domain.MailReminderExpired], u, to, domain.MailReminderExpired, window, data); err != nil {
 				return err
 			}
-		} else if u.ExpireAt.Sub(now) <= time.Duration(uiCfg.ExpireBeforeDays)*24*time.Hour {
+		} else if u.ExpireAt.Sub(now) <= time.Duration(eff.ExpireBeforeDays)*24*time.Hour {
 			if err := s.maybeSend(ctx, settings, templates[domain.MailReminderExpireBefore], u, to, domain.MailReminderExpireBefore, window, data); err != nil {
 				return err
 			}
 		}
 	}
-	if u.TrafficLimitBytes > 0 && uiCfg.TrafficRemainPercent > 0 {
+	if u.TrafficLimitBytes > 0 && eff.TrafficRemainPercent > 0 {
 		used, err := s.periodUsage(ctx, u)
 		if err == nil {
 			remain := u.TrafficLimitBytes - used
 			if remain < 0 {
 				remain = 0
 			}
-			if remain*100 <= int64(uiCfg.TrafficRemainPercent)*u.TrafficLimitBytes {
+			if remain*100 <= int64(eff.TrafficRemainPercent)*u.TrafficLimitBytes {
 				data["PeriodUsedGB"] = gb(used)
 				data["TrafficLimitGB"] = gb(u.TrafficLimitBytes)
 				data["TrafficRemainGB"] = gb(remain)

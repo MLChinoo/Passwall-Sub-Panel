@@ -253,7 +253,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// nil-tolerant so the order here doesn't open a startup race window.
 	userSvc.SetTrafficUsage(trafficSvc)
 	trafficSvc.SetConfigPusher(userSvc)
-	mailSvc := mailer.New(repos.Mail, repos.User, repos.Traffic, repos.Settings, repos.SyncTask)
+	mailSvc := mailer.New(repos.Mail, repos.User, repos.Traffic, repos.ScopedSettings, repos.SyncTask)
 	// Late-bind the mailer into the traffic poll so quota-exhaustion disables
 	// and period-rollover re-enables actually email the user (the only path
 	// that produces those notifications).

@@ -1178,18 +1178,22 @@ type ScopeSettingsRepo interface {
 }
 
 // OverridableScopeKeys is the SINGLE source of which settings ("type.name") a
-// scope may override: the post-identity, genuinely group-scoped 2FA-method
-// settings. Both the admin handler AND the repo (ScopeSettingsRepo.SetOverride)
-// gate on it, and the frontend renders from the API's `overridable` echo of this
-// set. Excluded on purpose: require_2fa_for_staff (role-based; Group.Require2FA
-// covers per-group enrollment), passkey_passwordless (the usernameless login
-// button), and twofa_email_resend_cooldown_sec (the login page's resend
-// countdown reads it) — all consumed BEFORE the user/group is known, so they
-// stay global (§10-1).
+// scope may override: post-identity, genuinely group-scoped settings. The admin
+// handler gates writes on it, the resolver (applyScopeOverrides) skips anything
+// outside it (so a stray row can't take effect), and the frontend renders from
+// the API's `overridable` echo of this set. Settings consumed BEFORE the
+// user/group is known stay global (lockout / captcha / LoginMode /
+// passkey_passwordless / twofa_email_resend_cooldown_sec — §10-1); role-based
+// require_2fa_for_staff stays global too (Group.Require2FA covers per-group
+// enrollment). Grow this set one category at a time as consumers migrate.
 var OverridableScopeKeys = map[string]bool{
+	// 2FA methods (login / enroll) — auth_local / twofa / passkey / login2fa.
 	"security.totp_enabled":      true,
 	"security.passkey_enabled":   true,
 	"security.twofa_allow_email": true,
+	// Notification thresholds — mailer.processUser.
+	"notify.expire_before_days":     true,
+	"notify.traffic_remain_percent": true,
 }
 
 // ScopedSettings resolves the EFFECTIVE settings for a scope: the global

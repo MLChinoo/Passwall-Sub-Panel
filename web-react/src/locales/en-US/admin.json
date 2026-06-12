@@ -1275,14 +1275,18 @@
       "require_2fa": "Require this group's members to set up two-factor auth"
     },
     "scope": {
-      "title": "2FA methods (per-group override, else inherit global)",
+      "title": "Per-group overrides (else inherit global)",
+      "cat_2fa": "Two-factor (2FA) methods",
+      "cat_notify": "Notification thresholds",
       "totp": "Authenticator app (TOTP)",
       "passkey": "Passkeys",
       "email": "Email code",
+      "expire_before": "Expiry reminder (days)",
+      "traffic_remain": "Traffic-low reminder (%)",
       "override": "Override",
       "inherit": "Inherit",
       "global_prefix": "Global",
-      "save_error": "Some 2FA overrides failed to save — reopen to verify"
+      "save_error": "Some overrides failed to save — reopen to verify"
     },
     "placeholder": {
       "tags": "Pick region:XX / tag:YY from the dropdown, or type custom"
