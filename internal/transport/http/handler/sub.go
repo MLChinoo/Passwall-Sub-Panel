@@ -33,13 +33,13 @@ type SubHandler struct {
 	user     *user.Service
 	render   *render.Service
 	subLogs  ports.SubLogRepo
-	settings ports.SettingsRepo
+	settings ports.ScopedSettings
 	users    ports.UserRepo
 	mailer   *mailer.Service
 	async    AsyncDispatcher
 }
 
-func NewSubHandler(userSvc *user.Service, renderSvc *render.Service, subLogs ports.SubLogRepo, settings ports.SettingsRepo, users ports.UserRepo, mailerSvc *mailer.Service, async AsyncDispatcher) *SubHandler {
+func NewSubHandler(userSvc *user.Service, renderSvc *render.Service, subLogs ports.SubLogRepo, settings ports.ScopedSettings, users ports.UserRepo, mailerSvc *mailer.Service, async AsyncDispatcher) *SubHandler {
 	return &SubHandler{user: userSvc, render: renderSvc, subLogs: subLogs, settings: settings, users: users, mailer: mailerSvc, async: async}
 }
 
@@ -83,6 +83,18 @@ func (h *SubHandler) Get(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "internal error")
 		return
 	}
+	// Past this point the user (hence their group) is known, so the
+	// subscription-POLICY settings resolve to this user's effective values
+	// (global ⊕ group overrides): the emergency-quota gate below, the
+	// blocked-client auto-disable thresholds, and the block-notify toggle. The
+	// pre-identity client-detection reads above (SubClients / SubClientFilterMode)
+	// stay global — they run before the token is resolved.
+	eff, err := h.settings.LoadForUser(c.Request.Context(), u, ports.UISettings{})
+	if err != nil {
+		log.Warn("sub: load per-user settings failed", "user_id", u.ID, "err", err)
+		c.String(http.StatusInternalServerError, "internal error")
+		return
+	}
 	now := time.Now()
 	// "Valid token but the subscription can't be served right now"
 	// (disabled / expired / emergency-window-expired) is collapsed to
@@ -99,7 +111,7 @@ func (h *SubHandler) Get(c *gin.Context) {
 		log.Info("sub: blocked", "user_id", u.ID, "reason", "emergency_expired")
 		c.String(http.StatusNotFound, "")
 		return
-	case u.EmergencyQuotaExhausted(int64(settings.EmergencyAccessQuotaGB*1024*1024*1024), now):
+	case u.EmergencyQuotaExhausted(int64(eff.EmergencyAccessQuotaGB*1024*1024*1024), now):
 		// Emergency window still time-valid, but the per-window quota is spent.
 		// The traffic poll only tears the window down on its next cycle (up to
 		// minutes away); without this gate /sub keeps serving a working config
@@ -143,7 +155,7 @@ func (h *SubHandler) Get(c *gin.Context) {
 		}
 
 		// Auto-disable when this newly-counted violation crosses the threshold.
-		if advanced && settings.SubBlockAutoDisable && count >= settings.SubBlockAutoDisableCount {
+		if advanced && eff.SubBlockAutoDisable && count >= eff.SubBlockAutoDisableCount {
 			disableDetail := fmt.Sprintf("auto-disabled after %d violations, last client: %s", count, detected.ClientName)
 			if err := h.user.SetEnabledAndSync(c.Request.Context(), u.ID, false, domain.DisabledBlockedClient, disableDetail); err != nil {
 				log.Warn("failed to auto-disable user", "user_id", u.ID, "err", err)
@@ -174,10 +186,10 @@ func (h *SubHandler) Get(c *gin.Context) {
 		// setting here so we don't spawn a goroutine (and its DB reads) when
 		// the feature is off — the per-day cap inside the mailer handles the
 		// rest. Pass the loaded UI settings through to avoid re-reading them.
-		if settings.SubBlockNotifyUser && h.mailer != nil && h.async != nil {
+		if eff.SubBlockNotifyUser && h.mailer != nil && h.async != nil {
 			userCopy := u
 			clientName := detected.ClientName
-			uiCfg := settings
+			uiCfg := eff
 			h.async.Go("sub.blocked-client-warning", func(ctx context.Context) {
 				if err := h.mailer.SendBlockedClientWarning(ctx, userCopy, clientName, uiCfg); err != nil {
 					log.Warn("failed to send blocked-client warning", "user_id", userCopy.ID, "err", err)

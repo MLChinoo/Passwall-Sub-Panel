@@ -1205,6 +1205,17 @@ var OverridableScopeKeys = map[string]bool{
 	// pre-identity, §10-1), so they are deliberately NOT in this set.
 	"auth.disallow_user_password_change": true,
 	"runtime.allow_user_personal_rules":  true,
+	// Subscription policy — render cosmetics (render.loadRenderSettings) +
+	// anti-abuse (sub handler). sub_path / SubClients / SubClientFilterMode stay
+	// GLOBAL: the route prefix is registered once, and client detection runs
+	// before the token resolves a user.
+	"sub.sub_update_interval_hours":    true,
+	"sub.sub_profile_name_template":    true,
+	"sub.sub_region_flag_prefix":       true,
+	"sub.sub_block_auto_disable":       true,
+	"sub.sub_block_auto_disable_count": true,
+	"sub.sub_block_notify_user":        true,
+	"sub.sub_block_notify_max_per_day": true,
 }
 
 // ScopedSettings resolves the EFFECTIVE settings for a scope: the global

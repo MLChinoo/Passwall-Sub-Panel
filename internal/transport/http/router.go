@@ -143,7 +143,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 	// Subscription handler — uses dynamic path from settings.
 	// The actual route is registered via NoRoute handler for dynamic path support.
-	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.Settings, d.Repos.User, d.Mail, d.Async)
+	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.ScopedSettings, d.Repos.User, d.Mail, d.Async)
 	subLimiter := middleware.NewPerIPLimiter(d.SubPerIPPerMin, time.Minute)
 	subLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.SubPerIPPerMin, func(s ports.UISettings) int { return s.SubPerIPPerMin }).get)
 	subPathCache := newSubPathCache(d.Repos.Settings)

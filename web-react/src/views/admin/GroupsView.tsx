@@ -79,9 +79,10 @@ const SCOPE_CATEGORIES: { id: string; labelKey: string; def: string }[] = [
   { id: 'notify', labelKey: 'cat_notify', def: '通知阈值' },
   { id: 'emergency', labelKey: 'cat_emergency', def: '紧急访问（超额救急）' },
   { id: 'login', labelKey: 'cat_login', def: '登录与自助策略' },
+  { id: 'sub', labelKey: 'cat_sub', def: '订阅策略' },
 ]
 const SCOPE_KEYS: {
-  cat: string; key: string; type: string; name: string; kind: 'bool' | 'int' | 'float'
+  cat: string; key: string; type: string; name: string; kind: 'bool' | 'int' | 'float' | 'str'
   field: keyof UISettings; labelKey: string; def: string
 }[] = [
   { cat: '2fa', key: 'security.totp_enabled', type: 'security', name: 'totp_enabled', kind: 'bool', field: 'totp_enabled', labelKey: 'totp', def: '验证器 App (TOTP)' },
@@ -95,6 +96,13 @@ const SCOPE_KEYS: {
   { cat: 'emergency', key: 'security.emergency_access_quota_gb', type: 'security', name: 'emergency_access_quota_gb', kind: 'float', field: 'emergency_access_quota_gb', labelKey: 'em_quota_gb', def: '额外流量额度（GB）' },
   { cat: 'login', key: 'auth.disallow_user_password_change', type: 'auth', name: 'disallow_user_password_change', kind: 'bool', field: 'disallow_user_password_change', labelKey: 'disallow_pwd_change', def: '禁止用户自助改密码' },
   { cat: 'login', key: 'runtime.allow_user_personal_rules', type: 'runtime', name: 'allow_user_personal_rules', kind: 'bool', field: 'allow_user_personal_rules', labelKey: 'allow_personal_rules', def: '允许用户自定义规则' },
+  { cat: 'sub', key: 'sub.sub_update_interval_hours', type: 'sub', name: 'sub_update_interval_hours', kind: 'int', field: 'sub_update_interval_hours', labelKey: 'sub_update_interval', def: '订阅更新间隔（小时）' },
+  { cat: 'sub', key: 'sub.sub_profile_name_template', type: 'sub', name: 'sub_profile_name_template', kind: 'str', field: 'sub_profile_name_template', labelKey: 'sub_profile_name', def: '配置名模板' },
+  { cat: 'sub', key: 'sub.sub_region_flag_prefix', type: 'sub', name: 'sub_region_flag_prefix', kind: 'bool', field: 'sub_region_flag_prefix', labelKey: 'sub_region_flag', def: '节点名加地区旗帜' },
+  { cat: 'sub', key: 'sub.sub_block_auto_disable', type: 'sub', name: 'sub_block_auto_disable', kind: 'bool', field: 'sub_block_auto_disable', labelKey: 'sub_block_auto', def: '违规客户端自动停用' },
+  { cat: 'sub', key: 'sub.sub_block_auto_disable_count', type: 'sub', name: 'sub_block_auto_disable_count', kind: 'int', field: 'sub_block_auto_disable_count', labelKey: 'sub_block_count', def: '自动停用阈值（次）' },
+  { cat: 'sub', key: 'sub.sub_block_notify_user', type: 'sub', name: 'sub_block_notify_user', kind: 'bool', field: 'sub_block_notify_user', labelKey: 'sub_block_notify', def: '违规时通知用户' },
+  { cat: 'sub', key: 'sub.sub_block_notify_max_per_day', type: 'sub', name: 'sub_block_notify_max_per_day', kind: 'int', field: 'sub_block_notify_max_per_day', labelKey: 'sub_block_notify_max', def: '每日通知上限（封）' },
 ]
 
 interface ScopeState {
@@ -104,11 +112,11 @@ interface ScopeState {
   edit: Record<string, { on: boolean; value: string }>
 }
 
-function kvFromGlobal(kind: 'bool' | 'int' | 'float', v: unknown): string {
+function kvFromGlobal(kind: 'bool' | 'int' | 'float' | 'str', v: unknown): string {
   return kind === 'bool' ? (v ? '1' : '0') : String(v ?? '')
 }
 
-function fmtScope(kind: 'bool' | 'int' | 'float', raw: string): string {
+function fmtScope(kind: 'bool' | 'int' | 'float' | 'str', raw: string): string {
   return kind === 'bool' ? (raw === '1' ? '开 / On' : '关 / Off') : raw
 }
 
@@ -776,6 +784,9 @@ export default function GroupsView() {
                               k.kind === 'bool' ? (
                                 <Switch size="small" checked={st.value === '1'}
                                   onChange={(_, c) => setEdit({ on: true, value: c ? '1' : '0' })} />
+                              ) : k.kind === 'str' ? (
+                                <TextField size="small" value={st.value}
+                                  onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 180 }} />
                               ) : (
                                 <TextField size="small" type="number" value={st.value}
                                   inputProps={k.kind === 'float' ? { step: 'any', min: 0 } : { step: 1, min: 0 }}

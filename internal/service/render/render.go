@@ -53,12 +53,23 @@ type Output struct {
 // RWMutex + copied the UISettings struct + ran applyUISettingsDefaults.
 // One Load + threading the value through helpers eliminates that work
 // for the polling-fleet case, which is the only case that matters here.
-func (s *Service) loadRenderSettings(ctx context.Context) ports.UISettings {
-	st, _ := s.repos.Settings.Load(ctx, ports.UISettings{
+func (s *Service) loadRenderSettings(ctx context.Context, u *domain.User) ports.UISettings {
+	defaults := ports.UISettings{
 		SiteTitle:   "Kazuha Hub Passwall",
 		LogoURL:     "/images/logo-title-circle.png",
 		LogoURLDark: "/images/logo-title-circle-darkmode.png",
-	})
+	}
+	// Per-user effective (global ⊕ this user's group overrides): the
+	// subscription-policy fields rendered into the document — update-interval
+	// header, profile-name template, region-flag prefix — are group-scoped.
+	// Falls back to the global repo when ScopedSettings isn't wired (unit tests
+	// that construct a bare Repos); with no overrides the two are identical.
+	if s.repos.ScopedSettings != nil && u != nil {
+		if st, err := s.repos.ScopedSettings.LoadForUser(ctx, u, defaults); err == nil {
+			return st
+		}
+	}
+	st, _ := s.repos.Settings.Load(ctx, defaults)
 	return st
 }
 
@@ -75,7 +86,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if ct == "" {
 		ct = domain.ClientMihomo
 	}
-	st := s.loadRenderSettings(ctx)
+	st := s.loadRenderSettings(ctx, u)
 	g, err := s.repos.Group.GetByID(ctx, u.GroupID)
 	if err != nil {
 		return nil, fmt.Errorf("load group: %w", err)

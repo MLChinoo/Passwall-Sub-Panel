@@ -172,6 +172,49 @@ func TestScopedSettings_LoginPolicyOverridable(t *testing.T) {
 	}
 }
 
+// TestScopedSettings_SubscriptionPolicyOverridable: the subscription-policy keys
+// resolve per group across all three value kinds — bool (region flag), int
+// (block-violation count) and string (profile-name template). The string case
+// matters: it's the first overridable strField, so it exercises the descriptor's
+// string Unmarshal on the merge path. Bites if any key is missing from
+// OverridableScopeKeys.
+func TestScopedSettings_SubscriptionPolicyOverridable(t *testing.T) {
+	global, scope, resolver := newScopedTestRepos(t)
+	ctx := context.Background()
+
+	base, _ := global.Load(ctx, ports.UISettings{})
+	base.SubRegionFlagPrefix = false
+	base.SubBlockAutoDisableCount = 3
+	base.SubProfileNameTemplate = "global-{{name}}"
+	if err := global.Save(ctx, base); err != nil {
+		t.Fatalf("save global: %v", err)
+	}
+	for _, o := range []ports.ScopeOverride{
+		{Type: "sub", Name: "sub_region_flag_prefix", Value: "1"},
+		{Type: "sub", Name: "sub_block_auto_disable_count", Value: "7"},
+		{Type: "sub", Name: "sub_profile_name_template", Value: "vip-{{name}}"},
+	} {
+		if err := scope.SetOverride(ctx, "group", 1, o); err != nil {
+			t.Fatalf("set override %s: %v", o.Name, err)
+		}
+	}
+
+	g, _ := resolver.LoadForGroup(ctx, 1, ports.UISettings{})
+	if !g.SubRegionFlagPrefix {
+		t.Error("group override sub_region_flag_prefix=true must apply")
+	}
+	if g.SubBlockAutoDisableCount != 7 {
+		t.Errorf("group override sub_block_auto_disable_count=7 must apply, got %d", g.SubBlockAutoDisableCount)
+	}
+	if g.SubProfileNameTemplate != "vip-{{name}}" {
+		t.Errorf("group override sub_profile_name_template must apply, got %q", g.SubProfileNameTemplate)
+	}
+	gl, _ := resolver.Load(ctx, ports.UISettings{})
+	if gl.SubRegionFlagPrefix || gl.SubBlockAutoDisableCount != 3 || gl.SubProfileNameTemplate != "global-{{name}}" {
+		t.Error("global subscription policy must be unaffected by a group override")
+	}
+}
+
 // TestScopedSettings_SkipsNonOverridableRow: even if a stray override row for a
 // NON-overridable key exists (the admin handler blocks writing one, but the repo
 // itself doesn't), the resolver must ignore it so the global/group partition holds.

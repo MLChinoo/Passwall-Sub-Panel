@@ -100,7 +100,11 @@ func NewRepos(db *gorm.DB) ports.Repos {
 	// Settings is wrapped in the in-process cache decorator (see below); the
 	// ScopedSettings resolver layers each group's sparse overrides on top of it.
 	cachedSettings := NewCachingSettingsRepo(newKVSettingsRepo(db))
-	scopeSettings := newKVScopeSettingsRepo(db)
+	// One cached scope repo shared by BOTH the write side (ScopeSettings: admin
+	// override CRUD, group-delete cleanup) and the read side (the ScopedSettings
+	// resolver). Sharing the instance is what makes invalidate-on-write correct —
+	// a SetOverride/DeleteScope clears the same cache the /sub resolver reads.
+	scopeSettings := NewCachingScopeRepo(newKVScopeSettingsRepo(db))
 	return ports.Repos{
 		User:        &userRepo{db: db},
 		Group:       &groupRepo{db: db},
