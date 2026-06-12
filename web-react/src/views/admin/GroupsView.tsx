@@ -36,6 +36,8 @@ import { useCan } from '@/utils/permissions'
 
 import { createGroup, deleteGroup, listGroups, updateGroup } from '@/api/groups'
 import { listNodes } from '@/api/nodes'
+import { deleteGroupScopeOverride, getGroupScopeSettings, setGroupScopeOverride } from '@/api/scopeSettings'
+import { getUISettings, type UISettings } from '@/api/settings'
 import type { Group, Node } from '@/api/types'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
@@ -66,6 +68,35 @@ const EMPTY_FORM: FormState = {
   regions: [], tags: [], servers: [], custom_text: '',
   remark: '',
   require_2fa: false,
+}
+
+// The per-group-overridable 2FA settings — must mirror the backend allowlist
+// (admin_scope_settings.go overridableScopeKeys). Each maps a scope key to its
+// global UISettings field + the control kind so the editor renders inherit /
+// override per setting. A key the backend stops advertising is filtered out.
+const SCOPE_2FA_KEYS: {
+  key: string; type: string; name: string; kind: 'bool' | 'int'
+  field: keyof UISettings; labelKey: string; def: string
+}[] = [
+  { key: 'security.totp_enabled', type: 'security', name: 'totp_enabled', kind: 'bool', field: 'totp_enabled', labelKey: 'totp', def: '验证器 App (TOTP)' },
+  { key: 'security.passkey_enabled', type: 'security', name: 'passkey_enabled', kind: 'bool', field: 'passkey_enabled', labelKey: 'passkey', def: '通行密钥' },
+  { key: 'security.twofa_allow_email', type: 'security', name: 'twofa_allow_email', kind: 'bool', field: 'twofa_allow_email', labelKey: 'email', def: '邮箱验证码' },
+  { key: 'security.twofa_email_resend_cooldown_sec', type: 'security', name: 'twofa_email_resend_cooldown_sec', kind: 'int', field: 'twofa_email_resend_cooldown_sec', labelKey: 'email_cooldown', def: '邮箱重发冷却（秒）' },
+]
+
+interface ScopeState {
+  overridable: string[]
+  global: Record<string, string>   // scope key -> global KV value (baseline)
+  orig: Record<string, string>     // original overrides (for diff-on-save)
+  edit: Record<string, { on: boolean; value: string }>
+}
+
+function kvFromGlobal(kind: 'bool' | 'int', v: unknown): string {
+  return kind === 'bool' ? (v ? '1' : '0') : String(v ?? '')
+}
+
+function fmtScope(kind: 'bool' | 'int', raw: string): string {
+  return kind === 'bool' ? (raw === '1' ? '开 / On' : '关 / Off') : raw
 }
 
 // parseTagConditions splits a stored tag_filter.tags array into the four
@@ -168,6 +199,8 @@ export default function GroupsView() {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Group | null>(null)
+  // Per-group 2FA overrides shown in the edit dialog (null while loading / create).
+  const [scope, setScope] = useState<ScopeState | null>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [busy, setBusy] = useState(false)
 
@@ -260,6 +293,7 @@ export default function GroupsView() {
 
   function openCreate() {
     setEditing(null)
+    setScope(null) // overrides apply only to an existing group
     setForm(EMPTY_FORM)
     setDialogOpen(true)
   }
@@ -279,7 +313,43 @@ export default function GroupsView() {
       remark: g.remark || '',
       require_2fa: !!g.require_2fa,
     })
+    setScope(null)
     setDialogOpen(true)
+    void loadScope(g.id)
+  }
+
+  async function loadScope(groupId: number) {
+    try {
+      const [ss, gs] = await Promise.all([getGroupScopeSettings(groupId), getUISettings()])
+      const global: Record<string, string> = {}
+      const edit: Record<string, { on: boolean; value: string }> = {}
+      for (const k of SCOPE_2FA_KEYS) {
+        global[k.key] = kvFromGlobal(k.kind, gs[k.field])
+        const ov = ss.overrides[k.key]
+        edit[k.key] = ov !== undefined ? { on: true, value: ov } : { on: false, value: global[k.key] }
+      }
+      setScope({ overridable: ss.overridable, global, orig: ss.overrides, edit })
+    } catch {
+      // best-effort: leave scope null so the section simply doesn't render
+    }
+  }
+
+  // Diff the editor state against the loaded overrides: PUT changed/new, DELETE
+  // those flipped back to inherit. Runs after the group itself is saved.
+  async function applyScopeOverrides(groupId: number) {
+    if (!scope) return
+    for (const k of SCOPE_2FA_KEYS) {
+      if (!scope.overridable.includes(k.key)) continue
+      const st = scope.edit[k.key]
+      const wasOverridden = scope.orig[k.key] !== undefined
+      if (st.on) {
+        if (!wasOverridden || scope.orig[k.key] !== st.value) {
+          await setGroupScopeOverride(groupId, k.type, k.name, st.value)
+        }
+      } else if (wasOverridden) {
+        await deleteGroupScopeOverride(groupId, k.type, k.name)
+      }
+    }
   }
 
   async function submit(e: FormEvent) {
@@ -302,6 +372,7 @@ export default function GroupsView() {
           remark: form.remark,
           require_2fa: form.require_2fa,
         })
+        await applyScopeOverrides(editing.id)
         pushSnack(t('admin:groups.toast.updated'), 'success')
         if (res.resync_errors?.length) {
           pushSnack(t('admin:groups.toast.resync_partial', { count: res.resync_errors.length }), 'warning')
@@ -646,6 +717,52 @@ export default function GroupsView() {
               }
               sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
             />
+            {editing && scope && (
+              <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 2, mt: 0.5 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                  {t('admin:groups.scope.title', { defaultValue: '2FA 方式（按组覆盖，否则继承全局）' })}
+                </Typography>
+                {SCOPE_2FA_KEYS.filter(k => scope.overridable.includes(k.key)).map(k => {
+                  const st = scope.edit[k.key]
+                  const setEdit = (v: { on: boolean; value: string }) =>
+                    setScope(s => (s ? { ...s, edit: { ...s.edit, [k.key]: v } } : s))
+                  return (
+                    <Box key={k.key} sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: 40 }}>
+                      <Box sx={{ flex: 1, fontSize: 14 }}>
+                        {t(`admin:groups.scope.${k.labelKey}`, { defaultValue: k.def })}
+                      </Box>
+                      <FormControlLabel
+                        sx={{ mr: 0 }}
+                        control={
+                          <Switch size="small" checked={st.on}
+                            onChange={(_, c) => setEdit({ on: c, value: c ? st.value : scope.global[k.key] })} />
+                        }
+                        label={
+                          <Typography variant="caption">
+                            {st.on
+                              ? t('admin:groups.scope.override', { defaultValue: '覆盖' })
+                              : t('admin:groups.scope.inherit', { defaultValue: '继承' })}
+                          </Typography>
+                        }
+                      />
+                      {st.on ? (
+                        k.kind === 'bool' ? (
+                          <Switch size="small" checked={st.value === '1'}
+                            onChange={(_, c) => setEdit({ on: true, value: c ? '1' : '0' })} />
+                        ) : (
+                          <TextField size="small" type="number" value={st.value}
+                            onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 96 }} />
+                        )
+                      ) : (
+                        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 96, textAlign: 'right' }}>
+                          {t('admin:groups.scope.global_prefix', { defaultValue: '全局' })}: {fmtScope(k.kind, scope.global[k.key])}
+                        </Typography>
+                      )}
+                    </Box>
+                  )
+                })}
+              </Box>
+            )}
           </Box>
         </DialogContent>
         <DialogActions>

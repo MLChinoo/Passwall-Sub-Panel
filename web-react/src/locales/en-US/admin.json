@@ -1274,6 +1274,16 @@
       "remark": "Remark",
       "require_2fa": "Require this group's members to set up two-factor auth"
     },
+    "scope": {
+      "title": "2FA methods (per-group override, else inherit global)",
+      "totp": "Authenticator app (TOTP)",
+      "passkey": "Passkeys",
+      "email": "Email code",
+      "email_cooldown": "Email resend cooldown (s)",
+      "override": "Override",
+      "inherit": "Inherit",
+      "global_prefix": "Global"
+    },
     "placeholder": {
       "tags": "Pick region:XX / tag:YY from the dropdown, or type custom"
     },
