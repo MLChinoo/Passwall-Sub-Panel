@@ -16,12 +16,14 @@ import {
   InputAdornment,
   MenuItem,
   Switch,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
+  Tabs,
   TextField,
   Typography,
   alpha,
@@ -36,13 +38,13 @@ import { useCan } from '@/utils/permissions'
 
 import { createGroup, deleteGroup, listGroups, updateGroup } from '@/api/groups'
 import { listNodes } from '@/api/nodes'
-import { deleteGroupScopeOverride, getGroupScopeSettings, setGroupScopeOverride } from '@/api/scopeSettings'
-import { getUISettings, type UISettings } from '@/api/settings'
 import type { Group, Node } from '@/api/types'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import { PagedTableFooter } from '@/components/PagedTableFooter'
 import PageHeader from '@/components/PageHeader'
+import ScopeOverridesEditor from '@/components/scope/ScopeOverridesEditor'
+import { loadScopeState, saveScopeState, type ScopeState } from '@/components/scope/scopeOverrides'
 
 interface FormState {
   slug: string
@@ -68,56 +70,6 @@ const EMPTY_FORM: FormState = {
   regions: [], tags: [], servers: [], custom_text: '',
   remark: '',
   require_2fa: false,
-}
-
-// The per-group-overridable 2FA settings — must mirror the backend allowlist
-// (admin_scope_settings.go overridableScopeKeys). Each maps a scope key to its
-// global UISettings field + the control kind so the editor renders inherit /
-// override per setting. A key the backend stops advertising is filtered out.
-const SCOPE_CATEGORIES: { id: string; labelKey: string; def: string }[] = [
-  { id: '2fa', labelKey: 'cat_2fa', def: '两步验证 (2FA) 方式' },
-  { id: 'notify', labelKey: 'cat_notify', def: '通知阈值' },
-  { id: 'emergency', labelKey: 'cat_emergency', def: '紧急访问（超额救急）' },
-  { id: 'login', labelKey: 'cat_login', def: '登录与自助策略' },
-  { id: 'sub', labelKey: 'cat_sub', def: '订阅策略' },
-]
-const SCOPE_KEYS: {
-  cat: string; key: string; type: string; name: string; kind: 'bool' | 'int' | 'float' | 'str'
-  field: keyof UISettings; labelKey: string; def: string
-}[] = [
-  { cat: '2fa', key: 'security.totp_enabled', type: 'security', name: 'totp_enabled', kind: 'bool', field: 'totp_enabled', labelKey: 'totp', def: '验证器 App (TOTP)' },
-  { cat: '2fa', key: 'security.passkey_enabled', type: 'security', name: 'passkey_enabled', kind: 'bool', field: 'passkey_enabled', labelKey: 'passkey', def: '通行密钥' },
-  { cat: '2fa', key: 'security.twofa_allow_email', type: 'security', name: 'twofa_allow_email', kind: 'bool', field: 'twofa_allow_email', labelKey: 'email', def: '邮箱验证码' },
-  { cat: 'notify', key: 'notify.expire_before_days', type: 'notify', name: 'expire_before_days', kind: 'int', field: 'expire_before_days', labelKey: 'expire_before', def: '到期前提醒（天）' },
-  { cat: 'notify', key: 'notify.traffic_remain_percent', type: 'notify', name: 'traffic_remain_percent', kind: 'int', field: 'traffic_remain_percent', labelKey: 'traffic_remain', def: '剩余流量提醒（%）' },
-  { cat: 'emergency', key: 'security.emergency_access_enabled', type: 'security', name: 'emergency_access_enabled', kind: 'bool', field: 'emergency_access_enabled', labelKey: 'em_enabled', def: '启用紧急访问' },
-  { cat: 'emergency', key: 'security.emergency_access_hours', type: 'security', name: 'emergency_access_hours', kind: 'int', field: 'emergency_access_hours', labelKey: 'em_hours', def: '单次时长（小时）' },
-  { cat: 'emergency', key: 'security.emergency_access_max_count', type: 'security', name: 'emergency_access_max_count', kind: 'int', field: 'emergency_access_max_count', labelKey: 'em_max_count', def: '可用次数' },
-  { cat: 'emergency', key: 'security.emergency_access_quota_gb', type: 'security', name: 'emergency_access_quota_gb', kind: 'float', field: 'emergency_access_quota_gb', labelKey: 'em_quota_gb', def: '额外流量额度（GB）' },
-  { cat: 'login', key: 'auth.disallow_user_password_change', type: 'auth', name: 'disallow_user_password_change', kind: 'bool', field: 'disallow_user_password_change', labelKey: 'disallow_pwd_change', def: '禁止用户自助改密码' },
-  { cat: 'login', key: 'runtime.allow_user_personal_rules', type: 'runtime', name: 'allow_user_personal_rules', kind: 'bool', field: 'allow_user_personal_rules', labelKey: 'allow_personal_rules', def: '允许用户自定义规则' },
-  { cat: 'sub', key: 'sub.sub_update_interval_hours', type: 'sub', name: 'sub_update_interval_hours', kind: 'int', field: 'sub_update_interval_hours', labelKey: 'sub_update_interval', def: '订阅更新间隔（小时）' },
-  { cat: 'sub', key: 'sub.sub_profile_name_template', type: 'sub', name: 'sub_profile_name_template', kind: 'str', field: 'sub_profile_name_template', labelKey: 'sub_profile_name', def: '配置名模板' },
-  { cat: 'sub', key: 'sub.sub_region_flag_prefix', type: 'sub', name: 'sub_region_flag_prefix', kind: 'bool', field: 'sub_region_flag_prefix', labelKey: 'sub_region_flag', def: '节点名加地区旗帜' },
-  { cat: 'sub', key: 'sub.sub_block_auto_disable', type: 'sub', name: 'sub_block_auto_disable', kind: 'bool', field: 'sub_block_auto_disable', labelKey: 'sub_block_auto', def: '违规客户端自动停用' },
-  { cat: 'sub', key: 'sub.sub_block_auto_disable_count', type: 'sub', name: 'sub_block_auto_disable_count', kind: 'int', field: 'sub_block_auto_disable_count', labelKey: 'sub_block_count', def: '自动停用阈值（次）' },
-  { cat: 'sub', key: 'sub.sub_block_notify_user', type: 'sub', name: 'sub_block_notify_user', kind: 'bool', field: 'sub_block_notify_user', labelKey: 'sub_block_notify', def: '违规时通知用户' },
-  { cat: 'sub', key: 'sub.sub_block_notify_max_per_day', type: 'sub', name: 'sub_block_notify_max_per_day', kind: 'int', field: 'sub_block_notify_max_per_day', labelKey: 'sub_block_notify_max', def: '每日通知上限（封）' },
-]
-
-interface ScopeState {
-  overridable: string[]
-  global: Record<string, string>   // scope key -> global KV value (baseline)
-  orig: Record<string, string>     // original overrides (for diff-on-save)
-  edit: Record<string, { on: boolean; value: string }>
-}
-
-function kvFromGlobal(kind: 'bool' | 'int' | 'float' | 'str', v: unknown): string {
-  return kind === 'bool' ? (v ? '1' : '0') : String(v ?? '')
-}
-
-function fmtScope(kind: 'bool' | 'int' | 'float' | 'str', raw: string): string {
-  return kind === 'bool' ? (raw === '1' ? '开 / On' : '关 / Off') : raw
 }
 
 // parseTagConditions splits a stored tag_filter.tags array into the four
@@ -220,7 +172,11 @@ export default function GroupsView() {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Group | null>(null)
-  // Per-group 2FA overrides shown in the edit dialog (null while loading / create).
+  // Group detail is tabbed: Node access (tag filter) / Policies (require_2fa +
+  // per-group overrides) / Members. Reset to 'access' on every open.
+  const [dlgTab, setDlgTab] = useState<'access' | 'policies' | 'members'>('access')
+  // Per-group setting overrides shown in the Policies tab (null while loading /
+  // on create — overrides apply only to an existing group).
   const [scope, setScope] = useState<ScopeState | null>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [busy, setBusy] = useState(false)
@@ -316,6 +272,7 @@ export default function GroupsView() {
     setEditing(null)
     setScope(null) // overrides apply only to an existing group
     setForm(EMPTY_FORM)
+    setDlgTab('access')
     setDialogOpen(true)
   }
 
@@ -335,21 +292,14 @@ export default function GroupsView() {
       require_2fa: !!g.require_2fa,
     })
     setScope(null)
+    setDlgTab('access')
     setDialogOpen(true)
     void loadScope(g.id)
   }
 
   async function loadScope(groupId: number) {
     try {
-      const [ss, gs] = await Promise.all([getGroupScopeSettings(groupId), getUISettings()])
-      const global: Record<string, string> = {}
-      const edit: Record<string, { on: boolean; value: string }> = {}
-      for (const k of SCOPE_KEYS) {
-        global[k.key] = kvFromGlobal(k.kind, gs[k.field])
-        const ov = ss.overrides[k.key]
-        edit[k.key] = ov !== undefined ? { on: true, value: ov } : { on: false, value: global[k.key] }
-      }
-      setScope({ overridable: ss.overridable, global, orig: ss.overrides, edit })
+      setScope(await loadScopeState(groupId))
     } catch {
       // best-effort: leave scope null so the section simply doesn't render
     }
@@ -360,18 +310,7 @@ export default function GroupsView() {
   async function applyScopeOverrides(groupId: number) {
     if (!scope) return
     try {
-      for (const k of SCOPE_KEYS) {
-        if (!scope.overridable.includes(k.key)) continue
-        const st = scope.edit[k.key]
-        const wasOverridden = scope.orig[k.key] !== undefined
-        if (st.on) {
-          if (!wasOverridden || scope.orig[k.key] !== st.value) {
-            await setGroupScopeOverride(groupId, k.type, k.name, st.value)
-          }
-        } else if (wasOverridden) {
-          await deleteGroupScopeOverride(groupId, k.type, k.name)
-        }
-      }
+      await saveScopeState(groupId, scope)
     } catch {
       // A mid-loop failure can leave overrides partially applied; surface it. The
       // backend writes are idempotent and reopening re-fetches the actual state.
@@ -683,126 +622,118 @@ export default function GroupsView() {
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
             />
-            <FormControlLabel
-              label={t('admin:groups.field.match_all')}
-              control={
-                <Switch checked={form.all} onChange={(_, c) => setForm({ ...form, all: c })} />
-              }
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
-            />
-            {!form.all && (
+            <Tabs
+              value={dlgTab}
+              onChange={(_, v) => setDlgTab(v)}
+              sx={{ minHeight: 40, borderBottom: `1px solid ${md.outlineVariant}` }}
+            >
+              <Tab value="access" sx={{ minHeight: 40 }}
+                label={t('admin:groups.tabs.node_access', { defaultValue: '节点范围' })} />
+              <Tab value="policies" sx={{ minHeight: 40 }}
+                label={t('admin:groups.tabs.policies', { defaultValue: '策略' })} />
+              {editing && (
+                <Tab value="members" sx={{ minHeight: 40 }}
+                  label={t('admin:groups.tabs.members', { defaultValue: '成员' })} />
+              )}
+            </Tabs>
+
+            {dlgTab === 'access' && (
               <>
+                <FormControlLabel
+                  label={t('admin:groups.field.match_all')}
+                  control={
+                    <Switch checked={form.all} onChange={(_, c) => setForm({ ...form, all: c })} />
+                  }
+                  sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
+                />
+                {!form.all && (
+                  <>
+                    <TextField
+                      select
+                      fullWidth
+                      label={t('admin:groups.field.mode')}
+                      value={form.mode}
+                      onChange={e => setForm({ ...form, mode: e.target.value as 'all' | 'any' })}
+                      helperText={t('admin:groups.hint.mode')}
+                    >
+                      <MenuItem value="all">{t('admin:groups.mode.all')}</MenuItem>
+                      <MenuItem value="any">{t('admin:groups.mode.any')}</MenuItem>
+                    </TextField>
+                    <MultiPicker
+                      label={t('admin:groups.field.region')}
+                      options={regionOptions}
+                      value={form.regions}
+                      onChange={v => setForm({ ...form, regions: v })}
+                    />
+                    <MultiPicker
+                      label={t('admin:groups.field.tag')}
+                      options={tagOptions}
+                      value={form.tags}
+                      onChange={v => setForm({ ...form, tags: v })}
+                    />
+                    <MultiPicker
+                      label={t('admin:groups.field.node')}
+                      options={serverOptions}
+                      value={form.servers}
+                      onChange={v => setForm({ ...form, servers: v })}
+                    />
+                    <TextField
+                      fullWidth
+                      label={t('admin:groups.field.custom_conditions')}
+                      placeholder="vendor:gcp, ..."
+                      helperText={t('admin:groups.hint.custom_conditions')}
+                      value={form.custom_text}
+                      onChange={e => setForm({ ...form, custom_text: e.target.value })}
+                    />
+                  </>
+                )}
                 <TextField
-                  select
                   fullWidth
-                  label={t('admin:groups.field.mode')}
-                  value={form.mode}
-                  onChange={e => setForm({ ...form, mode: e.target.value as 'all' | 'any' })}
-                  helperText={t('admin:groups.hint.mode')}
-                >
-                  <MenuItem value="all">{t('admin:groups.mode.all')}</MenuItem>
-                  <MenuItem value="any">{t('admin:groups.mode.any')}</MenuItem>
-                </TextField>
-                <MultiPicker
-                  label={t('admin:groups.field.region')}
-                  options={regionOptions}
-                  value={form.regions}
-                  onChange={v => setForm({ ...form, regions: v })}
-                />
-                <MultiPicker
-                  label={t('admin:groups.field.tag')}
-                  options={tagOptions}
-                  value={form.tags}
-                  onChange={v => setForm({ ...form, tags: v })}
-                />
-                <MultiPicker
-                  label={t('admin:groups.field.node')}
-                  options={serverOptions}
-                  value={form.servers}
-                  onChange={v => setForm({ ...form, servers: v })}
-                />
-                <TextField
-                  fullWidth
-                  label={t('admin:groups.field.custom_conditions')}
-                  placeholder="vendor:gcp, ..."
-                  helperText={t('admin:groups.hint.custom_conditions')}
-                  value={form.custom_text}
-                  onChange={e => setForm({ ...form, custom_text: e.target.value })}
+                  label={t('admin:groups.field.remark')}
+                  value={form.remark}
+                  onChange={e => setForm({ ...form, remark: e.target.value })}
                 />
               </>
             )}
-            <TextField
-              fullWidth
-              label={t('admin:groups.field.remark')}
-              value={form.remark}
-              onChange={e => setForm({ ...form, remark: e.target.value })}
-            />
-            <FormControlLabel
-              label={t('admin:groups.field.require_2fa', { defaultValue: '强制本组成员启用两步验证' })}
-              control={
-                <Switch checked={form.require_2fa} onChange={(_, c) => setForm({ ...form, require_2fa: c })} />
-              }
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
-            />
-            {editing && scope && (
-              <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 2, mt: 0.5 }}>
-                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                  {t('admin:groups.scope.title', { defaultValue: '按组覆盖（否则继承全局）' })}
-                </Typography>
-                {SCOPE_CATEGORIES.map(cat => {
-                  const keys = SCOPE_KEYS.filter(k => k.cat === cat.id && scope.overridable.includes(k.key))
-                  if (!keys.length) return null
-                  return (
-                    <Box key={cat.id} sx={{ mt: 1 }}>
-                      <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-                        {t(`admin:groups.scope.${cat.labelKey}`, { defaultValue: cat.def })}
+
+            {dlgTab === 'policies' && (
+              <>
+                <FormControlLabel
+                  label={t('admin:groups.field.require_2fa', { defaultValue: '强制本组成员启用两步验证' })}
+                  control={
+                    <Switch checked={form.require_2fa} onChange={(_, c) => setForm({ ...form, require_2fa: c })} />
+                  }
+                  sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }}
+                />
+                {editing ? (
+                  scope ? (
+                    <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 2, mt: 0.5 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                        {t('admin:groups.scope.title', { defaultValue: '按组覆盖（否则继承全局）' })}
                       </Typography>
-                      {keys.map(k => {
-                        const st = scope.edit[k.key]
-                        const setEdit = (v: { on: boolean; value: string }) =>
-                          setScope(s => (s ? { ...s, edit: { ...s.edit, [k.key]: v } } : s))
-                        return (
-                          <Box key={k.key} sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: 40 }}>
-                            <Box sx={{ flex: 1, fontSize: 14 }}>
-                              {t(`admin:groups.scope.${k.labelKey}`, { defaultValue: k.def })}
-                            </Box>
-                            <FormControlLabel
-                              sx={{ mr: 0 }}
-                              control={
-                                <Switch size="small" checked={st.on}
-                                  onChange={(_, c) => setEdit({ on: c, value: c ? st.value : scope.global[k.key] })} />
-                              }
-                              label={
-                                <Typography variant="caption">
-                                  {st.on
-                                    ? t('admin:groups.scope.override', { defaultValue: '覆盖' })
-                                    : t('admin:groups.scope.inherit', { defaultValue: '继承' })}
-                                </Typography>
-                              }
-                            />
-                            {st.on ? (
-                              k.kind === 'bool' ? (
-                                <Switch size="small" checked={st.value === '1'}
-                                  onChange={(_, c) => setEdit({ on: true, value: c ? '1' : '0' })} />
-                              ) : k.kind === 'str' ? (
-                                <TextField size="small" value={st.value}
-                                  onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 180 }} />
-                              ) : (
-                                <TextField size="small" type="number" value={st.value}
-                                  inputProps={k.kind === 'float' ? { step: 'any', min: 0 } : { step: 1, min: 0 }}
-                                  onChange={e => setEdit({ on: true, value: e.target.value })} sx={{ width: 96 }} />
-                              )
-                            ) : (
-                              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 96, textAlign: 'right' }}>
-                                {t('admin:groups.scope.global_prefix', { defaultValue: '全局' })}: {fmtScope(k.kind, scope.global[k.key])}
-                              </Typography>
-                            )}
-                          </Box>
-                        )
-                      })}
+                      <ScopeOverridesEditor scope={scope} onChange={setScope} />
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+                      <CircularProgress size={20} />
                     </Box>
                   )
-                })}
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    {t('admin:groups.scope.create_hint', { defaultValue: '保存分组后即可在此设置按组覆盖。' })}
+                  </Typography>
+                )}
+              </>
+            )}
+
+            {dlgTab === 'members' && editing && (
+              <Box sx={{ py: 1 }}>
+                <Typography variant="body2" sx={{ mb: 0.5 }}>
+                  {t('admin:groups.members.count', { count: editing.members, defaultValue: '本组共有 {{count}} 名成员' })}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {t('admin:groups.members.hint', { defaultValue: '在「用户管理」中按本组筛选可查看与管理成员。' })}
+                </Typography>
               </Box>
             )}
           </Box>

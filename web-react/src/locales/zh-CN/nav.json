@@ -8,10 +8,17 @@
     "groups": "分组",
     "rules": "规则库",
     "templates": "配置方案",
+    "sub_clients": "订阅客户端",
     "traffic": "流量统计",
     "logs": "日志管理",
     "sync_tasks": "同步任务",
     "settings": "系统设置"
+  },
+  "section": {
+    "directory": "目录",
+    "infrastructure": "基础设施",
+    "subscription": "订阅",
+    "reporting": "报表"
   },
   "user": {
     "me": "我的订阅"

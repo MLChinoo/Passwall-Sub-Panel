@@ -26,6 +26,7 @@ const UsersView = lazy(() => import('@/views/admin/UsersView'))
 const NodesView = lazy(() => import('@/views/admin/NodesView'))
 const RuleSetsView = lazy(() => import('@/views/admin/RuleSetsView'))
 const TemplatesView = lazy(() => import('@/views/admin/TemplatesView'))
+const SubClientsView = lazy(() => import('@/views/admin/SubClientsView'))
 const LogsView = lazy(() => import('@/views/admin/LogsView'))
 const SyncTasksView = lazy(() => import('@/views/admin/SyncTasksView'))
 const TrafficView = lazy(() => import('@/views/admin/TrafficView'))
@@ -89,6 +90,7 @@ export const router = createBrowserRouter([
           { path: 'nodes', element: <NodesView /> },
           { path: 'rules', element: <RuleSetsView /> },
           { path: 'templates', element: <TemplatesView /> },
+          { path: 'sub-clients', element: <SubClientsView /> },
           { path: 'logs', element: <LogsView /> },
           { path: 'sync-tasks', element: <SyncTasksView /> },
           { path: 'traffic', element: <TrafficView /> },

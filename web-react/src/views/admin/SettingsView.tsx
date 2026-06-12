@@ -4,7 +4,6 @@ import {
   Box,
   Button,
   Card,
-  Chip,
   CircularProgress,
   Divider,
   Dialog,
@@ -66,10 +65,6 @@ import {
   type QuickLink,
   type SAMLConfig,
   type SSORoleRule,
-  type SubClientApp,
-  type SubClientFamily,
-  type SubPlatform,
-  type SubRenderFormat,
   type UISettings,
 } from '@/api/settings'
 import AddIcon from '@mui/icons-material/Add'
@@ -94,6 +89,9 @@ import { useSiteStore } from '@/stores/site'
 import { useTabParam } from '@/hooks/useTabParam'
 import { listGroups } from '@/api/groups'
 import type { Group } from '@/api/types'
+import { normalizeRegistry } from './subclients/clientRegistry'
+import ScopeOverridesEditor from '@/components/scope/ScopeOverridesEditor'
+import { loadScopeState, saveScopeState, type ScopeState } from '@/components/scope/scopeOverrides'
 
 type TabKey = 'general' | 'security' | 'brand' | 'subscription' | 'portal' | 'mail' | 'sso'
 
@@ -178,7 +176,31 @@ export default function SettingsView() {
   // Same "kept unchanged" pattern for the captcha provider secret key.
   const [changeCaptchaSecret, setChangeCaptchaSecret] = useState(false)
 
+  // v3.8.0 scope rail. The scope-trackable tabs (Account security / Notifications
+  // / Subscription policy) can be edited per-group: groupId 0 = All users (the
+  // existing global editors below), a group id swaps that tab's overridable
+  // fields for the inherit/override editor backed by the scope-settings API.
+  const [scopeGroups, setScopeGroups] = useState<Group[]>([])
+  const [scopeGroupId, setScopeGroupId] = useState(0)
+  const [scopeState, setScopeState] = useState<ScopeState | null>(null)
+  const [scopeSaving, setScopeSaving] = useState(false)
+
   useEffect(() => { void load(); void loadGeoStatus() }, [])
+
+  // Group list drives the scope selector. Failure leaves it global-only.
+  useEffect(() => {
+    listGroups().then(r => setScopeGroups(r.items)).catch(() => { /* selector stays global-only */ })
+  }, [])
+
+  // Load the selected group's override set (global baseline + sparse overrides).
+  // groupId 0 resolves to pure global, so nothing to fetch.
+  useEffect(() => {
+    if (scopeGroupId === 0) { setScopeState(null); return }
+    let alive = true
+    setScopeState(null)
+    loadScopeState(scopeGroupId).then(s => { if (alive) setScopeState(s) }).catch(() => { /* leave null → spinner */ })
+    return () => { alive = false }
+  }, [scopeGroupId])
 
   async function loadGeoStatus() {
     try { setGeoStatus(await getGeoIPStatus()) } catch { /* non-fatal: section still renders */ }
@@ -348,6 +370,57 @@ export default function SettingsView() {
     </Box>
   )
 
+  // Persist the selected group's override diff (PUT/DELETE per key) then reload.
+  async function saveScope() {
+    if (!scopeState || scopeGroupId === 0) return
+    setScopeSaving(true)
+    try {
+      await saveScopeState(scopeGroupId, scopeState)
+      setScopeState(await loadScopeState(scopeGroupId))
+      pushSnack(t('settings.saved'), 'success')
+    } catch {
+      pushSnack(t('groups.scope.save_error', { defaultValue: '部分覆盖保存失败，请重新打开核对' }), 'error')
+    } finally { setScopeSaving(false) }
+  }
+
+  // renderScopeTab wraps a scope-trackable tab: the audience selector on top,
+  // then either the global editors (All users) or the per-group inherit/override
+  // editor filtered to this tab's categories.
+  function renderScopeTab(categories: string[], globalContent: React.ReactNode) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>
+            {t('settings.scope.audience', { defaultValue: '适用对象' })}
+          </Typography>
+          <TextField select size="small" value={scopeGroupId}
+            onChange={e => setScopeGroupId(Number(e.target.value))} sx={{ minWidth: 240 }}>
+            <MenuItem value={0}>{t('settings.scope.all_users', { defaultValue: '所有用户（全局默认）' })}</MenuItem>
+            {scopeGroups.map(g => <MenuItem key={g.id} value={g.id}>{g.name}</MenuItem>)}
+          </TextField>
+        </Box>
+        {scopeGroupId === 0 ? globalContent : scopeState ? (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button variant="contained" disabled={scopeSaving} onClick={saveScope}
+                startIcon={scopeSaving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
+                {t('settings.save')}
+              </Button>
+            </Box>
+            <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
+              <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, mb: 1 }}>
+                {t('settings.scope.override_hint', { defaultValue: '为本组覆盖以下设置；未覆盖项继承全局默认。' })}
+              </Typography>
+              <ScopeOverridesEditor scope={scopeState} onChange={setScopeState} categories={categories} />
+            </Card>
+          </Box>
+        ) : (
+          <Box sx={{ display: 'grid', placeItems: 'center', py: 4 }}><CircularProgress size={24} /></Box>
+        )}
+      </Box>
+    )
+  }
+
   return (
     <Box sx={{ p: 3 }}>
       <PageHeader title={t('settings.title')} />
@@ -356,7 +429,7 @@ export default function SettingsView() {
         {tabs.map(tb => <Tab key={tb.key} value={tb.key} label={t(tb.labelKey)} />)}
       </Tabs>
 
-      {tab === 'security' && (
+      {tab === 'security' && renderScopeTab(['2fa', 'login'], (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
           {saveBar}
           <Section title={t('settings.general.section_login')} md={md}>
@@ -665,9 +738,9 @@ export default function SettingsView() {
             </Pair>
           </Section>
         </Box>
-      )}
+      ))}
 
-      {tab === 'general' && (
+      {tab === 'general' && renderScopeTab(['notify', 'emergency'], (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
           {saveBar}
           <Section title={t('settings.general.section_runtime')} md={md}>
@@ -870,7 +943,7 @@ export default function SettingsView() {
             </Typography>
           </Section>
         </Box>
-      )}
+      ))}
 
       {tab === 'brand' && (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -951,7 +1024,7 @@ export default function SettingsView() {
         </Box>
       )}
 
-      {tab === 'subscription' && (
+      {tab === 'subscription' && renderScopeTab(['sub'], (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
           {saveBar}
           <Section title={t('settings.subscription.section_basic')} md={md}>
@@ -992,24 +1065,6 @@ export default function SettingsView() {
           </Section>
 
           <Section title={t('settings.subscription.section_protection')} md={md}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <TextField select size="small" label={t('settings.subscription.filter_mode', { defaultValue: '客户端过滤模式' })}
-                value={settings.sub_client_filter_mode}
-                onChange={e => patch('sub_client_filter_mode', e.target.value as 'blacklist' | 'whitelist')}
-                sx={{ minWidth: 260 }}>
-                <MenuItem value="blacklist">{t('settings.subscription.filter_mode_blacklist', { defaultValue: '黑名单（默认放行，仅拦禁用项）' })}</MenuItem>
-                <MenuItem value="whitelist">{t('settings.subscription.filter_mode_whitelist', { defaultValue: '白名单（默认拦截，仅放行已知）' })}</MenuItem>
-              </TextField>
-              <Tooltip arrow placement="right" title={
-                <Box sx={{ whiteSpace: 'pre-line', fontSize: 12, p: 0.5, maxWidth: 320 }}>
-                  {t('settings.subscription.filter_mode_help', { defaultValue: '黑名单（默认）：只拦截你明确「禁用」的客户端族，未识别的客户端放行（按 mihomo 兜底）。\n\n白名单：只放行「已知且启用」的客户端族，未识别 / 未启用的一律拦截，并计入异常次数（达到阈值可能触发自动停用）。适合严格防滥用。' })}
-                </Box>
-              }>
-                <IconButton size="small" sx={{ color: md.onSurfaceVariant }}>
-                  <HelpOutlineIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Box>
             <FormControlLabel label={t('settings.subscription.sub_block_auto_disable')}
               control={<Switch checked={settings.sub_block_auto_disable}
                 onChange={(_, c) => patch('sub_block_auto_disable', c)} />}
@@ -1027,14 +1082,8 @@ export default function SettingsView() {
                 onChange={v => patch('sub_block_notify_max_per_day', v)} />
             )}
           </Section>
-
-          <ClientRegistryEditor
-            families={settings.sub_clients}
-            onChange={v => patch('sub_clients', v)}
-            md={md}
-          />
         </Box>
-      )}
+      ))}
 
       {tab === 'portal' && (
         <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -1719,264 +1768,6 @@ function QuickLinksEditor({ links, onChange, md }: { links: QuickLink[]; onChang
         <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={add}>
           {t('settings.portal.add_link')}
         </Button>
-      </Box>
-    </Card>
-  )
-}
-
-
-// CLIENT_PRESETS mirrors defaultSubClients() on the Go side — keep them in
-// sync. Each family carries its UA keywords + render format and the import apps
-// nested under it. "Add preset" appends a whole family; "reset" rebuilds the
-// registry from this list.
-const CLIENT_PRESETS: SubClientFamily[] = [
-  {
-    name: 'Clash / mihomo', keywords: ['clash', 'mihomo', 'meta'], render_format: 'mihomo', enabled: true,
-    apps: [
-      { name: 'Clash Verge Rev', platforms: ['windows', 'macos', 'linux'], import_url_template: 'clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}', install_url: 'https://github.com/clash-verge-rev/clash-verge-rev/releases', enabled: true, sort: 10, recommended_for: ['windows', 'macos', 'linux'] },
-      { name: 'Clash Meta for Android', platforms: ['android'], import_url_template: 'clash://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}&update-interval={{ sub_update_interval_minutes }}', install_url: 'https://github.com/MetaCubeX/ClashMetaForAndroid/releases', enabled: true, sort: 20, recommended_for: ['android'] },
-      { name: 'Clash Mi', platforms: ['windows', 'macos', 'linux', 'android', 'ios'], import_url_template: 'clashmi://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}', install_url: 'https://github.com/KaringX/clashmi/releases', enabled: true, sort: 25, recommended_for: ['ios'] },
-    ],
-  },
-  {
-    name: 'sing-box', keywords: ['sing-box', 'karing'], render_format: 'sing-box', enabled: true,
-    apps: [
-      { name: 'sing-box', platforms: ['ios', 'macos', 'android'], import_url_template: 'sing-box://import-remote-profile?url={{ sub_url_encoded }}#{{ profile_name_encoded }}', install_url: 'https://sing-box.sagernet.org/clients/', enabled: true, sort: 40, recommended_for: [] },
-      { name: 'Karing', platforms: ['windows', 'macos', 'linux', 'android', 'ios'], import_url_template: 'karing://install-config?url={{ sub_url_encoded }}&name={{ profile_name_encoded }}', install_url: 'https://github.com/KaringX/karing/releases', enabled: true, sort: 65, recommended_for: [] },
-    ],
-  },
-  {
-    name: 'Shadowrocket', keywords: ['shadowrocket'], render_format: 'uri-list', enabled: true,
-    apps: [
-      { name: 'Shadowrocket', platforms: ['ios'], import_url_template: 'shadowrocket://add/sub://{{ sub_url_b64_url_safe }}?remark={{ profile_name_encoded }}', install_url: 'https://apps.apple.com/app/shadowrocket/id932747118', enabled: true, sort: 60, recommended_for: [] },
-    ],
-  },
-  { name: 'Quantumult X', keywords: ['quantumult'], render_format: 'mihomo', enabled: true, apps: [] },
-  {
-    name: 'V2rayNG', keywords: ['v2rayng'], render_format: 'uri-list', enabled: true,
-    apps: [
-      { name: 'V2rayNG', platforms: ['android'], import_url_template: 'v2rayng://install-sub?url={{ sub_url_encoded }}#{{ profile_name_encoded }}', install_url: 'https://github.com/2dust/v2rayNG/releases', enabled: true, sort: 55, recommended_for: [] },
-    ],
-  },
-  {
-    name: 'V2RayN', keywords: ['v2rayn', 'v2ray'], render_format: 'uri-list', enabled: true,
-    apps: [
-      { name: 'V2rayN', platforms: ['windows'], import_url_template: '{{ sub_url }}?remarks={{ profile_name_encoded }}', install_url: 'https://github.com/2dust/v2rayN/releases', enabled: true, sort: 50, recommended_for: [] },
-    ],
-  },
-  { name: 'Passwall (OpenWrt)', keywords: ['passwall'], render_format: 'uri-list', enabled: true, apps: [] },
-  {
-    name: 'Stash', keywords: ['stash'], render_format: 'mihomo', enabled: true,
-    apps: [
-      { name: 'Stash', platforms: ['ios'], import_url_template: 'stash://install-config?url={{ sub_url_encoded }}', install_url: 'https://apps.apple.com/app/stash-rule-based-proxy/id1596063349', enabled: true, sort: 30, recommended_for: [] },
-    ],
-  },
-]
-
-const PLATFORM_OPTIONS: SubPlatform[] = ['windows', 'macos', 'linux', 'android', 'ios', 'other']
-
-function clonePreset(p: SubClientFamily): SubClientFamily {
-  return JSON.parse(JSON.stringify(p)) as SubClientFamily
-}
-
-// normalizeRegistry guards against null array fields from the server: a
-// detection-only family serializes apps as JSON null (Go nil slice), and
-// keyword / platform / recommended_for arrays can be null too. Coerce them all
-// to [] on the way into form state so the editor's .map/.length never see null.
-function normalizeRegistry(fams?: SubClientFamily[] | null): SubClientFamily[] {
-  return (fams ?? []).map(f => ({
-    ...f,
-    keywords: f.keywords ?? [],
-    apps: (f.apps ?? []).map(a => ({
-      ...a,
-      platforms: a.platforms ?? [],
-      recommended_for: a.recommended_for ?? [],
-    })),
-  }))
-}
-
-// ClientRegistryEditor is the unified detection-family → import-app editor
-// (v3.3.0). Each family owns UA keywords + render format + an enabled gate;
-// nested apps are the portal's one-click import targets and inherit the
-// family's format. Disabling a family blocks its UA AND hides its apps, so the
-// portal can never advertise a client that's actually blocked.
-function ClientRegistryEditor({ families, onChange, md }: { families: SubClientFamily[]; onChange: (v: SubClientFamily[]) => void; md: MdShape }) {
-  const { t } = useTranslation('admin')
-  const [presetAnchor, setPresetAnchor] = useState<HTMLElement | null>(null)
-
-  const updateFamily = (fi: number, patch: Partial<SubClientFamily>) =>
-    onChange(families.map((f, i) => i === fi ? { ...f, ...patch } : f))
-  const removeFamily = (fi: number) => onChange(families.filter((_, i) => i !== fi))
-  const addFamily = () => onChange([...families, { name: '', keywords: [], render_format: 'mihomo', enabled: true, apps: [] }])
-  const addPresetFamily = (p: SubClientFamily) => {
-    onChange([...families, clonePreset(p)])
-    setPresetAnchor(null)
-  }
-  async function resetToPresets() {
-    if (!(await confirm({
-      title: t('settings.subscription.reset_clients_confirm_title'),
-      message: t('settings.subscription.reset_clients_confirm_body'),
-      confirmText: t('settings.subscription.reset_clients_confirm_ok'),
-      destructive: true,
-    }))) return
-    onChange(CLIENT_PRESETS.map(clonePreset))
-  }
-
-  const updateApp = (fi: number, ai: number, patch: Partial<SubClientApp>) =>
-    onChange(families.map((f, i) => i !== fi ? f : { ...f, apps: f.apps.map((a, j) => j === ai ? { ...a, ...patch } : a) }))
-  const removeApp = (fi: number, ai: number) =>
-    onChange(families.map((f, i) => i !== fi ? f : { ...f, apps: f.apps.filter((_, j) => j !== ai) }))
-  const addApp = (fi: number) =>
-    onChange(families.map((f, i) => i !== fi ? f : {
-      ...f,
-      apps: [...f.apps, { name: '', platforms: [], import_url_template: '', install_url: '', enabled: true, sort: (f.apps.at(-1)?.sort ?? fi * 10) + 10, recommended_for: [] }],
-    }))
-
-  return (
-    <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
-      <Typography sx={{ fontWeight: 500, mb: 0.5, color: md.onSurface }}>{t('settings.subscription.section_clients')}</Typography>
-      <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, mb: 1.5 }}>
-        {t('settings.subscription.registry_hint', { defaultValue: '检测族按 UA 决定订阅格式；族下的 App 是门户的一键导入项。关闭某个族会同时拦截该族客户端拉取、并在门户隐藏其全部导入项，因此不会出现「已禁用却仍展示」。' })}
-      </Typography>
-      <Divider sx={{ mb: 2 }} />
-      {families.length === 0 ? (
-        <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant, py: 2, textAlign: 'center' }}>
-          {t('settings.subscription.no_rules')}
-        </Typography>
-      ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {families.map((f, fi) => (
-            <Box key={fi} sx={{ p: 2, borderRadius: 2, border: `1px solid ${md.outlineVariant}`, bgcolor: md.surfaceContainerHigh, opacity: f.enabled ? 1 : 0.6 }}>
-              <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
-                <TextField size="small" label={t('settings.subscription.rule_field.name')}
-                  value={f.name} onChange={e => updateFamily(fi, { name: e.target.value })} sx={{ flex: '1 1 160px' }} />
-                <TextField size="small" label={t('settings.subscription.rule_field.keywords')}
-                  value={f.keywords.join(', ')}
-                  onChange={e => updateFamily(fi, { keywords: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  sx={{ flex: '2 1 220px' }} />
-                <TextField select size="small" label={t('settings.subscription.rule_field.render_format')}
-                  value={f.render_format}
-                  onChange={e => updateFamily(fi, { render_format: e.target.value as SubRenderFormat })}
-                  sx={{ width: 150 }}>
-                  <MenuItem value="mihomo">mihomo</MenuItem>
-                  <MenuItem value="sing-box">sing-box</MenuItem>
-                  <MenuItem value="uri-list">URI 列表 (V2rayN / Passwall)</MenuItem>
-                </TextField>
-                <FormControlLabel label={t('settings.subscription.rule_field.enabled')}
-                  control={<Switch size="small" checked={f.enabled} onChange={(_, c) => updateFamily(fi, { enabled: c })} />}
-                  sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }} />
-                <Box sx={{ flex: 1 }} />
-                <IconButton size="small" onClick={() => removeFamily(fi)} sx={{ color: md.onSurfaceVariant }}>
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </Box>
-              <Box sx={{ mt: 1.5, pl: { xs: 0, sm: 2 }, borderLeft: { sm: `2px solid ${md.outlineVariant}` }, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                {f.apps.length === 0 && (
-                  <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, fontStyle: 'italic' }}>
-                    {t('settings.subscription.no_apps', { defaultValue: '该族暂无导入 App（仅用于检测）' })}
-                  </Typography>
-                )}
-                {f.apps.map((a, ai) => (
-                  <Box key={ai} sx={{ p: 1.5, borderRadius: 2, border: `1px solid ${md.outlineVariant}`, bgcolor: md.surfaceContainerLow, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-                    <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <TextField size="small" label={t('settings.subscription.client_field.name')}
-                        value={a.name} onChange={e => updateApp(fi, ai, { name: e.target.value })} sx={{ flex: '1 1 180px' }} />
-                      <TextField size="small" type="number" label={t('settings.subscription.client_field.sort')}
-                        value={a.sort} onChange={e => updateApp(fi, ai, { sort: Number(e.target.value) })} sx={{ width: 100 }} />
-                      <FormControlLabel label={t('settings.subscription.client_field.enabled')}
-                        control={<Switch size="small" checked={a.enabled} onChange={(_, c) => updateApp(fi, ai, { enabled: c })} />}
-                        sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1, fontSize: 13 } }} />
-                      <Box sx={{ flex: 1 }} />
-                      <IconButton size="small" onClick={() => removeApp(fi, ai)} sx={{ color: md.onSurfaceVariant }}>
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </Box>
-                    <Box>
-                      <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.75 }}>
-                        {t('settings.subscription.client_field.platforms', { defaultValue: '支持的平台' })}
-                      </Typography>
-                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-                        {PLATFORM_OPTIONS.map(p => {
-                          const selected = a.platforms.includes(p)
-                          return (
-                            <Chip key={p} size="small"
-                              label={t(`settings.subscription.platform.${p}`, { defaultValue: p })}
-                              color={selected ? 'primary' : 'default'} variant={selected ? 'filled' : 'outlined'}
-                              onClick={() => {
-                                const next = selected ? a.platforms.filter(x => x !== p) : [...a.platforms, p]
-                                const nextRec = (a.recommended_for ?? []).filter(x => next.includes(x))
-                                updateApp(fi, ai, { platforms: next, recommended_for: nextRec })
-                              }} />
-                          )
-                        })}
-                      </Box>
-                    </Box>
-                    <Box>
-                      <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, mb: 0.75 }}>
-                        {t('settings.subscription.client_field.recommended_for', { defaultValue: '在哪些平台作为推荐客户端' })}
-                      </Typography>
-                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-                        {PLATFORM_OPTIONS.filter(p => a.platforms.includes(p)).map(p => {
-                          const selected = (a.recommended_for ?? []).includes(p)
-                          return (
-                            <Chip key={p} size="small"
-                              label={t(`settings.subscription.platform.${p}`, { defaultValue: p })}
-                              color={selected ? 'primary' : 'default'} variant={selected ? 'filled' : 'outlined'}
-                              onClick={() => {
-                                const cur = a.recommended_for ?? []
-                                updateApp(fi, ai, { recommended_for: selected ? cur.filter(x => x !== p) : [...cur, p] })
-                              }} />
-                          )
-                        })}
-                        {a.platforms.length === 0 && (
-                          <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, fontStyle: 'italic' }}>
-                            {t('settings.subscription.client_field.recommended_for_empty', { defaultValue: '请先选择支持的平台' })}
-                          </Typography>
-                        )}
-                      </Box>
-                    </Box>
-                    <TextField size="small" fullWidth label={t('settings.subscription.client_field.import_url_template')}
-                      value={a.import_url_template} onChange={e => updateApp(fi, ai, { import_url_template: e.target.value })} />
-                    <TextField size="small" fullWidth label={t('settings.subscription.client_field.install_url')}
-                      value={a.install_url} onChange={e => updateApp(fi, ai, { install_url: e.target.value })} />
-                  </Box>
-                ))}
-                <Box>
-                  <Button variant="text" size="small" startIcon={<AddIcon />} onClick={() => addApp(fi)}>
-                    {t('settings.subscription.add_app', { defaultValue: '添加 App' })}
-                  </Button>
-                </Box>
-              </Box>
-            </Box>
-          ))}
-        </Box>
-      )}
-      <Box sx={{ mt: 2, display: 'flex', gap: 1.25, flexWrap: 'wrap' }}>
-        <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={addFamily}>
-          {t('settings.subscription.add_family', { defaultValue: '添加检测族' })}
-        </Button>
-        <Button variant="text" size="small" onClick={e => setPresetAnchor(e.currentTarget)}>
-          {t('settings.subscription.add_preset')}
-        </Button>
-        <Button variant="text" size="small" color="warning" onClick={resetToPresets}>
-          {t('settings.subscription.reset_to_presets')}
-        </Button>
-        <Menu anchorEl={presetAnchor} open={!!presetAnchor} onClose={() => setPresetAnchor(null)} PaperProps={{ sx: { maxHeight: 360 } }}>
-          {CLIENT_PRESETS.map(p => {
-            const exists = families.some(f => f.name === p.name)
-            return (
-              <MenuItem key={p.name} disabled={exists} onClick={() => addPresetFamily(p)}>
-                <Box>
-                  <Typography sx={{ fontSize: 14 }}>{p.name}</Typography>
-                  <Typography sx={{ fontSize: 12, opacity: 0.7 }}>
-                    {p.keywords.join(', ')} · {p.render_format} · {p.apps.length} app{p.apps.length === 1 ? '' : 's'}
-                    {exists ? ` · ${t('settings.subscription.preset_exists', { defaultValue: '已存在' })}` : ''}
-                  </Typography>
-                </Box>
-              </MenuItem>
-            )
-          })}
-        </Menu>
       </Box>
     </Card>
   )

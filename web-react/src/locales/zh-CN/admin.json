@@ -70,6 +70,11 @@
     "tab_sso": "SSO 认证",
     "save": "保存",
     "saved": "已保存",
+    "scope": {
+      "audience": "适用对象",
+      "all_users": "所有用户（全局默认）",
+      "override_hint": "为本组覆盖以下设置；未覆盖的项继承全局默认。"
+    },
     "feature_pending": "该 tab 正在迁移到 React + MUI（下个版本）。当前请使用 Vue 版本管理这些字段。",
     "general": {
       "section_login": "登录",
@@ -383,6 +388,7 @@
       "section_basic": "基本",
       "section_protection": "异常保护",
       "section_clients": "客户端",
+      "section_detection": "客户端检测与过滤",
       "section_imports": "一键导入客户端",
       "registry_hint": "检测族按 UA 决定订阅格式；族下的 App 是门户的一键导入项。关闭某个族会同时拦截该族客户端拉取、并在门户隐藏其全部导入项，因此不会出现「已禁用却仍展示」。",
       "no_apps": "该族暂无导入 App（仅用于检测）",
@@ -1302,7 +1308,17 @@
       "override": "覆盖",
       "inherit": "继承",
       "global_prefix": "全局",
-      "save_error": "部分覆盖保存失败，请重新打开核对"
+      "save_error": "部分覆盖保存失败，请重新打开核对",
+      "create_hint": "保存分组后即可在此设置按组覆盖。"
+    },
+    "tabs": {
+      "node_access": "节点范围",
+      "policies": "策略",
+      "members": "成员"
+    },
+    "members": {
+      "count": "本组共有 {{count}} 名成员",
+      "hint": "在「用户管理」中按本组筛选可查看与管理成员。"
     },
     "placeholder": {
       "tags": "从下拉选 region:XX / tag:YY，或自由输入"

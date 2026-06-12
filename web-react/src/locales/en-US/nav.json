@@ -8,10 +8,17 @@
     "groups": "Groups",
     "rules": "Rule sets",
     "templates": "Templates",
+    "sub_clients": "Sub clients",
     "traffic": "Traffic",
     "logs": "Logs",
     "sync_tasks": "Sync tasks",
     "settings": "Settings"
+  },
+  "section": {
+    "directory": "Directory",
+    "infrastructure": "Infrastructure",
+    "subscription": "Subscription",
+    "reporting": "Reporting"
   },
   "user": {
     "me": "My subscription"

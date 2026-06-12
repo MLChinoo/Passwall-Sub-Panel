@@ -1,15 +1,17 @@
-import { Suspense, useEffect, useState, type MouseEvent } from 'react'
+import { Fragment, Suspense, useEffect, useState, type MouseEvent } from 'react'
 import {
   AppBar,
   Avatar,
   Box,
   CircularProgress,
+  Divider,
   Drawer,
   IconButton,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  ListSubheader,
   Menu,
   MenuItem,
   Toolbar,
@@ -32,6 +34,7 @@ import DnsIcon from '@mui/icons-material/Dns'
 import WorkspacesIcon from '@mui/icons-material/Workspaces'
 import RuleIcon from '@mui/icons-material/Rule'
 import LayersIcon from '@mui/icons-material/Layers'
+import AppsIcon from '@mui/icons-material/Apps'
 import InsightsIcon from '@mui/icons-material/Insights'
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 import SyncIcon from '@mui/icons-material/Sync'
@@ -77,19 +80,42 @@ interface NavItem {
   adminOnly?: boolean
 }
 
-const ADMIN_NAV: NavItem[] = [
-  { to: '/admin/dashboard', labelKey: 'nav:admin.dashboard', Icon: DashboardIcon },
-  { to: '/admin/users', labelKey: 'nav:admin.users', Icon: GroupIcon },
-  { to: '/admin/servers', labelKey: 'nav:admin.servers', Icon: StorageIcon, adminOnly: true },
-  { to: '/admin/nodes', labelKey: 'nav:admin.nodes', Icon: DnsIcon },
-  { to: '/admin/certs', labelKey: 'nav:admin.certs', Icon: HttpsIcon, adminOnly: true },
-  { to: '/admin/groups', labelKey: 'nav:admin.groups', Icon: WorkspacesIcon },
-  { to: '/admin/rules', labelKey: 'nav:admin.rules', Icon: RuleIcon },
-  { to: '/admin/templates', labelKey: 'nav:admin.templates', Icon: LayersIcon },
-  { to: '/admin/traffic', labelKey: 'nav:admin.traffic', Icon: InsightsIcon },
-  { to: '/admin/logs', labelKey: 'nav:admin.logs', Icon: ReceiptLongIcon },
-  { to: '/admin/sync-tasks', labelKey: 'nav:admin.sync_tasks', Icon: SyncIcon },
-  { to: '/admin/settings', labelKey: 'nav:admin.settings', Icon: SettingsIcon, adminOnly: true },
+// Sidebar is grouped into Workspace-style sections (v3.8.0). A section with a
+// `labelKey` renders a small uppercase subheader above its items; a section
+// without one holds standalone top-level entries (Dashboard, Settings) that
+// sit outside any titled group. Role filtering runs per item — a section whose
+// items are all filtered out renders nothing (its header included).
+interface NavSection {
+  labelKey?: string
+  items: NavItem[]
+}
+
+const ADMIN_NAV: NavSection[] = [
+  { items: [
+    { to: '/admin/dashboard', labelKey: 'nav:admin.dashboard', Icon: DashboardIcon },
+  ] },
+  { labelKey: 'nav:section.directory', items: [
+    { to: '/admin/users', labelKey: 'nav:admin.users', Icon: GroupIcon },
+    { to: '/admin/groups', labelKey: 'nav:admin.groups', Icon: WorkspacesIcon },
+  ] },
+  { labelKey: 'nav:section.infrastructure', items: [
+    { to: '/admin/servers', labelKey: 'nav:admin.servers', Icon: StorageIcon, adminOnly: true },
+    { to: '/admin/nodes', labelKey: 'nav:admin.nodes', Icon: DnsIcon },
+    { to: '/admin/certs', labelKey: 'nav:admin.certs', Icon: HttpsIcon, adminOnly: true },
+  ] },
+  { labelKey: 'nav:section.subscription', items: [
+    { to: '/admin/rules', labelKey: 'nav:admin.rules', Icon: RuleIcon },
+    { to: '/admin/templates', labelKey: 'nav:admin.templates', Icon: LayersIcon },
+    { to: '/admin/sub-clients', labelKey: 'nav:admin.sub_clients', Icon: AppsIcon, adminOnly: true },
+  ] },
+  { labelKey: 'nav:section.reporting', items: [
+    { to: '/admin/traffic', labelKey: 'nav:admin.traffic', Icon: InsightsIcon },
+    { to: '/admin/logs', labelKey: 'nav:admin.logs', Icon: ReceiptLongIcon },
+    { to: '/admin/sync-tasks', labelKey: 'nav:admin.sync_tasks', Icon: SyncIcon },
+  ] },
+  { items: [
+    { to: '/admin/settings', labelKey: 'nav:admin.settings', Icon: SettingsIcon, adminOnly: true },
+  ] },
 ]
 
 export default function AdminLayout() {
@@ -215,37 +241,74 @@ export default function AdminLayout() {
         )}
       </Box>
       <List sx={{ flex: 1, px: railCollapsed ? 0.75 : 1.5, pt: 1 }}>
-        {ADMIN_NAV.filter(item => !item.adminOnly || role === 'admin').map(item => {
-          const active = location.pathname === item.to || location.pathname.startsWith(item.to + '/')
-          const button = (
-            <ListItemButton
-              key={item.to}
-              onClick={() => handleNav(item.to)}
-              sx={{
-                borderRadius: railCollapsed ? 2 : 9999,
-                minHeight: 44,
-                mb: 0.5,
-                px: railCollapsed ? 1.25 : 2,
-                justifyContent: railCollapsed ? 'center' : 'flex-start',
-                color: active ? md.onSecondaryContainer : md.onSurfaceVariant,
-                bgcolor: active ? md.secondaryContainer : 'transparent',
-                '&:hover': { bgcolor: active ? md.secondaryContainer : alpha(md.onSurface, 0.08) },
-              }}
-            >
-              <ListItemIcon sx={{ minWidth: railCollapsed ? 0 : 40, color: 'inherit', justifyContent: 'center' }}>
-                <item.Icon sx={{ fontSize: 22 }} />
-              </ListItemIcon>
-              {!railCollapsed && (
-                <ListItemText
-                  primary={t(item.labelKey)}
-                  primaryTypographyProps={{ fontSize: 14, fontWeight: active ? 600 : 500 }}
-                />
-              )}
-            </ListItemButton>
+        {ADMIN_NAV.map((section, si) => {
+          const visible = section.items.filter(item => !item.adminOnly || role === 'admin')
+          if (!visible.length) return null
+          return (
+            <Fragment key={section.labelKey ?? `top-${si}`}>
+              {/* Section separator/header. A labelled group shows an uppercase
+                  subheader on the expanded rail and a thin divider on the
+                  collapsed (icon-only) rail. A standalone group (Settings at
+                  the bottom) gets a divider in both states; the very first
+                  group (Dashboard) opens the list with nothing above it. */}
+              {section.labelKey ? (
+                railCollapsed ? (
+                  <Divider sx={{ mx: 1, my: 0.75, borderColor: md.outlineVariant }} />
+                ) : (
+                  <ListSubheader
+                    disableSticky
+                    sx={{
+                      bgcolor: 'transparent',
+                      color: md.onSurfaceVariant,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      letterSpacing: '.5px',
+                      textTransform: 'uppercase',
+                      lineHeight: '36px',
+                      px: 2,
+                      mt: si === 0 ? 0 : 0.5,
+                    }}
+                  >
+                    {t(section.labelKey)}
+                  </ListSubheader>
+                )
+              ) : si > 0 ? (
+                <Divider sx={{ mx: 1, my: 0.75, borderColor: md.outlineVariant }} />
+              ) : null}
+              {visible.map(item => {
+                const active = location.pathname === item.to || location.pathname.startsWith(item.to + '/')
+                const button = (
+                  <ListItemButton
+                    key={item.to}
+                    onClick={() => handleNav(item.to)}
+                    sx={{
+                      borderRadius: railCollapsed ? 2 : 9999,
+                      minHeight: 44,
+                      mb: 0.5,
+                      px: railCollapsed ? 1.25 : 2,
+                      justifyContent: railCollapsed ? 'center' : 'flex-start',
+                      color: active ? md.onSecondaryContainer : md.onSurfaceVariant,
+                      bgcolor: active ? md.secondaryContainer : 'transparent',
+                      '&:hover': { bgcolor: active ? md.secondaryContainer : alpha(md.onSurface, 0.08) },
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: railCollapsed ? 0 : 40, color: 'inherit', justifyContent: 'center' }}>
+                      <item.Icon sx={{ fontSize: 22 }} />
+                    </ListItemIcon>
+                    {!railCollapsed && (
+                      <ListItemText
+                        primary={t(item.labelKey)}
+                        primaryTypographyProps={{ fontSize: 14, fontWeight: active ? 600 : 500 }}
+                      />
+                    )}
+                  </ListItemButton>
+                )
+                return railCollapsed
+                  ? <Tooltip key={item.to} title={t(item.labelKey)} placement="right">{button}</Tooltip>
+                  : button
+              })}
+            </Fragment>
           )
-          return railCollapsed
-            ? <Tooltip key={item.to} title={t(item.labelKey)} placement="right">{button}</Tooltip>
-            : button
         })}
       </List>
       {/* Build identity — populated by the /api/version call on mount.

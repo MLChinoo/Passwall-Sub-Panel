@@ -70,6 +70,11 @@
     "tab_sso": "SSO",
     "save": "Save",
     "saved": "Saved",
+    "scope": {
+      "audience": "Audience",
+      "all_users": "All users (global default)",
+      "override_hint": "Override the settings below for this group; un-overridden items inherit the global default."
+    },
     "feature_pending": "This tab is being migrated to React + MUI (next iteration). Use the Vue version meanwhile.",
     "general": {
       "section_login": "Login",
@@ -383,6 +388,7 @@
       "section_basic": "Basic",
       "section_protection": "Abuse protection",
       "section_clients": "Clients",
+      "section_detection": "Client detection & filtering",
       "section_imports": "One-click import clients",
       "registry_hint": "Detection families pick the subscription format by User-Agent; the apps under a family are the portal's one-click import targets. Disabling a family blocks that client from fetching AND hides all its import apps, so a blocked client is never still advertised.",
       "no_apps": "No import apps in this family (detection only)",
@@ -1302,7 +1308,17 @@
       "override": "Override",
       "inherit": "Inherit",
       "global_prefix": "Global",
-      "save_error": "Some overrides failed to save — reopen to verify"
+      "save_error": "Some overrides failed to save — reopen to verify",
+      "create_hint": "Save the group first, then set per-group overrides here."
+    },
+    "tabs": {
+      "node_access": "Node access",
+      "policies": "Policies",
+      "members": "Members"
+    },
+    "members": {
+      "count": "This group has {{count}} member(s)",
+      "hint": "Filter by this group under Users to view and manage members."
     },
     "placeholder": {
       "tags": "Pick region:XX / tag:YY from the dropdown, or type custom"
