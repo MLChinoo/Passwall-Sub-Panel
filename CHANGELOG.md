@@ -4,6 +4,37 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.8.0-beta.1 — 2026-06-12
+
+分组化管理首个预发布。主题:**按 Group 覆盖设置**——在全局 `settings` 之上叠加稀疏的
+`scope_settings` 覆盖层,解析器按「全局 ⊕ 组覆盖」算出每个用户的生效设置;管理后台「编辑分组」
+对话框新增覆盖编辑器(每项可继承/覆盖,保存时 diff)。五个类目可按组覆盖。无 schema 破坏性变更
+(新表走 AutoMigrate);无覆盖时行为与今天完全一致。全程严格 TDD(解析器/缓存均变异验证),并经
+多 agent 对抗式预发布审查(10 维度 + 完备性 critic,0 阻断项)。
+
+### 主要变化
+
+- **覆盖层与解析器** —— 稀疏 KV 表 `scope_settings` 叠在全局 `settings` 之上;`ScopedSettings`
+  解析器提供 `LoadForGroup` / `LoadForUser`(`GroupID==0` 与匿名用户纯全局)。可覆盖键由单一白名单
+  `ports.OverridableScopeKeys` 决定:管理端写入按它校验,解析器对非白名单行直接跳过(双重闸——
+  即使存了脏行也不会生效)。跨方言 SQL(`type:text`、`clause.OnConflict`,SQLite/MySQL/Postgres 通用)。
+- **两步验证方式按组** —— `totp_enabled` / `passkey_enabled` / `twofa_allow_email`。仅作用于识别
+  身份之后(post-identity);识别前的失败锁定 / 验证码 / 登录模式 / passkey 免密 / 重发倒计时一律
+  留全局。关键不变式:组设置不能让已注册某因子的用户在登录时跳过它(2FA 校验看用户自身列,不看组设置)。
+- **通知阈值按组** —— `expire_before_days` / `traffic_remain_percent`(邮件提醒按用户取阈值)。
+- **紧急访问按组** —— `emergency_access_enabled/hours/max_count/quota_gb`。三处配额执行点全部对齐
+  per-group:流量下限(floor)、`/sub` 闸、流量轮询的窗口结束——避免分组配额在不同执行点漂移。
+- **登录与自助策略按组** —— `disallow_user_password_change`(禁止自助改密码)/
+  `allow_user_personal_rules`(允许自定义规则)。
+- **订阅策略按组** —— 渲染外观(订阅更新间隔 / 配置名模板 / 节点地区旗帜)+ 反滥用(违规客户端自动
+  停用及其阈值 / 违规通知及每日上限)。`sub_path`、客户端识别留全局(路由 / 识别身份前)。
+- **per-scope seqlock 缓存** —— `/sub` 热路径为每个 scope 缓存其覆盖集,复用全局设置缓存的单-gen
+  撕裂读纪律;读写共享同一实例,写入即失效(管理员改完立刻生效)。
+- **移除 per-user `User.Require2FA`** —— 强制 2FA 由角色 + 组覆盖统一表达,删冗余列。
+- **DNS bootstrap 硬化(订阅模板)** —— mihomo / sing-box 的外网 DoH 回退从 Google `8.8.8.8`
+  (证书仅 `dns.google`、无 IP SAN,DoH-by-IP 证书校验失败)改为 Cloudflare `1.1.1.1` / `1.0.0.1`
+  (证书带 IP SAN,免 skip-cert-verify 即可校验)。
+
 ## v3.7.0 — 2026-06-07
 
 正式版。汇总 v3.7.0-beta.1 → beta.21 全部改动,beta.21 内容直发为正式版定稿。本线主题是 **本地账号
