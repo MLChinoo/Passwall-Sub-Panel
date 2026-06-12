@@ -79,10 +79,6 @@ export function kvFromGlobal(kind: ScopeKind, v: unknown): string {
   return kind === 'bool' ? (v ? '1' : '0') : String(v ?? '')
 }
 
-export function fmtScope(kind: ScopeKind, raw: string): string {
-  return kind === 'bool' ? (raw === '1' ? '开 / On' : '关 / Off') : raw
-}
-
 // loadScopeState fetches a group's sparse overrides + the global baseline and
 // merges them into an editable ScopeState. Throws on API failure; callers
 // decide whether to degrade (hide the section) or surface the error.

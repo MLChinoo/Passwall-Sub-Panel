@@ -1310,6 +1310,8 @@
       "override": "覆盖",
       "inherit": "继承",
       "global_prefix": "全局",
+      "on": "开",
+      "off": "关",
       "save_error": "部分覆盖保存失败，请重新打开核对",
       "create_hint": "保存分组后即可在此设置按组覆盖。"
     },

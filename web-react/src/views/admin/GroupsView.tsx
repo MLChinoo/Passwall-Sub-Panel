@@ -601,7 +601,7 @@ export default function GroupsView() {
       <Dialog
         open={dialogOpen}
         onClose={() => !busy && setDialogOpen(false)}
-        PaperProps={{ sx: { borderRadius: 3, bgcolor: md.surfaceContainerHigh, width: 500, maxWidth: '90vw' } }}
+        PaperProps={{ sx: { borderRadius: 3, bgcolor: md.surfaceContainerHigh, width: 600, maxWidth: '90vw' } }}
       >
         <DialogTitle>
           {editing ? t('admin:groups.edit_title') : t('admin:groups.create')}

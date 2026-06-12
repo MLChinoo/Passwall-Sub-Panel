@@ -233,7 +233,15 @@ export default function AdminLayout() {
           </>
         )}
       </Box>
-      <List sx={{ flex: 1, px: railCollapsed ? 0.75 : 1.5, pt: 1 }}>
+      <List sx={{
+        flex: 1, minHeight: 0, overflowY: 'auto', px: railCollapsed ? 0.75 : 1.5, pt: 1,
+        // The rail scrolls internally on overflow (the Workspace-style section
+        // headers can push it past a short viewport), but the browser scrollbar
+        // track was an ugly sliver at the sidebar/content seam — hide it. Still
+        // scrollable via wheel / trackpad / keyboard.
+        scrollbarWidth: 'none',
+        '&::-webkit-scrollbar': { display: 'none' },
+      }}>
         {ADMIN_NAV.map((section, si) => {
           const visible = section.items.filter(item => !item.adminOnly || role === 'admin')
           if (!visible.length) return null
@@ -304,61 +312,56 @@ export default function AdminLayout() {
           )
         })}
       </List>
-      {/* Build identity — populated by the /api/version call on mount.
-          ldflags-stamped Version/Commit/BuildDate are surfaced here so an
-          admin can confirm at a glance which release the panel is running.
-          Hidden when the fetch hasn't resolved (or failed). Collapsed rail
-          (76 px) can only fit ~6 monospace chars at 11 px, so we strip the
-          pre-release suffix there ("v3.0.0-rc.6" → "v3.0.0") and rely on
-          the tooltip for the full string + commit + build date. */}
-      {SHOW_VERSION && versionInfo && (
-        <Tooltip
-          placement="right"
-          title={
-            <Box sx={{ fontSize: 11, lineHeight: 1.5 }}>
-              <Box>{versionInfo.version || 'dev'}</Box>
-              {versionInfo.commit && <Box>commit: {versionInfo.commit}</Box>}
-              {versionInfo.build_date && <Box>built: {versionInfo.build_date}</Box>}
-            </Box>
-          }
-        >
-          <Box sx={{
-            px: railCollapsed ? 0 : 2,
-            py: 0.75,
-            textAlign: 'center',
-            color: md.onSurfaceVariant,
-            fontSize: 11,
-            fontFamily: 'monospace',
-            opacity: 0.85,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            userSelect: 'none',
-            cursor: 'default',
-          }}>
-            {(() => {
-              const full = versionInfo.version || 'dev'
-              if (!railCollapsed) return full
-              const dash = full.indexOf('-')
-              return dash === -1 ? full : full.slice(0, dash)
-            })()}
-          </Box>
-        </Tooltip>
-      )}
-      {/* Collapse toggle — desktop only; mobile drawer is dismissed by tapping outside */}
-      {!isMobile && (
+      {/* Footer: build identity + collapse toggle on one row, pinned below the
+          scrolling nav. On the expanded rail the version sits left (ldflags
+          Version/Commit/BuildDate; full string in the tooltip) and the collapse
+          chevron right; the collapsed (76 px) rail shows only the chevron;
+          mobile (no chevron) shows just the version. */}
+      {(!isMobile || (SHOW_VERSION && versionInfo)) && (
         <Box sx={{
           display: 'flex',
-          justifyContent: railCollapsed ? 'center' : 'flex-end',
-          px: railCollapsed ? 0 : 1.5, py: 1,
+          alignItems: 'center',
+          justifyContent: railCollapsed ? 'center' : 'space-between',
+          gap: 1,
+          px: railCollapsed ? 0 : 2,
+          py: 0.5,
           borderTop: `1px solid ${md.outlineVariant}`,
         }}>
-          <Tooltip title={t(railCollapsed ? 'common:nav.expand' : 'common:nav.collapse')} placement="right">
-            <IconButton size="small" onClick={() => setCollapsed(c => !c)}
-              sx={{ color: md.onSurfaceVariant }}>
-              {railCollapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
-            </IconButton>
-          </Tooltip>
+          {!railCollapsed && SHOW_VERSION && versionInfo && (
+            <Tooltip
+              placement="top"
+              title={
+                <Box sx={{ fontSize: 11, lineHeight: 1.5 }}>
+                  <Box>{versionInfo.version || 'dev'}</Box>
+                  {versionInfo.commit && <Box>commit: {versionInfo.commit}</Box>}
+                  {versionInfo.build_date && <Box>built: {versionInfo.build_date}</Box>}
+                </Box>
+              }
+            >
+              <Box sx={{
+                minWidth: 0,
+                color: md.onSurfaceVariant,
+                fontSize: 11,
+                fontFamily: 'monospace',
+                opacity: 0.85,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                userSelect: 'none',
+                cursor: 'default',
+              }}>
+                {versionInfo.version || 'dev'}
+              </Box>
+            </Tooltip>
+          )}
+          {!isMobile && (
+            <Tooltip title={t(railCollapsed ? 'common:nav.expand' : 'common:nav.collapse')} placement="right">
+              <IconButton size="small" onClick={() => setCollapsed(c => !c)}
+                sx={{ color: md.onSurfaceVariant, flexShrink: 0 }}>
+                {railCollapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
       )}
     </Box>
@@ -380,6 +383,7 @@ export default function AdminLayout() {
               '& .MuiDrawer-paper': {
                 width: railCollapsed ? DRAWER_WIDTH_COLLAPSED : drawerWidthExpanded,
                 overflowX: 'hidden',
+                overflowY: 'hidden', // the inner nav List scrolls; the paper itself never does
                 borderRight: `1px solid ${md.outlineVariant}`,
                 bgcolor: md.surfaceContainerLow,
                 transition: theme.transitions.create('width', { duration: theme.transitions.duration.shorter }),

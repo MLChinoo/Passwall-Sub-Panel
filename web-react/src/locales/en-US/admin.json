@@ -1310,6 +1310,8 @@
       "override": "Override",
       "inherit": "Inherit",
       "global_prefix": "Global",
+      "on": "On",
+      "off": "Off",
       "save_error": "Some overrides failed to save — reopen to verify",
       "create_hint": "Save the group first, then set per-group overrides here."
     },
