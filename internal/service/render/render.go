@@ -31,10 +31,20 @@ type Service struct {
 	repos    ports.Repos
 	pool     ports.XUIPool
 	groupSvc GroupResolver
+	// cache backs RenderForUserCached (the /sub polling path); now is its clock
+	// seam (defaults to time.Now, overridable in tests).
+	cache *renderCache
+	now   func() time.Time
 }
 
 func New(repos ports.Repos, pool ports.XUIPool, groupSvc GroupResolver) *Service {
-	return &Service{repos: repos, pool: pool, groupSvc: groupSvc}
+	return &Service{
+		repos:    repos,
+		pool:     pool,
+		groupSvc: groupSvc,
+		cache:    newRenderCache(subRenderCacheTTL),
+		now:      time.Now,
+	}
 }
 
 // Output bundles the rendered body with the headers the HTTP layer should set.

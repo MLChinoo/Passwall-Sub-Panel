@@ -208,8 +208,13 @@ func (h *SubHandler) Get(c *gin.Context) {
 	}
 	ct := domain.ClientType(renderFormat)
 
-	// Render subscription.
-	out, err := h.render.RenderForUser(c.Request.Context(), u, ct)
+	// Render subscription. Cached for a short TTL (subRenderCacheTTL): the
+	// polling fleet re-fetches an unchanged config on a timer, so repeat polls
+	// within the window skip the full render + group/node/separator/traffic
+	// reads. Staleness is bounded by the TTL (accepted for sub delivery); the
+	// access log, blocked-client check and userinfo headers below still run on
+	// every fetch.
+	out, err := h.render.RenderForUserCached(c.Request.Context(), u, ct)
 	if err != nil {
 		log.Warn("sub: render failed", "user_id", u.ID, "err", err)
 		c.String(http.StatusInternalServerError, "internal error")

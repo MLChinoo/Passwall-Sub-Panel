@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
@@ -14,10 +15,20 @@ type Service struct {
 	groups ports.GroupRepo
 	nodes  ports.NodeRepo
 	scope  ports.ScopeSettingsRepo
+	// enabledCache memoizes nodes.ListEnabled for a short TTL (NodesFor → /sub
+	// render); now is its clock seam (defaults to time.Now).
+	enabledCache *nodeListCache
+	now          func() time.Time
 }
 
 func New(groups ports.GroupRepo, nodes ports.NodeRepo, scope ports.ScopeSettingsRepo) *Service {
-	return &Service{groups: groups, nodes: nodes, scope: scope}
+	return &Service{
+		groups:       groups,
+		nodes:        nodes,
+		scope:        scope,
+		enabledCache: newNodeListCache(enabledNodesTTL),
+		now:          time.Now,
+	}
 }
 
 func (s *Service) Get(ctx context.Context, id int64) (*domain.Group, error) {
@@ -86,7 +97,7 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 // the global node sort_order (group.layout overrides happen later in the
 // render pipeline).
 func (s *Service) NodesFor(ctx context.Context, g *domain.Group) ([]*domain.Node, error) {
-	all, err := s.nodes.ListEnabled(ctx)
+	all, err := s.listEnabledCached(ctx)
 	if err != nil {
 		return nil, err
 	}
