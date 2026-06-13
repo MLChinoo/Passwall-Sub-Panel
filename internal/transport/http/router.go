@@ -107,9 +107,13 @@ func NewRouter(d Deps) *gin.Engine {
 	// Real client IP discovery — zero-config defaults that work behind any
 	// common reverse proxy without admin tuning. Order matters: CDN-specific
 	// single-IP headers come first so they win over the standard XFF chain.
-	// Gin's validateHeader short-circuits on the leftmost IP regardless of
-	// the trust list, so the original client survives even when
-	// trustedProxies is wide-open (the zero-config default).
+	// CAVEAT: under a wide-open trusted_proxies list (the zero-config default),
+	// Gin treats every direct connection as a trusted proxy, so an attacker
+	// connecting directly can forge any of these headers and fully control the
+	// resolved ClientIP — rate-limit / login-lockout / audit IP keys are
+	// spoofable in that mode (hence the WARN above). Lock trusted_proxies to
+	// your real proxy/CDN ranges (or set it to "none" when listening directly)
+	// for a trustworthy client IP. See the trustedProxies doc below.
 	g.RemoteIPHeaders = []string{"CF-Connecting-IP", "X-Real-IP", "X-Forwarded-For"}
 	g.Use(gin.Logger(), gin.Recovery())
 	// Security headers (HSTS / X-Frame-Options / X-Content-Type-Options /

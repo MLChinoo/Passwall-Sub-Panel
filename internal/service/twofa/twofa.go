@@ -386,22 +386,53 @@ func defaultGenSecret(issuer, account string) (string, string, error) {
 	return key.Secret(), key.URL(), nil
 }
 
+// recoveryAlphabet is the unambiguous alphabet (no 0/O/1/I/L) recovery codes
+// are drawn from. Its length (31) does not divide 256, so a raw byte%len would
+// over-represent the first 256%31 symbols — see mapByte/drawIndex.
+const recoveryAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// mapByte maps a raw random byte to a uniform index in [0,n), rejecting the
+// high bytes that would cause modulo bias. A raw b%n over-represents the first
+// (256%n) symbols; bytes >= 256-(256%n) are rejected (ok=false) so the caller
+// draws another. For n=31 the cutoff is 248.
+func mapByte(b byte, n int) (idx int, ok bool) {
+	limit := 256 - (256 % n)
+	if int(b) >= limit {
+		return 0, false
+	}
+	return int(b) % n, true
+}
+
+// drawIndex returns a bias-free uniform index in [0,n) via rejection sampling
+// over crypto/rand bytes.
+func drawIndex(n int) (int, error) {
+	var b [1]byte
+	for {
+		if _, err := rand.Read(b[:]); err != nil {
+			return 0, err
+		}
+		if idx, ok := mapByte(b[0], n); ok {
+			return idx, nil
+		}
+	}
+}
+
 // defaultGenRecovery returns recoveryCodeCount codes formatted XXXXX-XXXXX from
-// an unambiguous alphabet (no 0/O/1/I/L).
+// recoveryAlphabet, each symbol drawn uniformly (rejection-sampled, no modulo
+// bias).
 func defaultGenRecovery() ([]string, error) {
-	const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 	out := make([]string, recoveryCodeCount)
 	for i := range out {
-		buf := make([]byte, 10)
-		if _, err := rand.Read(buf); err != nil {
-			return nil, err
-		}
 		var sb strings.Builder
-		for j, b := range buf {
+		for j := 0; j < 10; j++ {
 			if j == 5 {
 				sb.WriteByte('-')
 			}
-			sb.WriteByte(alphabet[int(b)%len(alphabet)])
+			idx, err := drawIndex(len(recoveryAlphabet))
+			if err != nil {
+				return nil, err
+			}
+			sb.WriteByte(recoveryAlphabet[idx])
 		}
 		out[i] = sb.String()
 	}

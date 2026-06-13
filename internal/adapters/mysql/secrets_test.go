@@ -140,3 +140,37 @@ func TestEncryptSecretRoundTripDifferentKey(t *testing.T) {
 		t.Fatalf("decrypt-with-wrong-key error must guide recovery (mention jwt_secret), got: %v", err)
 	}
 }
+
+// The at-rest audit must also cover encrypted-at-rest settings in the KV
+// `settings` table (captcha_secret_key, geo_ip_update_token, ...), not just the
+// single-row credential tables. A row flagged Encrypted but stored without the
+// enc:v1: prefix is plaintext-at-rest and must be counted; a properly encrypted
+// row and a non-encrypted setting must not.
+func TestCountPlaintextEncryptedSettings(t *testing.T) {
+	ConfigureSecretKey("test-db-secret")
+	t.Cleanup(func() { ConfigureSecretKey("") })
+	db, err := Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	rows := []settingRow{
+		{Type: "security", Name: "captcha_secret_key", Value: "PLAINTEXTSECRET", Encrypted: true}, // leak — must count
+		{Type: "geo", Name: "geo_ip_update_token", Value: secretPrefix + "deadbeef", Encrypted: true}, // ok
+		{Type: "ui", Name: "brand_name", Value: "Acme Corp", Encrypted: false},                       // not a secret
+	}
+	for i := range rows {
+		if err := db.Create(&rows[i]).Error; err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+	n, err := countPlaintextEncryptedSettings(db)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("plaintext encrypted-setting count = %d, want 1 (only the unencrypted captcha_secret_key)", n)
+	}
+}

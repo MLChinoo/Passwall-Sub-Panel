@@ -265,7 +265,18 @@ func (s *Service) BeginLogin(ctx context.Context) (*protocol.PublicKeyCredential
 	if err != nil {
 		return nil, "", err
 	}
-	assertion, session, err := wa.BeginDiscoverableLogin()
+	// Passwordless login is single-factor (no password, no 2FA step), so the
+	// passkey itself must be a strong proof — that requires the authenticator to
+	// actually perform user verification (PIN/biometric). The panel-wide config
+	// is VerificationPreferred (kept for the passkey-as-2FA path, where it
+	// follows a password); go-webauthn only enforces the UV flag when the
+	// session's UserVerification is Required, so force it per-ceremony here. The
+	// option flows into SessionData.UserVerification (login.go), so
+	// FinishDiscoverableLogin rejects a UV=false assertion.
+	requireUV := func(o *protocol.PublicKeyCredentialRequestOptions) {
+		o.UserVerification = protocol.VerificationRequired
+	}
+	assertion, session, err := wa.BeginDiscoverableLogin(requireUV)
 	if err != nil {
 		return nil, "", err
 	}

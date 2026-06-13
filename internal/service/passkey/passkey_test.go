@@ -6,11 +6,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
+
+// The usernameless (passwordless) passkey login is single-factor — there is no
+// password and the handler skips any 2FA step, on the premise that the passkey
+// was asserted with user verification (PIN/biometric). That premise only holds
+// if UV is REQUIRED on this ceremony: with VerificationPreferred go-webauthn
+// does not enforce the UV flag, so a possession-only (UV=false) assertion would
+// satisfy a full login. Guard that the discoverable-login session demands UV.
+func TestBeginLogin_RequiresUserVerification(t *testing.T) {
+	svc := New(Deps{Settings: stubSettings{ports.UISettings{
+		PasskeyEnabled:      true,
+		PasskeyPasswordless: true,
+		SubBaseURL:          "https://panel.example.com",
+	}}})
+	opts, _, err := svc.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	if opts.UserVerification != protocol.VerificationRequired {
+		t.Fatalf("passwordless login UserVerification = %q, want %q (single-factor passkey path must enforce UV)",
+			opts.UserVerification, protocol.VerificationRequired)
+	}
+}
 
 func TestRPFromBaseURL(t *testing.T) {
 	cases := []struct {

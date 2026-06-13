@@ -72,9 +72,49 @@ func AuditSecretsAtRest(db *gorm.DB) {
 			"rows", count,
 			"hint", hint)
 	}
+	// KV `settings` table: rows flagged encrypted-at-rest (captcha_secret_key,
+	// geo_ip_update_token, …) but stored without the enc:v1: prefix — the same
+	// plaintext-at-rest condition as the columns above. The table is a generic
+	// (type,name,value,encrypted) KV, so it's matched by the Encrypted flag
+	// rather than a fixed column.
+	if n, err := countPlaintextEncryptedSettings(db); err != nil {
+		log.Warn("secrets audit query failed", "table", "settings", "column", "value", "err", err)
+	} else if n > 0 {
+		totalPlain += int(n)
+		hint := "set PSP_SECRET_KEY_MATERIAL and re-save the affected admin UI page"
+		if len(dbSecretKey) == 0 {
+			hint = "PSP_SECRET_KEY_MATERIAL is not configured — set it before deploying to production"
+		}
+		log.Warn("secrets-at-rest audit: plaintext rows detected",
+			"label", "encrypted KV settings (e.g. captcha secret / geo update token)",
+			"table", "settings",
+			"column", "value",
+			"rows", n,
+			"hint", hint)
+	}
+
 	if totalPlain > 0 && len(dbSecretKey) == 0 {
 		log.Warn("secrets audit summary: encryption key not configured — sensitive credentials stored in plaintext",
 			"plaintext_rows_total", totalPlain,
 			"action", "set PSP_SECRET_KEY_MATERIAL (≥32 random bytes) and re-save SAML / OIDC / SMTP / 3X-UI settings")
 	}
+}
+
+// countPlaintextEncryptedSettings counts rows in the KV `settings` table that
+// are flagged encrypted-at-rest but whose value lacks the enc:v1: prefix — i.e.
+// stored plaintext (no PSP_SECRET_KEY_MATERIAL, or pre-encryption rows). The
+// Encrypted column is written from the setting descriptor regardless of whether
+// the value actually got encrypted, so this flag reliably identifies rows that
+// SHOULD be ciphertext.
+func countPlaintextEncryptedSettings(db *gorm.DB) (int64, error) {
+	if db == nil || !db.Migrator().HasTable("settings") {
+		return 0, nil
+	}
+	var count int64
+	err := db.Table("settings").
+		Where("encrypted = ?", true).
+		Where("value <> ''").
+		Where("value NOT LIKE ?", secretPrefix+"%").
+		Count(&count).Error
+	return count, err
 }

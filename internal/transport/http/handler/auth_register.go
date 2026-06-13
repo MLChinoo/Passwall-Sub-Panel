@@ -52,7 +52,7 @@ func (h *AuthRegisterHandler) Register(c *gin.Context) {
 		DisplayName: req.DisplayName,
 	})
 	if err != nil {
-		respondError(c, err)
+		respondPublicError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "requires_verification": res.RequiresVerification})
@@ -77,7 +77,7 @@ func (h *AuthRegisterHandler) VerifyEmail(c *gin.Context) {
 		Ident: req.Ident,
 		Code:  req.Code,
 	}); err != nil {
-		respondError(c, err)
+		respondPublicError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

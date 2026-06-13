@@ -9,6 +9,25 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
+// Recovery codes are drawn from a 31-symbol alphabet. A raw byte%31 over-
+// represents the first 256%31==8 symbols (modulo bias). mapByte must reject the
+// biasing high bytes (>=248) so the draw is uniform.
+func TestRecoveryCodeMapByte_RejectsModuloBias(t *testing.T) {
+	n := len(recoveryAlphabet)
+	if n != 31 {
+		t.Fatalf("recoveryAlphabet len = %d, test assumes 31", n)
+	}
+	// 256 - (256 % 31) == 248: bytes [0,248) accepted, [248,256) rejected.
+	if idx, ok := mapByte(247, n); !ok || idx != 247%n {
+		t.Fatalf("byte 247 must map (got idx=%d ok=%v), want ok idx=%d", idx, ok, 247%n)
+	}
+	for _, b := range []byte{248, 249, 255} {
+		if _, ok := mapByte(b, n); ok {
+			t.Fatalf("byte %d must be rejected (modulo-bias range)", b)
+		}
+	}
+}
+
 type memStore struct {
 	user         *domain.User
 	secret       string

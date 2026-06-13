@@ -73,7 +73,7 @@ func (h *AuthRecoveryHandler) Reset(c *gin.Context) {
 		Code:        req.Code,
 		NewPassword: req.NewPassword,
 	}); err != nil {
-		respondError(c, err)
+		respondPublicError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

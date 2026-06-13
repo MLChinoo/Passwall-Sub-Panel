@@ -31,6 +31,25 @@ import (
 // returning err.Error() raw — that path used to leak GORM / SMTP /
 // 3X-UI internals to the browser.
 func respondError(c *gin.Context, err error) {
+	respondErrorDetail(c, err, true)
+}
+
+// respondPublicError is respondError for PUBLIC, unauthenticated endpoints
+// (register / verify-email / reset-password). It maps the user-facing domain
+// sentinels identically, but its default (non-sentinel) branch returns a
+// generic 500 instead of echoing err.Error(): an anonymous caller must never
+// receive raw DB / SMTP / 3X-UI internals (driver, table/constraint names,
+// file paths). The full error is still logged server-side for debugging.
+func respondPublicError(c *gin.Context, err error) {
+	respondErrorDetail(c, err, false)
+}
+
+// respondErrorDetail is the shared sentinel→status mapping. leakDetail controls
+// ONLY the default (non-sentinel internal-error) branch: true for staff/admin
+// handlers that want the diagnostic string in the response, false for public
+// handlers that must keep it generic. The domain-sentinel branches are safe to
+// surface to anyone (author-controlled validation text, stable status labels).
+func respondErrorDetail(c *gin.Context, err error, leakDetail bool) {
 	if err == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -55,18 +74,21 @@ func respondError(c *gin.Context, err error) {
 	case errors.Is(err, domain.ErrSSOAccountConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "SSO identity conflicts with an existing account"})
 	default:
-		// Internal error — log full detail server-side AND return the
-		// underlying message to the caller. Originally this masked the
-		// real string to dodge GORM/SMTP leakage to users, but every
-		// route that uses respondError is admin/operator/staff-only:
-		// they need the diagnostic message to file a useful bug
-		// report. Public-facing endpoints (sub handler, login) write
-		// their own sanitised responses without going through here.
+		// Internal error — always log full detail server-side. Whether the
+		// raw string also goes to the caller depends on leakDetail: staff/admin
+		// handlers (respondError) surface it for useful bug reports; public
+		// unauthenticated handlers (respondPublicError) must NOT, or they leak
+		// GORM/SMTP/3X-UI internals (driver, table/constraint names, paths) to
+		// anonymous callers.
 		path := c.FullPath()
 		if path == "" && c.Request != nil {
 			path = c.Request.URL.Path
 		}
 		log.Warn("handler internal error", "path", path, "err", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if leakDetail {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 	}
 }
