@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	yaml "gopkg.in/yaml.v3"
 )
@@ -164,13 +165,30 @@ func resolveNodeRef(ref string, all []string, byRegion, byTag map[string][]strin
 	return out
 }
 
+// quoteCache memoizes yamlScalar. needsQuoting is a pure, deterministic
+// function of the name and its quote decision never changes, so the cache needs
+// no invalidation. The keyspace is bounded by the admin-defined node / group /
+// separator names, so each distinct name is quote-probed (a yaml.Unmarshal
+// round-trip) at most once for the process lifetime instead of M times on every
+// /sub render — M = the number of proxy-groups that reference the node via
+// @all/@region/@tag. /sub is the only public endpoint and is polled on a timer,
+// so this removes real per-request CPU + GC pressure (the old comment in
+// needsQuoting that "render is not a hot path" was wrong for the polling fleet).
+var quoteCache sync.Map // string (raw name) → string (YAML scalar form)
+
 // yamlScalar returns s quoted with double quotes when it contains chars that
-// would break the YAML scalar grammar or trip naïve parsers.
+// would break the YAML scalar grammar or trip naïve parsers. Memoized via
+// quoteCache; the underlying decision is needsQuoting.
 func yamlScalar(s string) string {
-	if needsQuoting(s) {
-		return fmt.Sprintf("%q", s)
+	if v, ok := quoteCache.Load(s); ok {
+		return v.(string)
 	}
-	return s
+	out := s
+	if needsQuoting(s) {
+		out = fmt.Sprintf("%q", s)
+	}
+	quoteCache.Store(s, out)
+	return out
 }
 
 func needsQuoting(s string) bool {
