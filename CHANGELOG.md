@@ -4,6 +4,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.8.0-beta.5 — 2026-06-13
+
+3X-UI 对接:**3.3.1 兼容验证 + cookie 模式 CSRF 写修复**(后端,无前端改动)。
+
+### 修复
+
+- **cookie(用户名/密码)模式的写操作在 3X-UI 3.2.x+ 上全坏** —— 适配器从不发 `X-CSRF-Token`,而 3.2.x+
+  对 cookie 模式的非安全方法强制要求该头(Bearer/token 模式天然绕过),导致账密面板「读能用、所有写
+  (建/改/删 client 与 inbound、reconcile 修复)全废」,且失败被 sync-task 当瞬时错误反复重试。修复:cookie
+  登录后 `GET /csrf-token` 缓存,POST/PUT/PATCH/DELETE 自动带 `X-CSRF-Token`,401/403 时连同重登重取并有界
+  重试一次;Bearer/token 路径完全不变。补 4 个单元测试(含「Bearer 不受影响」「GET 不带头」守卫)。
+  **注**:已充分单元测试,但真实账密面板上的 cookie+CSRF 握手尚未实机验证(token 仍是推荐路径)。
+
+### 改进
+
+- **3X-UI 兼容测试上限提到 3.3.1**(真机验证)。端到端复核了 PSP 调用的全部 17 个非破坏端点(inbound /
+  client / server 读写往返 + 自清理);3.3.0→3.3.1 的变更对 PSP 纯附加(源码树重构 + 附加字段 + GHSA-jm48
+  安全修复),适配器零改动。详见 `docs/3xui-compat.md`。
+
 ## v3.8.0-beta.4 — 2026-06-12
 
 UI 细节:**沉浸式滚动条**(纯前端)。
