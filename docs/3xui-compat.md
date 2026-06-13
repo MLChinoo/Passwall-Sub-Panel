@@ -9,7 +9,7 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 
 | PSP 版本 | 最低 3X-UI | 已实测通过 | 备注 |
 |---|---|---|---|
-| **v3.6.2+** | **3.2.0** | 3.3.0 | client 适配迁到一级 `/clients/*` API,**硬切 ≥ 3.2.0**;已测上限 2026-06-12 实机抬到 3.3.0,见下文 |
+| **v3.6.2+** | **3.2.0** | 3.3.1 | client 适配迁到一级 `/clients/*` API,**硬切 ≥ 3.2.0**;已测上限 2026-06-13 实机抬到 3.3.1,见下文 |
 | v3.6.0 – v3.6.1 | 3.1.0 | 3.1.0 | 仍走 inbound-scoped 端点;别跑在 3.2.0 上,先升 PSP 到 v3.6.2 |
 | v3.5.1 – v3.5.x | 3.1.0 | 3.1.0 | `/inbounds/list` 把 settings 等改成 nested object,见下文 |
 | v3.5.0 | 3.0.x | 3.0.x | 跨 3.1.0 升级会破坏 traffic poll |
@@ -24,6 +24,19 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 - 任何高于"已实测通过"的 3X-UI 版本都属于**未知风险**——升级前先在一台 panel 上小流量验证
 
 ## 历史兼容性事件
+
+### 2026-06-13 / 3X-UI 3.3.1 实机复核 → 已测上限 3.3.0 抬到 3.3.1
+
+**背景**: 上游发 3.3.1(自 3.3.0 起一次大重构 + 多节点/安全修复一批)。拿一台已升到 **3.3.1 的真实面板**(`panelVersion 3.3.1`、xray `26.6.1`)用 API token 端到端复核。
+
+**复核结论(代码零改动,LIVE-VERIFIED)**: PSP 触及的端点在 3.3.1 全部仍在、形状未变。实机 smoke-test(临时 inbound + client,测完自清理):17 个非破坏端点全 `success:true`,2 个破坏性端点(`updatePanel`、`installXray`)在 OpenAPI 路由表里确认存在(不实打)。
+- **读路径**: `/inbounds/list` + `/inbounds/list/slim` 仍把 `settings`/`streamSettings`/`sniffing` 返回为 nested object(`flexJSON` 原样吞下),`clientStats` 带齐 `id/inboundId/email/up/down/total/enable/expiryTime/reset/lastOnline`(slim 把 `settings.clients` 裁到 `{email,enable}`);`/inbounds/get`、`/clients/get/{email}` 回 `{client:{uuid,…},inboundIds,usedTraffic}`——`usedTraffic` 是新增的**附加同级键**,Go 忽略;ID 仍从 `uuid` 取、非 `id`。
+- **写路径**: inbound `add`→`get`→`update`(**读-改-写**,改 remark 同时保住已有 client)→`setEnable`→`del` 全 `success:true`;client `add`→`get`→`update`(full-replace,totalGB 1GiB→2GiB 已生效)→`del`(删后 get 回 `(record not found)`,`isClientNotFoundMsg` 命中)→`bulkCreate`(`created:1`)→`bulkDel`(`deleted:1`,新增的附加 `skipped[]` 被忽略)。
+- **server**: `/server/status`(panelVersion 3.3.1 + xray version)、`/server/getPanelUpdateInfo`(`{currentVersion:3.3.1,latestVersion:v3.3.1}`)、`/server/getXrayVersion`(tag 字符串数组)、`/server/getWebCertFiles`(`{webCertFile,webKeyFile}`)全正常。
+
+**3.3.0→3.3.1 变更对 PSP 的影响 = 无**(80 commits / 425 文件,但对 PSP 纯**附加**,逐 tag 比对源码确认):大头是**源码树重构**(`web/controller/*`→`internal/web/controller/*`、`database/model/*`→`internal/database/model/*`,git rename 89-96%,HTTP 层无感);`model.Client` 与 `xray.ClientTraffic` **逐字节一致**(`tgId` 仍 int64/数字);`model.Inbound` 只**新增**字段(`SubSortIndex`/`ShareAddrStrategy`/`ShareAddr`);唯一响应形状变化是 `/clients/get` 新增附加键 `usedTraffic`;唯一新增 inbound 路由是 `POST /inbounds/pushClientTraffics`(多节点,PSP 不调);服务层「按 email 匹配 client / partial update 保 UUID」修复与 PSP 一贯按 email 驱动 update/del 的做法一致。随版带 **GHSA-jm48**(Xray 日志路径限定在面板日志目录)——升级理由之一。故 `min_xui` 维持 3.2.0、`version.MinXUI` const 与 drift-guard 不动。
+
+**未复核项**: cookie(用户名/密码)登录这次仍没验(只有 API token)。token 模式是 PSP 验证过且推荐的路径(cookie 模式对不安全方法要 `X-CSRF-Token`,token 模式不受约束)。
 
 ### 2026-06-12 / 3X-UI 3.3.0 实机复核 → 已测上限 3.2.8 抬到 3.3.0
 
