@@ -10,6 +10,27 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
+// Once the app's tracked async dispatcher is wired (SetBackgroundRunner), the
+// group-member resync must route through it — so App.Shutdown can drain it and
+// it runs under a cancellable background context — instead of an untracked
+// fire-and-forget goroutine that gets severed mid-flight on shutdown.
+func TestResyncGroupMembersInBackground_RoutesThroughTrackedRunner(t *testing.T) {
+	svc := New(nil, nil, nil, nil, nil, nil, nil, nil)
+	var gotName string
+	var gotFn func(context.Context)
+	svc.SetBackgroundRunner(func(name string, fn func(ctx context.Context)) {
+		gotName = name
+		gotFn = fn
+	})
+	svc.ResyncGroupMembersInBackground(7)
+	if gotName != "user.resync-group-members" {
+		t.Fatalf("resync dispatched as %q, want it routed through the tracked runner", gotName)
+	}
+	if gotFn == nil {
+		t.Fatal("tracked runner received no work fn")
+	}
+}
+
 // settings builds a fully-configured emergency-access UISettings stub.
 // Individual tests override fields they care about.
 func emSettings() ports.UISettings {

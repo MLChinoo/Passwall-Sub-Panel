@@ -77,7 +77,21 @@ type Service struct {
 	// May be nil during early-start; trafficFloor degrades to 0 in that case.
 	trafficUsage TrafficUsageReader
 
+	// bg, when set via SetBackgroundRunner, routes fire-and-forget background
+	// work (group-member resync) through the app's tracked async dispatcher so
+	// App.Shutdown drains it and it runs under a cancellable background context.
+	// nil in tests / before wiring, where ResyncGroupMembersInBackground falls
+	// back to an untracked safego.Go with context.Background.
+	bg func(name string, fn func(ctx context.Context))
+
 	emergencyMu sync.Mutex
+}
+
+// SetBackgroundRunner late-binds the app's tracked async dispatcher (mirrors
+// SetTrafficUsage's lazy wiring). Once set, background resync runs under the
+// panel-wide WaitGroup + background context instead of an untracked goroutine.
+func (s *Service) SetBackgroundRunner(run func(name string, fn func(ctx context.Context))) {
+	s.bg = run
 }
 
 const maxPersonalRulesBytes = 64 * 1024
@@ -1381,8 +1395,7 @@ func (s *Service) ResyncMembershipOrEnqueue(ctx context.Context, userID int64, s
 // cancelled once the save response is written; anything left unsynced if the
 // process stops mid-run is healed by the next reconcile pass.
 func (s *Service) ResyncGroupMembersInBackground(groupID int64) {
-	safego.Go("user.resync-group-members", func() {
-		ctx := context.Background()
+	work := func(ctx context.Context) {
 		members, err := s.users.ListByGroup(ctx, groupID)
 		if err != nil {
 			log.Warn("resync group members: list", "group_id", groupID, "err", err)
@@ -1393,7 +1406,16 @@ func (s *Service) ResyncGroupMembersInBackground(groupID int64) {
 				log.Warn("resync group member", "group_id", groupID, "user_id", m.ID, "err", err)
 			}
 		}
-	})
+	}
+	// When the app's tracked dispatcher is wired, run under the panel-wide
+	// WaitGroup + cancellable background context so Shutdown drains it. Before
+	// wiring (tests / early-start) fall back to an untracked goroutine with its
+	// own context — anything left unsynced is healed by the next reconcile pass.
+	if s.bg != nil {
+		s.bg("user.resync-group-members", work)
+		return
+	}
+	safego.Go("user.resync-group-members", func() { work(context.Background()) })
 }
 
 // ResyncMembership recomputes a user's 3X-UI client memberships against

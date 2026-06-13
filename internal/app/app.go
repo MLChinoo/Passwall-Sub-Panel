@@ -298,6 +298,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// floor-push + quota-event email goroutines (`safego.GoTracked`)
 	// now register with bgWG so App.Shutdown drains them before exit.
 	trafficSvc.SetBgWG(&a.bgWG)
+	// Route the handler-triggered group-member resync through the tracked
+	// dispatcher so Shutdown drains it (it was an untracked safego.Go).
+	userSvc.SetBackgroundRunner(dispatcher.Go)
 	// Link the geo updater's background download to the app lifecycle so
 	// Shutdown cancels + drains an in-flight DB download instead of leaking it.
 	geoSvc.SetBackground(bgCtx, &a.bgWG)
