@@ -574,7 +574,7 @@ func copyOIDCConfig(ctx context.Context, src, dst *gorm.DB) error {
 // order so a SQL browser shows the rows by category.
 //
 // The row order here mirrors settingDescriptors() in
-// internal/adapters/mysql/settings_kv_repo.go — keep them in sync if a
+// internal/adapters/sqlstore/settings_kv_repo.go — keep them in sync if a
 // new UISettings field is added before this migration cmd is deleted.
 func copySettingsKV(ctx context.Context, src, dst *gorm.DB) error {
 	type kv struct {

@@ -136,7 +136,7 @@ func (s *Service) ListPaged(ctx context.Context, p ports.Pagination) ([]*domain.
 // ---- Separator CRUD --------------------------------------------------------
 //
 // Separators live in their own `nodes_separator` table (see
-// internal/adapters/mysql/separator_repo.go) and are bound to groups by an
+// internal/adapters/sqlstore/separator_repo.go) and are bound to groups by an
 // explicit list, not by tag_filter. The pre-v3.0.0-beta.7 design that
 // stashed them in `nodes` with kind='separator' + synthetic negative
 // inbound_id is gone — legacy rows are dropped by cleanupLegacyState.
