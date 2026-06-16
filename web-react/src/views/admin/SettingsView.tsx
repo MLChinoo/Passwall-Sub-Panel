@@ -1341,14 +1341,8 @@ function MailTab() {
   const tplMissing = !templates.some(t => t.kind === activeTpl)
 
   return (
-    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button variant="contained" startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}
-          disabled={saving} type="submit">
-          {t('settings.save')}
-        </Button>
-      </Box>
-
+    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
       <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
         <FormControlLabel label={t('settings.mail.enabled')}
           control={<Switch checked={mail.enabled} onChange={(_, c) => patchMail('enabled', c)} />}
@@ -1631,6 +1625,17 @@ function MailTab() {
           <Button onClick={() => setPreview(null)}>{t('settings.mail.preview_close')}</Button>
         </DialogActions>
       </Dialog>
+      </Box>
+      <Box sx={{
+        position: 'sticky', bottom: 0, zIndex: 2, mx: -3, mt: 1, px: 3, py: 1.5,
+        display: 'flex', justifyContent: 'flex-end', gap: 1,
+        bgcolor: md.surface, borderTop: `1px solid ${md.outlineVariant}`,
+      }}>
+        <Button variant="contained" type="submit" disabled={saving}
+          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
+          {t('settings.save')}
+        </Button>
+      </Box>
     </Box>
   )
 }
@@ -2162,14 +2167,8 @@ function SamlPanel() {
   if (loading || !cfg) return <Box sx={{ display: 'grid', placeItems: 'center', py: 6 }}><CircularProgress /></Box>
 
   return (
-    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button variant="contained" type="submit" disabled={saving}
-          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
-          {t('settings.save')}
-        </Button>
-      </Box>
-
+    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
       <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
         <FormControlLabel label={t('settings.sso.saml.enabled')}
           control={<Switch checked={cfg.enabled} onChange={(_, c) => patch('enabled', c)} />}
@@ -2388,6 +2387,17 @@ function SamlPanel() {
           md={md}
         />
       </Section>
+      </Box>
+      <Box sx={{
+        position: 'sticky', bottom: 0, zIndex: 2, mx: -3, mt: 1, px: 3, py: 1.5,
+        display: 'flex', justifyContent: 'flex-end', gap: 1,
+        bgcolor: md.surface, borderTop: `1px solid ${md.outlineVariant}`,
+      }}>
+        <Button variant="contained" type="submit" disabled={saving}
+          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
+          {t('settings.save')}
+        </Button>
+      </Box>
     </Box>
   )
 }
@@ -2468,14 +2478,8 @@ function OidcPanel() {
   if (loading || !cfg) return <Box sx={{ display: 'grid', placeItems: 'center', py: 6 }}><CircularProgress /></Box>
 
   return (
-    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button variant="contained" type="submit" disabled={saving}
-          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
-          {t('settings.save')}
-        </Button>
-      </Box>
-
+    <Box component="form" onSubmit={save} sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 880 }}>
       <Card sx={{ p: 3, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
         <FormControlLabel label={t('settings.sso.oidc.enabled')}
           control={<Switch checked={cfg.enabled} onChange={(_, c) => patch('enabled', c)} />}
@@ -2558,6 +2562,17 @@ function OidcPanel() {
           md={md}
         />
       </Section>
+      </Box>
+      <Box sx={{
+        position: 'sticky', bottom: 0, zIndex: 2, mx: -3, mt: 1, px: 3, py: 1.5,
+        display: 'flex', justifyContent: 'flex-end', gap: 1,
+        bgcolor: md.surface, borderTop: `1px solid ${md.outlineVariant}`,
+      }}>
+        <Button variant="contained" type="submit" disabled={saving}
+          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}>
+          {t('settings.save')}
+        </Button>
+      </Box>
     </Box>
   )
 }
