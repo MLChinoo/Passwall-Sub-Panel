@@ -345,6 +345,13 @@ func buildSingBoxRouteRules(ruleParts ...string) ([]map[string]any, string) {
 	// https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions
 	rules := []map[string]any{
 		{"action": "sniff"},
+		// Web QUIC (HTTP/3 over UDP 443): built-in reject → browsers fall back to
+		// h2/TCP. Highest priority among route rules (before the 🎮 UDP控制 rule
+		// that comes from the ruleset), mirroring the mihomo template's UDP-443
+		// REJECT. The `reject` action (1.11+, same floor as sniff/route) drops the
+		// QUIC attempt; the TCP retry still follows the rules below, so it's not a
+		// direct leak, and proxy-node dials bypass route rules (Hysteria2 safe).
+		{"network": "udp", "port": []int{443}, "action": "reject"},
 	}
 	finalOutbound := "direct"
 	for _, part := range ruleParts {
