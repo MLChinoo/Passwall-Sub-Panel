@@ -4,6 +4,15 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.8.0-beta.12 — 2026-06-16
+
+beta.11 的修订:修复 MySQL 下编辑 3X-UI 服务器报错,+ 两处 UI 间距。
+
+### 修复
+
+- **MySQL 下编辑 3X-UI 服务器失败** —— 面板更新走全量 `Save` 时把零值 `created_at`(`0000-00-00`)写进 UPDATE,MySQL 严格模式(NO_ZERO_DATE)直接拒绝(`Incorrect datetime value`)。改为新建走 `Create`、更新走 `Omit("CreatedAt").Save`(created_at 保持首次写入,updated_at 照常刷新)。SQLite / Postgres 容忍零日期、不受影响;由新增的跨库往返测试 `TestXUIPanelAuthFieldsRoundTrip` 在 MySQL CI 上暴露并守护(beta.11 的 CI 之所以没发现,是因为该测试在打 tag 之后才补上)。
+- **UI 间距** —— 服务器表单「允许不安全的 HTTPS」开关下方的说明文字加了上间距,不再贴着开关;节点「中转线路」编辑器里「启用」「隐藏直连」开关与其标签的间距拉开。
+
 ## v3.8.0-beta.11 — 2026-06-16
 
 本期:节点「中转借点」+ 自助注册/找回的安全加固与体验改进 + 3X-UI 面板认证方式选择与「不安全 HTTPS」开关 + 标签输入修复。
