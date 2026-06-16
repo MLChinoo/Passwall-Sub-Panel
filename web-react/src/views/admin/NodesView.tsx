@@ -91,6 +91,18 @@ function usesVlessStream(p: CreateProtocol): boolean {
   return p === 'vless' || p === 'vmess' || p === 'trojan'
 }
 
+// ALPN default is protocol-specific: Hysteria2 runs over QUIC and MUST advertise
+// h3 (the QUIC ALPN) — and this value is written into the 3X-UI inbound's
+// tlsSettings, so a wrong default breaks the server too, not just the rendered
+// client. TCP-based TLS (VLESS/VMess/Trojan) uses h2,http/1.1 (h3 can't be
+// negotiated over TCP). Used to prefill / retarget the ALPN field on protocol
+// change.
+const ALPN_HY2 = 'h3'
+const ALPN_TLS = 'h2,http/1.1'
+function defaultAlpn(p: CreateProtocol): string {
+  return p === 'hysteria2' ? ALPN_HY2 : ALPN_TLS
+}
+
 const tagFilter = createFilterOptions<string>()
 
 // TagsAutocomplete is the shared tag input used by the create/edit/import/
@@ -879,7 +891,7 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     xhttp_host: stringValue(xhttp.host),
     xhttp_mode: stringValue(xhttp.mode),
     tls_server_name: stringValue(tls.serverName),
-    tls_alpn_text: listToText(tls.alpn) || 'h2,http/1.1',
+    tls_alpn_text: listToText(tls.alpn) || defaultAlpn(protocol),
     tls_min_version: stringValue(tls.minVersion),
     tls_max_version: stringValue(tls.maxVersion),
     tls_fingerprint: stringValue(tlsInner.fingerprint) || stringValue(tls.fingerprint, 'chrome'),
@@ -1210,7 +1222,15 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                   let sec = prev.vless_security
                   if (p === 'trojan') sec = 'tls'
                   else if (p === 'vmess' && sec === 'reality') sec = 'tls'
-                  return { ...prev, protocol: p, vless_security: sec }
+                  // Retarget the ALPN default for the new protocol (Hysteria2 →
+                  // h3, TCP-TLS → h2,http/1.1) — but only when the field still
+                  // holds a default value, so a custom ALPN the admin typed is
+                  // preserved.
+                  let alpn = prev.tls_alpn_text
+                  if (alpn === '' || alpn === ALPN_HY2 || alpn === ALPN_TLS) {
+                    alpn = defaultAlpn(p)
+                  }
+                  return { ...prev, protocol: p, vless_security: sec, tls_alpn_text: alpn }
                 })
               }}>
               {PROTOCOL_OPTIONS.map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
