@@ -4,6 +4,9 @@ sort: 10
 enabled: true
 proxy_group_order:
   - '🚀 节点选择'
+  # UDP catch-all toggle (node / DIRECT / REJECT); kept high so it's easy to
+  # flip when a node's UDP is poor.
+  - '🎮 UDP控制'
   # Pulled up under the main selector by user preference even though
   # it still defaults to DIRECT — visual proximity to 🚀 节点选择
   # matters more here than grouping strictly by default-target.
@@ -48,6 +51,13 @@ content: |
   - IP-CIDR6,fc00::/7,🎯 全球直连,no-resolve
   - IP-CIDR6,fe80::/10,🎯 全球直连,no-resolve
   - IP-CIDR6,fd00::/8,🎯 全球直连,no-resolve
+  # All remaining (non-local) UDP -> the 🎮 UDP控制 selector, so UDP/QUIC can be
+  # toggled between the node / DIRECT / REJECT at runtime (default: through the
+  # node). Sits AFTER the localhost/LAN/private-IP direct rules above so router
+  # DNS, mDNS (.local) and LAN UDP stay direct; before the domain/geosite rules
+  # so it catches UDP before they would route it. TCP is unaffected (this only
+  # matches udp), so e.g. YouTube still uses its domain rule over TCP.
+  - NETWORK,udp,🎮 UDP控制
   - DOMAIN,instant.arubanetworks.com,🎯 全球直连
   - DOMAIN,setmeup.arubanetworks.com,🎯 全球直连
   - DOMAIN,router.asus.com,🎯 全球直连

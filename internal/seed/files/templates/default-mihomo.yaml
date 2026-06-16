@@ -6,7 +6,7 @@ rule_sets:
   - default_rules
 content: |
   mixed-port: 7890
-  allow-lan: true
+  allow-lan: false
   bind-address: '*'
   mode: rule
   log-level: info

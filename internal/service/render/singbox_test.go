@@ -58,6 +58,25 @@ func TestBuildSingBoxHysteria2Outbound_NoObfs(t *testing.T) {
 }
 
 
+// TestBuildSingBoxRouteRules_NetworkUDP pins the NETWORK,udp translation: it
+// becomes a sing-box route rule matching network=udp that routes to the named
+// selector (the 🎮 UDP控制 catch-all). Without the NETWORK case the rule would
+// be silently dropped for sing-box.
+func TestBuildSingBoxRouteRules_NetworkUDP(t *testing.T) {
+	rules, _ := buildSingBoxRouteRules("- NETWORK,udp,🎮 UDP控制\n- MATCH,DIRECT\n")
+	// rules[0] is the sniff action; rules[1] must be the UDP→group route.
+	if len(rules) < 2 {
+		t.Fatalf("want sniff + udp rule, got %#v", rules)
+	}
+	udp := rules[1]
+	if udp["network"] != "udp" {
+		t.Fatalf("udp rule network = %v, want udp: %#v", udp["network"], udp)
+	}
+	if udp["action"] != "route" || udp["outbound"] != "🎮 UDP控制" {
+		t.Fatalf("udp rule must route to 🎮 UDP控制: %#v", udp)
+	}
+}
+
 func TestBuildSingBoxRouteRules(t *testing.T) {
 	rules, final := buildSingBoxRouteRules(`
 - DOMAIN-SUFFIX,example.com,🚀 节点选择

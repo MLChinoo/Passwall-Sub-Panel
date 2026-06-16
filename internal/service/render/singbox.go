@@ -415,6 +415,15 @@ func splitCSVLine(line string) []string {
 
 func singBoxRouteRule(kind, value string) map[string]any {
 	switch kind {
+	case "NETWORK":
+		// Clash NETWORK,tcp|udp → sing-box rule "network" field. Lets a rule
+		// match purely by transport (e.g. route all UDP to the UDP-control
+		// selector). sing-box wants lowercase "tcp"/"udp".
+		net := strings.ToLower(strings.TrimSpace(value))
+		if net != "tcp" && net != "udp" {
+			return nil
+		}
+		return map[string]any{"network": net}
 	case "DOMAIN":
 		return map[string]any{"domain": []string{value}}
 	case "DOMAIN-SUFFIX":
