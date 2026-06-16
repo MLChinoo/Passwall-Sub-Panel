@@ -13,6 +13,19 @@ import (
 type nodeRepo struct{ db *gorm.DB }
 
 func (r *nodeRepo) Create(ctx context.Context, n *domain.Node) error {
+	// sort_order <= 0 means "append to the bottom": new nodes land after every
+	// existing one (max+10, matching the drag-reorder 10-step spacing) instead
+	// of at a fixed position in the middle. An explicit positive value is kept.
+	// The reorder path only ever assigns positive values, so 0 is a safe "auto"
+	// sentinel.
+	if n.SortOrder <= 0 {
+		var maxSort int
+		if err := r.db.WithContext(ctx).Model(&nodeRow{}).
+			Select("COALESCE(MAX(sort_order),0)").Scan(&maxSort).Error; err != nil {
+			return err
+		}
+		n.SortOrder = maxSort + 10
+	}
 	row, err := nodeFromDomain(n)
 	if err != nil {
 		return err

@@ -851,7 +851,8 @@
       "flow": "Flow (optional)",
       "region": "Region",
       "tags": "Tags",
-      "sort_order": "Sort weight"
+      "sort_order": "Sort weight",
+      "sort_order_hint": "0 = auto-append to the bottom"
     },
     "edit_inbound": "Edit inbound config",
     "edit_inbound_dialog": {

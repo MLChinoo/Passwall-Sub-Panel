@@ -961,7 +961,8 @@
       "flow": "Flow（可选）",
       "region": "Region",
       "tags": "Tags",
-      "sort_order": "排序权重"
+      "sort_order": "排序权重",
+      "sort_order_hint": "0 = 自动排到列表末尾"
     },
     "feature_pending": "功能迁移中（下个版本）",
     "selection_count": "已选 {{count}}",

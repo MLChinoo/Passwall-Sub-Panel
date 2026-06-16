@@ -118,6 +118,51 @@ func TestNodeRepo_ProtocolRoundTrips(t *testing.T) {
 	}
 }
 
+// TestNodeRepo_CreateAppendsToBottom pins the "new nodes default to the bottom"
+// rule: Create with sort_order <= 0 assigns max(sort_order)+10, while an
+// explicit positive value is kept verbatim.
+func TestNodeRepo_CreateAppendsToBottom(t *testing.T) {
+	repo, ctx := newNodeTestRepo(t)
+	inb := 0
+	mk := func(name string, sort int) *domain.Node {
+		inb++ // distinct inbound_id per node — (panel_id, inbound_id) is unique
+		return &domain.Node{PanelID: 1, InboundID: inb, DisplayName: name, ServerAddress: "x", Region: "X", SortOrder: sort}
+	}
+
+	// First node into an empty table: 0 + 10 = 10.
+	a := mk("a", 0)
+	if err := repo.Create(ctx, a); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if a.SortOrder != 10 {
+		t.Fatalf("first auto node sort_order = %d, want 10", a.SortOrder)
+	}
+	// Second auto node: max(10)+10 = 20.
+	b := mk("b", 0)
+	if err := repo.Create(ctx, b); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	if b.SortOrder != 20 {
+		t.Fatalf("second auto node sort_order = %d, want 20", b.SortOrder)
+	}
+	// Explicit value is respected (not overridden).
+	c := mk("c", 5)
+	if err := repo.Create(ctx, c); err != nil {
+		t.Fatalf("create c: %v", err)
+	}
+	if c.SortOrder != 5 {
+		t.Fatalf("explicit sort_order = %d, want 5 (kept)", c.SortOrder)
+	}
+	// Next auto node appends after the current max (20): 30.
+	d := mk("d", 0)
+	if err := repo.Create(ctx, d); err != nil {
+		t.Fatalf("create d: %v", err)
+	}
+	if d.SortOrder != 30 {
+		t.Fatalf("auto node after explicit = %d, want 30 (max 20 + 10)", d.SortOrder)
+	}
+}
+
 // TestNodeRepo_RelaysRoundTrip pins the v3.8.0 transit-line persistence: a
 // node's Relays slice + HideDirect flag survive a write→read→update cycle
 // across every dialect (the JSON column is the Postgres-strict path — text,

@@ -317,7 +317,7 @@ interface InboundFormState {
 }
 
 const EMPTY_META: MetaForm = {
-  display_name: '', server_address: '', flow: '', region: '', tags_text: '', sort_order: 100,
+  display_name: '', server_address: '', flow: '', region: '', tags_text: '', sort_order: 0,
   relays: [], hide_direct: false,
 }
 
@@ -331,7 +331,7 @@ const EMPTY_INBOUND: InboundFormState = {
   server_address: '',
   region: '',
   tags_text: '',
-  sort_order: 100,
+  sort_order: 0,
   listen: '',
   port: 443,
   enable: true,
@@ -3257,7 +3257,8 @@ export default function NodesView() {
               onChange={v => setImportForm({ ...importForm, tags_text: v })} />
             <TextField fullWidth type="number" label={t('admin:nodes.import_dialog.sort_order')}
               value={importForm.sort_order}
-              onChange={e => setImportForm({ ...importForm, sort_order: Number(e.target.value) })} />
+              onChange={e => setImportForm({ ...importForm, sort_order: Number(e.target.value) })}
+              helperText={t('admin:nodes.import_dialog.sort_order_hint', { defaultValue: '0 = 自动排到列表末尾' })} />
           </Box>
         </DialogContent>
         <DialogActions>
