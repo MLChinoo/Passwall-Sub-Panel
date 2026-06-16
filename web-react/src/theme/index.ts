@@ -139,6 +139,18 @@ export function createAppTheme({ mode, sourceColor, language, density = 'comfort
           },
         },
       },
+      MuiTabs: {
+        // Make every tab row scrollable so a long row (admin sub-tabs:
+        // Settings / Logs / Certificates / Nodes / Groups / Traffic) can be
+        // swiped and shows scroll buttons instead of being clipped on a narrow
+        // mobile viewport. For tab rows that already fit, scrollable is visually
+        // identical to the standard left-aligned default (no buttons shown).
+        defaultProps: {
+          variant: 'scrollable' as const,
+          scrollButtons: 'auto' as const,
+          allowScrollButtonsMobile: true,
+        },
+      },
       MuiIconButton: {
         styleOverrides: {
           root: {
