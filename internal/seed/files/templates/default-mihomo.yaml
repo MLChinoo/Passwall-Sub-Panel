@@ -6,7 +6,12 @@ rule_sets:
   - default_rules
 content: |
   mixed-port: 7890
-  allow-lan: false
+  # Keep allow-lan true: a big part of this panel's users run mihomo on a router
+  # (OpenWrt) or share the proxy to other LAN devices, where false binds the
+  # inbounds to 127.0.0.1 and breaks transparent proxying / LAN clients. A
+  # single-machine user who wants localhost-only can set it false on their own
+  # client; it shouldn't be the shared-template default.
+  allow-lan: true
   bind-address: '*'
   mode: rule
   log-level: info
