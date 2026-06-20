@@ -77,6 +77,14 @@ type PSPClientInbound struct {
 	ClientID     int64
 	NodeID       int64
 	FlowOverride string
+	// Provisioned is the per-(client, node) confirmation that the shared client
+	// is actually attached to this node's inbound in 3X-UI (set by the reconcile
+	// service only AFTER a GetClient read-back confirms it). It is the gate
+	// render/traffic consult per node before trusting the shared client — NOT
+	// "row exists" (the dual-write writes the row with zero 3X-UI calls). Survives
+	// a dual-write's attachment re-sync (SetInbounds preserves it for rows that
+	// stay); a node removed-then-readded correctly resets to false.
+	Provisioned bool
 }
 
 // PeriodUsedTotal returns this client's usage in the current period:

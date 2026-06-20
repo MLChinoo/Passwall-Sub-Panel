@@ -379,11 +379,16 @@ type PSPClientRepo interface {
 	// DeleteByEmail removes the client and (cascading) its attachment rows.
 	DeleteByEmail(ctx context.Context, panelID int64, email string) error
 
-	// SetInbounds REPLACES the client's attachment set with the given junction
-	// rows (the DESIRED set reconcile pushes to the panel via attach/detach).
-	// Idempotent; an empty slice detaches the client from everything locally.
+	// SetInbounds reconciles the attachment set to the desired nodes via an
+	// additive diff: remove undesired, insert missing, keep surviving rows so
+	// their per-attachment Provisioned flag is preserved across a dual-write.
+	// An empty slice detaches the client from everything locally.
 	SetInbounds(ctx context.Context, clientID int64, inbounds []domain.PSPClientInbound) error
 	ListInbounds(ctx context.Context, clientID int64) ([]domain.PSPClientInbound, error)
+	// MarkInboundProvisioned sets the per-(client, node) Provisioned flag — the
+	// reconcile service calls it only after a 3X-UI read-back confirms the shared
+	// client is attached to that node's inbound. No-op if the row is absent.
+	MarkInboundProvisioned(ctx context.Context, clientID, nodeID int64, provisioned bool) error
 
 	// UpdateCounters / BatchUpdateCounters are the narrow counter-only writes for
 	// the traffic poll's end-of-cycle flush, mirroring OwnershipRepo.

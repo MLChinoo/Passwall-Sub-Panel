@@ -1382,6 +1382,17 @@ WHERE lifetime_up_bytes IS NULL OR lifetime_down_bytes IS NULL OR lifetime_total
 `).Error; err != nil {
 		return err
 	}
+	// psp_client_inbounds.provisioned (v3.9.0): the table shipped in v3.9.0-beta.1
+	// without this column, so a beta.1→later upgrade may leave existing rows NULL.
+	// COALESCE to false (defense-in-depth, same as the columns above). No-op once
+	// every row is non-NULL.
+	if err := db.Exec(`
+UPDATE psp_client_inbounds
+SET provisioned = COALESCE(provisioned, FALSE)
+WHERE provisioned IS NULL
+`).Error; err != nil {
+		return err
+	}
 	return nil
 }
 

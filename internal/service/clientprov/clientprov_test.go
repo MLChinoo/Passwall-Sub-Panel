@@ -94,6 +94,14 @@ func (r *fakePSPClientRepo) SetInbounds(ctx context.Context, clientID int64, inb
 func (r *fakePSPClientRepo) ListInbounds(ctx context.Context, clientID int64) ([]domain.PSPClientInbound, error) {
 	return r.inbounds[clientID], nil
 }
+func (r *fakePSPClientRepo) MarkInboundProvisioned(ctx context.Context, clientID, nodeID int64, provisioned bool) error {
+	for i := range r.inbounds[clientID] {
+		if r.inbounds[clientID][i].NodeID == nodeID {
+			r.inbounds[clientID][i].Provisioned = provisioned
+		}
+	}
+	return nil
+}
 func (r *fakePSPClientRepo) UpdateCounters(ctx context.Context, c *domain.PSPClient) error {
 	if ex, _ := r.GetByID(ctx, c.ID); ex != nil {
 		for _, stored := range r.clients {

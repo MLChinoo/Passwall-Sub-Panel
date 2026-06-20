@@ -48,6 +48,7 @@ type pspClientInboundRow struct {
 	ClientID     int64  `gorm:"not null;index;uniqueIndex:uk_psp_client_inbound,priority:1"`
 	NodeID       int64  `gorm:"not null;uniqueIndex:uk_psp_client_inbound,priority:2"`
 	FlowOverride string `gorm:"size:64;not null;default:''"`
+	Provisioned  bool   `gorm:"default:false"`
 }
 
 func (pspClientInboundRow) TableName() string { return "psp_client_inbounds" }
@@ -196,24 +197,70 @@ func (r *pspClientRepo) DeleteByEmail(ctx context.Context, panelID int64, email 
 	})
 }
 
+// SetInbounds reconciles the client's attachment set to the desired nodes via an
+// ADDITIVE DIFF (not delete-all-recreate): rows for nodes no longer desired are
+// removed, missing nodes are inserted (provisioned=false), and a still-desired
+// node's row is kept — preserving its Provisioned flag and only updating
+// FlowOverride. This is load-bearing: the shadow dual-write calls SetInbounds on
+// every membership resync, and a delete-recreate would clobber the reconcile
+// service's per-attachment Provisioned signal (HOLE #7). A node removed and later
+// re-added correctly comes back with provisioned=false (a fresh attachment).
 func (r *pspClientRepo) SetInbounds(ctx context.Context, clientID int64, inbounds []domain.PSPClientInbound) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("client_id = ?", clientID).Delete(&pspClientInboundRow{}).Error; err != nil {
+		var existing []pspClientInboundRow
+		if err := tx.Where("client_id = ?", clientID).Find(&existing).Error; err != nil {
 			return err
 		}
-		if len(inbounds) == 0 {
-			return nil
+		curByNode := make(map[int64]pspClientInboundRow, len(existing))
+		for _, e := range existing {
+			curByNode[e.NodeID] = e
 		}
-		rows := make([]pspClientInboundRow, 0, len(inbounds))
+		desiredNodes := make(map[int64]struct{}, len(inbounds))
 		for _, in := range inbounds {
-			rows = append(rows, pspClientInboundRow{
-				ClientID:     clientID,
-				NodeID:       in.NodeID,
-				FlowOverride: in.FlowOverride,
-			})
+			desiredNodes[in.NodeID] = struct{}{}
 		}
-		return tx.Create(&rows).Error
+
+		// Remove rows whose node is no longer desired.
+		for _, e := range existing {
+			if _, ok := desiredNodes[e.NodeID]; !ok {
+				if err := tx.Where("id = ?", e.ID).Delete(&pspClientInboundRow{}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		// Insert missing; update flow-only on existing (Provisioned preserved).
+		for _, in := range inbounds {
+			cur, ok := curByNode[in.NodeID]
+			if !ok {
+				if err := tx.Create(&pspClientInboundRow{
+					ClientID:     clientID,
+					NodeID:       in.NodeID,
+					FlowOverride: in.FlowOverride,
+				}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if cur.FlowOverride != in.FlowOverride {
+				if err := tx.Model(&pspClientInboundRow{}).Where("id = ?", cur.ID).
+					Update("flow_override", in.FlowOverride).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
+}
+
+// MarkInboundProvisioned sets the per-(client, node) Provisioned flag — called by
+// the reconcile service only after a GetClient read-back confirms the shared
+// client is attached to that node's inbound in 3X-UI. No-op if the attachment
+// row doesn't exist.
+func (r *pspClientRepo) MarkInboundProvisioned(ctx context.Context, clientID, nodeID int64, provisioned bool) error {
+	return r.db.WithContext(ctx).
+		Model(&pspClientInboundRow{}).
+		Where("client_id = ? AND node_id = ?", clientID, nodeID).
+		Update("provisioned", provisioned).Error
 }
 
 func (r *pspClientRepo) ListInbounds(ctx context.Context, clientID int64) ([]domain.PSPClientInbound, error) {
@@ -230,6 +277,7 @@ func (r *pspClientRepo) ListInbounds(ctx context.Context, clientID int64) ([]dom
 			ClientID:     row.ClientID,
 			NodeID:       row.NodeID,
 			FlowOverride: row.FlowOverride,
+			Provisioned:  row.Provisioned,
 		}
 	}
 	return out, nil

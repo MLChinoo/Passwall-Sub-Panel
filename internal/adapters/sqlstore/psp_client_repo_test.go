@@ -16,6 +16,7 @@ func newPSPClientTestRepo(t *testing.T) (interface {
 	DeleteByEmail(context.Context, int64, string) error
 	SetInbounds(context.Context, int64, []domain.PSPClientInbound) error
 	ListInbounds(context.Context, int64) ([]domain.PSPClientInbound, error)
+	MarkInboundProvisioned(context.Context, int64, int64, bool) error
 	UpdateCounters(context.Context, *domain.PSPClient) error
 	BatchUpdateCounters(context.Context, []*domain.PSPClient) error
 }, context.Context) {
@@ -114,6 +115,59 @@ func TestPSPClientSetInboundsReplacesAttachmentSet(t *testing.T) {
 	got, _ = repo.ListInbounds(ctx, id)
 	if len(got) != 1 || got[0].NodeID != 3 {
 		t.Fatalf("after replace, attachment set = %+v, want only node 3", got)
+	}
+}
+
+func TestPSPClientSetInboundsPreservesProvisioned(t *testing.T) {
+	repo, ctx := newPSPClientTestRepo(t)
+	id, _ := repo.Upsert(ctx, &domain.PSPClient{UserID: 1, PanelID: 10, Email: "u1@psp.local"})
+	if err := repo.SetInbounds(ctx, id, []domain.PSPClientInbound{
+		{ClientID: id, NodeID: 2}, {ClientID: id, NodeID: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// reconcile confirms node 2 attached in 3X-UI.
+	if err := repo.MarkInboundProvisioned(ctx, id, 2, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A dual-write re-syncs the SAME node set (additive diff, flow change on 2).
+	// node 2's Provisioned must SURVIVE; its flow updates; node 3 stays unprovisioned.
+	if err := repo.SetInbounds(ctx, id, []domain.PSPClientInbound{
+		{ClientID: id, NodeID: 2, FlowOverride: "xtls-rprx-vision"}, {ClientID: id, NodeID: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	by := func() map[int64]domain.PSPClientInbound {
+		got, _ := repo.ListInbounds(ctx, id)
+		m := map[int64]domain.PSPClientInbound{}
+		for _, in := range got {
+			m[in.NodeID] = in
+		}
+		return m
+	}
+	m := by()
+	if !m[2].Provisioned {
+		t.Fatal("node 2 Provisioned must survive an additive re-sync (HOLE #7)")
+	}
+	if m[2].FlowOverride != "xtls-rprx-vision" {
+		t.Fatalf("flow should update on the surviving row, got %q", m[2].FlowOverride)
+	}
+	if m[3].Provisioned {
+		t.Fatal("node 3 was never provisioned")
+	}
+
+	// Remove node 2, then re-add it → it comes back UNprovisioned (fresh attachment).
+	if err := repo.SetInbounds(ctx, id, []domain.PSPClientInbound{{ClientID: id, NodeID: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetInbounds(ctx, id, []domain.PSPClientInbound{
+		{ClientID: id, NodeID: 2}, {ClientID: id, NodeID: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if by()[2].Provisioned {
+		t.Fatal("re-added node 2 must be unprovisioned (a removed+re-added attachment is fresh)")
 	}
 }
 
