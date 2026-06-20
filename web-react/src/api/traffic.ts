@@ -143,6 +143,28 @@ export async function getUserNodeUsage(userId: number) {
   return data.items ?? []
 }
 
+// UserServerUsageRow is one (user, server/panel) usage line — the per-node rows
+// aggregated by 3X-UI server. Returned sorted by period usage desc.
+export interface UserServerUsageRow {
+  panel_id: number
+  server_name: string
+  node_count: number
+  lifetime_up_bytes: number
+  lifetime_down_bytes: number
+  lifetime_total_bytes: number
+  period_up_bytes: number
+  period_down_bytes: number
+  period_total_bytes: number
+  today_up_bytes: number
+  today_down_bytes: number
+  today_total_bytes: number
+}
+
+export async function getUserServerUsage(userId: number) {
+  const { data } = await client.get<{ items: UserServerUsageRow[] }>(`/admin/traffic/user/${userId}/servers`)
+  return data.items ?? []
+}
+
 export async function getMyUsage() {
   const { data } = await client.get<UsageReport>('/user/me/traffic')
   return data

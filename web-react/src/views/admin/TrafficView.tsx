@@ -39,6 +39,7 @@ import {
 } from '@/api/traffic'
 import type { Node, User } from '@/api/types'
 import { UserNodeUsage } from './UserNodeUsage'
+import { UserServerUsage } from './UserServerUsage'
 import { getUISettings } from '@/api/settings'
 import PageHeader from '@/components/PageHeader'
 import { pushSnack } from '@/components/SnackbarHost'
@@ -501,6 +502,8 @@ export default function TrafficView() {
               modal. */}
           {scope === 'user' && selectedUserId !== 0 && (
             <Card sx={{ bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', p: 2, mt: 2 }}>
+              <UserServerUsage userId={selectedUserId} />
+              <Box sx={{ height: 16 }} />
               <UserNodeUsage userId={selectedUserId} />
             </Card>
           )}

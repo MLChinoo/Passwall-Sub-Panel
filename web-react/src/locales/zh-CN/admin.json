@@ -1045,6 +1045,7 @@
     "edit_title": "编辑用户",
     "activity": { "title": "最近登录", "empty": "暂无登录记录", "ok": "成功", "fail": "失败" },
     "nodeusage": { "title": "按节点用量", "empty": "该用户暂无节点", "lifetime": "累计", "period": "本周期", "today": "今日", "total": "合计", "node": "节点", "search": "搜索节点 / 地区", "no_match": "无匹配节点" },
+    "serverusage": { "title": "按服务器用量", "empty": "该用户暂无服务器", "server": "服务器", "node_count": "{{n}} 节点" },
     "result_title": "用户已创建",
     "search_placeholder": "搜索 UPN / 显示名 / 邮箱…",
     "filter_group_all": "全部分组",
