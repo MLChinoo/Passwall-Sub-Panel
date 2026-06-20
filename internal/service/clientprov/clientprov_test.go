@@ -124,8 +124,10 @@ var rules = domain.EmailRules{Domain: "psp.local"}
 func TestSync_CreatesSharedClientAndAttachments(t *testing.T) {
 	repo := newFakeRepo()
 	svc := New(repo)
+	// Both default-class (no flow), so they share ONE client with two
+	// attachments. (Flow-based splitting is covered in clientplan's tests.)
 	nodes := []clientplan.NodeCred{
-		{NodeID: 1, Protocol: domain.ProtoVLESS, Flow: "xtls-rprx-vision"},
+		{NodeID: 1, Protocol: domain.ProtoVLESS},
 		{NodeID: 2, Protocol: domain.ProtoTrojan},
 	}
 	if err := svc.Sync(context.Background(), 42, "uuid-x", 10, rules, nodes); err != nil {

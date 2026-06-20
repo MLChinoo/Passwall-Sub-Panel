@@ -12,12 +12,12 @@ const testUUID = "a265b1ec-cd81-43e7-8239-09f322ef22d6"
 
 var testRules = domain.EmailRules{Domain: "psp.local"}
 
-// The common case: a mix of VLESS / Trojan / SS / SS-2022-256 / Hysteria2 nodes
-// collapses to ONE shared client, attached to all of them, with the 32-byte
-// stored password.
+// The common case: a mix of VLESS (no flow) / Trojan / SS / SS-2022-256 /
+// Hysteria2 nodes collapses to ONE shared client, attached to all of them, with
+// the 32-byte stored password.
 func TestBuild_MixedProtocolsCollapseToOneClient(t *testing.T) {
 	nodes := []NodeCred{
-		{NodeID: 1, Protocol: domain.ProtoVLESS, Flow: "xtls-rprx-vision"},
+		{NodeID: 1, Protocol: domain.ProtoVLESS}, // no flow → default class
 		{NodeID: 2, Protocol: domain.ProtoTrojan},
 		{NodeID: 3, Protocol: domain.ProtoSS},
 		{NodeID: 4, Protocol: domain.ProtoSS2022, SSMethod: "2022-blake3-aes-256-gcm"},
@@ -40,9 +40,46 @@ func TestBuild_MixedProtocolsCollapseToOneClient(t *testing.T) {
 	if len(c.Inbounds) != 5 {
 		t.Fatalf("attachment set size = %d, want 5", len(c.Inbounds))
 	}
-	// VLESS flow rides through as a per-attachment override.
-	if c.Inbounds[0].NodeID != 1 || c.Inbounds[0].FlowOverride != "xtls-rprx-vision" {
-		t.Fatalf("flow override not carried: %+v", c.Inbounds[0])
+}
+
+// HOLE #8: a client carries a single flow and 3X-UI has no per-inbound
+// flowOverride API, so VLESS nodes with DIFFERENT flow can't share a client. A
+// user with a VLESS-vision node + (VLESS-noflow + Trojan) gets TWO clients: the
+// default (u{uid}@) and a flow-split one (stable -k{hash} email).
+func TestBuild_VLESSFlowSplitsClient(t *testing.T) {
+	nodes := []NodeCred{
+		{NodeID: 1, Protocol: domain.ProtoVLESS, Flow: "xtls-rprx-vision"}, // vision → its own client
+		{NodeID: 2, Protocol: domain.ProtoVLESS},                           // no flow → default
+		{NodeID: 3, Protocol: domain.ProtoTrojan},                          // no flow → default
+	}
+	got := Build(42, testUUID, 10, testRules, nodes)
+	if len(got) != 2 {
+		t.Fatalf("want 2 clients (flow split), got %d", len(got))
+	}
+	// Sorted by (pwClass, flow): default (flow "") first, vision second.
+	def, vis := got[0], got[1]
+	if def.Client.Email != "u42@psp.local" {
+		t.Fatalf("default client email = %q, want u42@psp.local", def.Client.Email)
+	}
+	if len(def.Inbounds) != 2 || def.Inbounds[0].NodeID != 2 || def.Inbounds[1].NodeID != 3 {
+		t.Fatalf("default client should hold the no-flow nodes 2,3: %+v", def.Inbounds)
+	}
+	// The vision client: same pwClass (0, same password) but a DIFFERENT, stable
+	// hash-suffix email; its single attachment carries the vision flow.
+	if vis.Client.CredClass != 0 {
+		t.Fatalf("flow split keeps pwClass 0 (default password), got %d", vis.Client.CredClass)
+	}
+	if vis.Client.Email == def.Client.Email {
+		t.Fatal("flow-split client must have a distinct email from the default client")
+	}
+	if want := "u42-k"; vis.Client.Email[:len(want)] != want {
+		t.Fatalf("flow-split email = %q, want a -k hash suffix", vis.Client.Email)
+	}
+	if len(vis.Inbounds) != 1 || vis.Inbounds[0].NodeID != 1 || vis.Inbounds[0].FlowOverride != "xtls-rprx-vision" {
+		t.Fatalf("vision client should hold node 1 with vision flow: %+v", vis.Inbounds)
+	}
+	if vis.Client.Password != crypto.NewProxyPassword(testUUID) {
+		t.Fatal("flow split must NOT change the password (same 32-byte value)")
 	}
 }
 

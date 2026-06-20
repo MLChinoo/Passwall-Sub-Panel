@@ -3,40 +3,57 @@
 // nodes each is attached to. It is pure (no I/O) so both live enrollment and the
 // one-shot migration build the same plan, and so it is exhaustively testable.
 //
-// The single subtlety is credential classes. A 3X-UI client carries ONE
-// `password` field. v3.9.0 stores one value per client (crypto.NewProxyPassword
-// = base64 of SHA-256(uuid), a 32-byte SS-2022 PSK that is also a valid
-// Trojan/SS password), so VLESS/VMess (use `id`), Hysteria2 (uses `auth`),
-// Trojan/SS/SS-2022-256 (use that 32-byte value) all share ONE client. The lone
-// exception is SS-2022 with an aes-128-gcm cipher: its PSK must be 16 bytes,
-// which the 32-byte value can't be — those nodes get their own client
-// (CredClass 1). Mixing 128 and 256 SS-2022 for one user on one panel is the
-// only case that yields two clients; everything else is exactly one.
+// A 3X-UI client carries ONE set of fields: id (UUID), password, auth, and a
+// SINGLE flow — and 3X-UI exposes no API to set a per-inbound flowOverride. So
+// two nodes can share a client only when neither the password NOR the flow
+// conflicts. The partition key is therefore (pwClass, flow):
+//
+//   - pwClass: 0 normally; 1 iff the node is SS-2022 with a 16-byte PSK
+//     (aes-128-gcm). The 32-byte value crypto.NewProxyPassword serves VLESS/
+//     VMess (use id), Hysteria2 (uses auth) and Trojan/SS/SS-2022-256 (use it as
+//     password/PSK) — only the 16-byte SS-2022 case needs its own client.
+//   - flow: the effective VLESS flow ("" or xtls-rprx-vision), "" for every
+//     other protocol (they ignore flow). VLESS inbounds needing different flow
+//     can't share one client, so they split.
+//
+// The overwhelming majority of users (default password, uniform/empty flow, no
+// SS-2022-128) get exactly ONE client whose email stays u{uid}@domain. The
+// client identity (email) is a STABLE, collision-free function of (uid, key) —
+// see PSPClientEmail / partKey.emailSuffix — so re-running, or a user's OTHER
+// nodes changing, never re-keys an existing client (would orphan it in 3X-UI).
 package clientplan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
 )
 
-// credClass128 is the credential class for SS-2022 aes-128-gcm nodes (16-byte
-// PSK). credClassDefault (0) covers everything else.
 const (
-	credClassDefault = 0
-	credClass128     = 1
+	pwClassDefault = 0 // 32-byte / free-form password (VLESS/VMess/Trojan/SS/SS-2022-256/Hy2)
+	pwClass128     = 1 // SS-2022 aes-128-gcm: 16-byte PSK, can't share the password field
+
+	// flowVision is the only non-empty VLESS flow current Xray uses. The flow
+	// dimension is allowlisted to {"", flowVision}; any other value coerces to ""
+	// (no real Xray VLESS flow falls outside this, and hashing arbitrary flows
+	// into a client would risk an unprovisionable wrong-flow client).
+	flowVision = "xtls-rprx-vision"
+
+	keySep = "\x1f" // ASCII Unit Separator — never appears in a flow string, so the canonical key is injective
 )
 
 // NodeCred describes one node a user can reach on a panel — just enough to
-// assign it a credential class, generate the right password, and record the
-// per-inbound flow override.
+// assign it a partition key and generate the right password.
 type NodeCred struct {
 	NodeID   int64
 	Protocol domain.Protocol
 	SSMethod string // disambiguates the SS-2022 key length (16 vs 32 bytes)
-	Flow     string // VLESS flow → per-attachment FlowOverride
+	Flow     string // VLESS flow (only VLESS uses it)
 }
 
 // NodeCredFromNode derives a NodeCred from a captured node, reading the protocol
@@ -90,49 +107,103 @@ func ssMethodFromSettings(settings string) string {
 	return s.Method
 }
 
+// partKey is the shared-client partition key: nodes share a client iff equal.
+type partKey struct {
+	pwClass int
+	flow    string
+}
+
+func partKeyFor(nc NodeCred) partKey {
+	pw := pwClassDefault
+	if nc.Protocol == domain.ProtoSS2022 && crypto.SS2022KeyLen(nc.SSMethod) == 16 {
+		pw = pwClass128
+	}
+	return partKey{pwClass: pw, flow: effectiveFlow(nc.Protocol, nc.Flow)}
+}
+
+// effectiveFlow is the flow that will actually be pushed for this node: only
+// VLESS carries flow, and it is allowlisted to {"", flowVision}. Anything else
+// coerces to "" (current Xray VLESS has no other flow). The reconcile service
+// MUST push this same effective flow when it creates the client, or a node would
+// be partitioned by one flow and provisioned with another.
+func effectiveFlow(p domain.Protocol, flow string) string {
+	if p == domain.ProtoVLESS && flow == flowVision {
+		return flowVision
+	}
+	return ""
+}
+
+// canon is the injective canonical key string that the email suffix hashes. The
+// "v1" tag lets the scheme evolve later without re-keying existing v1 clients.
+func (k partKey) canon() string {
+	return "v1" + keySep + "pw=" + strconv.Itoa(k.pwClass) + keySep + "flow=" + k.flow
+}
+
+// emailSuffix is the STABLE, collision-free email suffix for this key. It is a
+// pure function of the key's content (never positional), so a key that still
+// exists always maps to the same email regardless of the user's other nodes.
+func (k partKey) emailSuffix() string {
+	switch {
+	case k.pwClass == pwClassDefault && k.flow == "":
+		return "" // default → u{uid}@domain, byte-identical to the pre-flow scheme
+	case k.pwClass == pwClass128 && k.flow == "":
+		return "-c1" // SS-2022-128 → back-compatible with the legacy credClass==1 email
+	default:
+		sum := sha256.Sum256([]byte(k.canon()))
+		return "-k" + hex.EncodeToString(sum[:])[:8]
+	}
+}
+
 // DesiredClient is one psp_client PSP should hold for a user on a panel, paired
 // with its attachment set. Credentials are filled in (the stored source of
 // truth); the Client's ID/CreatedAt/counters are left zero for the repo to
-// assign/preserve on upsert.
+// assign/preserve on upsert. CredClass carries the pwClass bit (0/1).
 type DesiredClient struct {
 	Client   domain.PSPClient
 	Inbounds []domain.PSPClientInbound
 }
 
 // Build returns the desired clients for one user on one panel, given the nodes
-// they can access there. Deterministic and order-stable (CredClass ascending;
-// attachments in input order). An empty nodes slice yields no clients.
+// they can access there. Deterministic and order-stable (keys sorted by pwClass
+// then flow). An empty nodes slice yields no clients.
 func Build(userID int64, userUUID string, panelID int64, rules domain.EmailRules, nodes []NodeCred) []DesiredClient {
 	if len(nodes) == 0 {
 		return nil
 	}
-	// Bucket nodes by credential class, preserving input order within a bucket.
-	buckets := map[int][]NodeCred{}
-	classes := []int{} // first-seen order, sorted below for stability
+	buckets := map[partKey][]NodeCred{}
+	keys := make([]partKey, 0, 2)
 	for _, n := range nodes {
-		cc := credClassFor(n.Protocol, n.SSMethod)
-		if _, seen := buckets[cc]; !seen {
-			classes = append(classes, cc)
+		k := partKeyFor(n)
+		if _, seen := buckets[k]; !seen {
+			keys = append(keys, k)
 		}
-		buckets[cc] = append(buckets[cc], n)
+		buckets[k] = append(buckets[k], n)
 	}
-	sort.Ints(classes)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].pwClass != keys[j].pwClass {
+			return keys[i].pwClass < keys[j].pwClass
+		}
+		return keys[i].flow < keys[j].flow
+	})
 
-	out := make([]DesiredClient, 0, len(classes))
-	for _, cc := range classes {
-		bnodes := buckets[cc]
+	out := make([]DesiredClient, 0, len(keys))
+	for _, k := range keys {
+		bnodes := buckets[k]
 		inbounds := make([]domain.PSPClientInbound, 0, len(bnodes))
 		for _, n := range bnodes {
-			inbounds = append(inbounds, domain.PSPClientInbound{NodeID: n.NodeID, FlowOverride: n.Flow})
+			// All nodes in a partition share the key's effective flow, so the
+			// per-attachment FlowOverride is that flow (it records what the node
+			// uses; the client itself carries the same single flow).
+			inbounds = append(inbounds, domain.PSPClientInbound{NodeID: n.NodeID, FlowOverride: k.flow})
 		}
 		out = append(out, DesiredClient{
 			Client: domain.PSPClient{
 				UserID:    userID,
 				PanelID:   panelID,
-				CredClass: cc,
-				Email:     domain.PSPClientEmail(userID, cc, rules),
+				CredClass: k.pwClass,
+				Email:     domain.PSPClientEmail(userID, k.emailSuffix(), rules),
 				UUID:      userUUID,
-				Password:  passwordForClass(cc, userUUID, bnodes),
+				Password:  passwordForClass(k.pwClass, userUUID),
 			},
 			Inbounds: inbounds,
 		})
@@ -140,25 +211,12 @@ func Build(userID int64, userUUID string, panelID int64, rules domain.EmailRules
 	return out
 }
 
-// credClassFor assigns a node to a credential class: SS-2022-128 (16-byte PSK)
-// gets its own class; everything else shares the default class.
-func credClassFor(p domain.Protocol, ssMethod string) int {
-	if p == domain.ProtoSS2022 && crypto.SS2022KeyLen(ssMethod) == 16 {
-		return credClass128
-	}
-	return credClassDefault
-}
-
-// passwordForClass returns the single stored password for a class. The default
-// class uses the 32-byte value (NewProxyPassword); the 128 class derives the
-// 16-byte PSK from one of its (all aes-128) nodes' methods.
-func passwordForClass(cc int, userUUID string, nodes []NodeCred) string {
-	if cc == credClass128 {
-		method := "2022-blake3-aes-128-gcm"
-		if len(nodes) > 0 && nodes[0].SSMethod != "" {
-			method = nodes[0].SSMethod
-		}
-		return crypto.DeriveProxyPassword(userUUID, domain.ProtoSS2022, method)
+// passwordForClass returns the single stored password for a partition's pwClass.
+// pwClass128 derives the 16-byte SS-2022 PSK (all nodes in that class are
+// aes-128); the default class uses the 32-byte NewProxyPassword.
+func passwordForClass(pwClass int, userUUID string) string {
+	if pwClass == pwClass128 {
+		return crypto.DeriveProxyPassword(userUUID, domain.ProtoSS2022, "2022-blake3-aes-128-gcm")
 	}
 	return crypto.NewProxyPassword(userUUID)
 }

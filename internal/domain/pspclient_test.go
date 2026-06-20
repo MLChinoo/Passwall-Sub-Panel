@@ -4,20 +4,20 @@ import "testing"
 
 func TestPSPClientEmail(t *testing.T) {
 	cases := []struct {
-		userID    int64
-		credClass int
-		domain    string
-		want      string
+		userID int64
+		suffix string
+		domain string
+		want   string
 	}{
-		{42, 0, "psp.local", "u42@psp.local"},
-		{42, 0, "", "u42@psp.local"},          // empty domain → default
-		{42, 1, "example.com", "u42-c1@example.com"},
-		{7, 2, "x.test", "u7-c2@x.test"},
+		{42, "", "psp.local", "u42@psp.local"},
+		{42, "", "", "u42@psp.local"},                  // empty domain → default
+		{42, "-c1", "example.com", "u42-c1@example.com"}, // SS-2022-128
+		{7, "-k1a2b3c4d", "x.test", "u7-k1a2b3c4d@x.test"}, // flow-split hash suffix
 	}
 	for _, tc := range cases {
-		got := PSPClientEmail(tc.userID, tc.credClass, EmailRules{Domain: tc.domain})
+		got := PSPClientEmail(tc.userID, tc.suffix, EmailRules{Domain: tc.domain})
 		if got != tc.want {
-			t.Errorf("PSPClientEmail(%d, %d, %q) = %q, want %q", tc.userID, tc.credClass, tc.domain, got, tc.want)
+			t.Errorf("PSPClientEmail(%d, %q, %q) = %q, want %q", tc.userID, tc.suffix, tc.domain, got, tc.want)
 		}
 	}
 }

@@ -100,18 +100,18 @@ func (c *PSPClient) PeriodUsedTotal() int64 {
 }
 
 // PSPClientEmail builds the panel-wide unique client email for the v3.9.0
-// shared-client model: "u{userID}@{domain}" for the default credential class,
-// "u{userID}-c{class}@{domain}" for an additional class. Using the panel-side
-// user ID (not the UPN) keeps the email stable across renames and free of any
-// SSO identifier, exactly as the legacy User.ClientEmail did — only the per-node
-// suffix is gone because one client now spans the user's inbounds on the panel.
-func PSPClientEmail(userID int64, credClass int, rules EmailRules) string {
-	domain := rules.Domain
-	if domain == "" {
-		domain = "psp.local"
+// shared-client model: "u{userID}{suffix}@{domain}". The suffix is precomputed
+// by the partition (clientplan.partKey.emailSuffix): "" for the default class
+// (so the common email stays exactly "u{userID}@{domain}"), "-c1" for SS-2022-128,
+// or "-k{8hex}" for a flow-split client. It is a stable, collision-free function
+// of the partition key, so an existing client is never re-keyed. Using the
+// panel-side user ID (not the UPN) keeps the email stable across renames and free
+// of any SSO identifier, exactly as the legacy User.ClientEmail did — only the
+// per-node suffix is gone because one client now spans the user's inbounds.
+func PSPClientEmail(userID int64, suffix string, rules EmailRules) string {
+	d := rules.Domain
+	if d == "" {
+		d = "psp.local"
 	}
-	if credClass == 0 {
-		return fmt.Sprintf("u%d@%s", userID, domain)
-	}
-	return fmt.Sprintf("u%d-c%d@%s", userID, credClass, domain)
+	return fmt.Sprintf("u%d%s@%s", userID, suffix, d)
 }
