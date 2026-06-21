@@ -23,10 +23,22 @@ type Service struct {
 	clients ports.PSPClientRepo
 	pool    ports.XUIPool
 	nodes   ports.NodeRepo
+	// ownership + settings are late-bound (SetCleanupDeps), used only by the
+	// Stage-4 legacy cleanup. Kept off New() so existing callers/tests are
+	// unaffected; nil disables cleanup (it returns an error rather than acting).
+	ownership ports.OwnershipRepo
+	settings  ports.SettingsRepo
 }
 
 func New(clients ports.PSPClientRepo, pool ports.XUIPool, nodes ports.NodeRepo) *Service {
 	return &Service{clients: clients, pool: pool, nodes: nodes}
+}
+
+// SetCleanupDeps late-binds the repos the Stage-4 legacy cleanup needs (the old
+// per-node ownership clients + the settings gate). Until set, CleanupLegacy* refuse.
+func (s *Service) SetCleanupDeps(ownership ports.OwnershipRepo, settings ports.SettingsRepo) {
+	s.ownership = ownership
+	s.settings = settings
 }
 
 // ProvisionResult summarizes one provisioning pass.
@@ -201,6 +213,126 @@ func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, enable bo
 		}
 	}
 	return firstErr
+}
+
+// CleanupResult summarizes a Stage-4 legacy-cleanup pass.
+type CleanupResult struct {
+	Deleted int // legacy per-node clients removed from 3X-UI + ownership
+	Kept    int // ownership rows whose node isn't provisioned under a shared client (fallback still needed)
+	Skipped int // delete attempted but failed (panel unreachable, etc.)
+}
+
+type panelInbound struct {
+	panel   int64
+	inbound int
+}
+
+// CleanupLegacyUser removes a user's legacy per-node clients (the XUIClientEntry
+// ownership model) from 3X-UI — Stage 4, the FINAL, irreversible cutover step. It
+// deletes a per-node client ONLY when (a) the render gate SubRenderUseSharedClient
+// is on AND (b) that node is CONFIRMED provisioned under the user's shared client,
+// so render is already emitting the shared credential there and the per-node
+// client is genuinely unused. Nodes not yet covered by a provisioned shared client
+// are KEPT (render still falls back to them). Deleting removes the fallback, so
+// the gate must stay on afterwards.
+func (s *Service) CleanupLegacyUser(ctx context.Context, userID int64) (CleanupResult, error) {
+	var res CleanupResult
+	if s.ownership == nil || s.settings == nil {
+		return res, fmt.Errorf("cleanup deps not wired")
+	}
+	st, err := s.settings.Load(ctx, ports.UISettings{})
+	if err != nil {
+		return res, fmt.Errorf("load settings: %w", err)
+	}
+	if !st.SubRenderUseSharedClient {
+		return res, fmt.Errorf("refusing legacy cleanup: render gate SubRenderUseSharedClient is OFF (per-node clients are still the rendered creds)")
+	}
+
+	// Which (panel, inbound) pairs are now served by a PROVISIONED shared client?
+	provisioned := map[panelInbound]bool{}
+	clients, err := s.clients.ListByUser(ctx, userID)
+	if err != nil {
+		return res, fmt.Errorf("list clients: %w", err)
+	}
+	for _, c := range clients {
+		atts, err := s.clients.ListInbounds(ctx, c.ID)
+		if err != nil {
+			return res, fmt.Errorf("list attachments: %w", err)
+		}
+		for _, a := range atts {
+			if !a.Provisioned {
+				continue
+			}
+			n, err := s.nodes.GetByID(ctx, a.NodeID)
+			if err != nil || n == nil {
+				continue
+			}
+			provisioned[panelInbound{n.PanelID, n.InboundID}] = true
+		}
+	}
+
+	entries, err := s.ownership.ListByUser(ctx, userID)
+	if err != nil {
+		return res, fmt.Errorf("list ownership: %w", err)
+	}
+	for _, e := range entries {
+		if !provisioned[panelInbound{e.PanelID, e.InboundID}] {
+			res.Kept++ // no provisioned shared replacement yet → keep the fallback
+			continue
+		}
+		cli, err := s.pool.Get(e.PanelID)
+		if err != nil {
+			log.Warn("sharedclient cleanup: pool get", "panel_id", e.PanelID, "err", err)
+			res.Skipped++
+			continue
+		}
+		if err := cli.DelClientByEmail(ctx, e.InboundID, e.ClientEmail); err != nil {
+			log.Warn("sharedclient cleanup: delete legacy client", "panel_id", e.PanelID,
+				"inbound_id", e.InboundID, "email", e.ClientEmail, "err", err)
+			res.Skipped++
+			continue
+		}
+		if err := s.ownership.Remove(ctx, e.ID); err != nil {
+			// 3X-UI delete succeeded; the stale ownership row is harmless and the
+			// next reconcile drops it. Don't double-count as deleted-but-tracked.
+			log.Warn("sharedclient cleanup: remove ownership row", "id", e.ID, "err", err)
+		}
+		res.Deleted++
+	}
+	return res, nil
+}
+
+// CleanupLegacyAll runs CleanupLegacyUser for every user that holds a shared
+// client. Returns the first error but attempts all.
+func (s *Service) CleanupLegacyAll(ctx context.Context) (CleanupResult, error) {
+	if s.ownership == nil || s.settings == nil {
+		return CleanupResult{}, fmt.Errorf("cleanup deps not wired")
+	}
+	all, err := s.clients.ListAll(ctx)
+	if err != nil {
+		return CleanupResult{}, fmt.Errorf("list clients: %w", err)
+	}
+	seen := map[int64]bool{}
+	var total CleanupResult
+	var firstErr error
+	for _, c := range all {
+		if seen[c.UserID] {
+			continue
+		}
+		seen[c.UserID] = true
+		r, err := s.CleanupLegacyUser(ctx, c.UserID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		total.Deleted += r.Deleted
+		total.Kept += r.Kept
+		total.Skipped += r.Skipped
+	}
+	log.Info("sharedclient: legacy cleanup complete", "deleted", total.Deleted, "kept", total.Kept, "skipped", total.Skipped)
+	return total, firstErr
 }
 
 // ProvisionUser provisions every shared client a user holds (across panels).

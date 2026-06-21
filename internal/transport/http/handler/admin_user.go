@@ -798,6 +798,23 @@ func (h *AdminUserHandler) ProvisionSharedClients(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"provisioned": res.Provisioned, "skipped": res.Skipped})
 }
 
+// CleanupLegacyClients is the v3.9.0 cutover Stage-4 trigger (admin-only, FINAL +
+// IRREVERSIBLE): removes the legacy per-node clients from 3X-UI for every node a
+// provisioned shared client now serves. Refuses unless the render gate
+// (SubRenderUseSharedClient) is on. Returns deleted / kept / skipped counts.
+func (h *AdminUserHandler) CleanupLegacyClients(c *gin.Context) {
+	if h.shared == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "shared-client service not wired"})
+		return
+	}
+	res, err := h.shared.CleanupLegacyAll(c.Request.Context())
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": res.Deleted, "kept": res.Kept, "skipped": res.Skipped})
+}
+
 // toDTO is the single-row path (Get / Create / Update). It loads
 // settings + resolves the sub base once per call, then delegates the
 // pure mapping to toDTOWith. List-style callers should bypass this and

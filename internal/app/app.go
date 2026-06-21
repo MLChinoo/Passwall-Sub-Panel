@@ -262,6 +262,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// 3X-UI + keeps their lifecycle in lockstep). Late-bound into the user
 	// service so the change-driven paths push enable/expiry onto shared clients.
 	sharedClientSvc := sharedclient.New(repos.PSPClient, pool, repos.Node)
+	sharedClientSvc.SetCleanupDeps(repos.Ownership, repos.Settings)
 	userSvc.SetSharedLifecycleSyncer(sharedClientSvc)
 	// v3.9.0 Stage 3: let the traffic poll meter shared-client usage once the
 	// render gate is on (otherwise post-flip traffic on u{uid}@ is uncounted).
