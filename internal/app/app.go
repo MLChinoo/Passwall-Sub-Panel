@@ -258,6 +258,11 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// v3.9.0 shadow dual-write: populate the psp_client model from each
 	// membership resync (best-effort; nothing reads it in production yet).
 	userSvc.SetPSPProvisioner(clientprov.New(repos.PSPClient))
+	// v3.9.0 cutover: the shared-client reconcile service (creates clients in
+	// 3X-UI + keeps their lifecycle in lockstep). Late-bound into the user
+	// service so the change-driven paths push enable/expiry onto shared clients.
+	sharedClientSvc := sharedclient.New(repos.PSPClient, pool, repos.Node)
+	userSvc.SetSharedLifecycleSyncer(sharedClientSvc)
 	mailSvc := mailer.New(repos.Mail, repos.User, repos.Traffic, repos.ScopedSettings, repos.SyncTask)
 	// Late-bind the mailer into the traffic poll so quota-exhaustion disables
 	// and period-rollover re-enables actually email the user (the only path
@@ -330,7 +335,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		Mail:             mailSvc,
 		Reconcile:        reconcileSvc,
 		Geo:              geoSvc,
-		Shared:           sharedclient.New(repos.PSPClient, pool, repos.Node),
+		Shared:           sharedClientSvc,
 		SubPerIPPerMin:   sysSettings.SubPerIPPerMin,
 		LoginPerIPPerMin: sysSettings.LoginPerIPPerMin,
 	})

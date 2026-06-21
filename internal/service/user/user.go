@@ -89,6 +89,14 @@ type Service struct {
 	// disables the dual-write entirely (the real ownership path is unaffected).
 	psp PSPClientProvisioner
 
+	// sharedLife pushes a user's enable/expiry onto their v3.9.0 shared clients
+	// in 3X-UI (HOLE #1). Late-bound via SetSharedLifecycleSyncer; nil before
+	// wiring / in tests. Only the CHANGE-driven paths (ResyncMembership,
+	// SetEnabledAndSync) call it — never the per-poll floor refresh — so it
+	// causes no steady-state churn. Best-effort: a failure (e.g. the shared
+	// client not yet provisioned in 3X-UI) never affects the real ownership push.
+	sharedLife SharedLifecycleSyncer
+
 	emergencyMu sync.Mutex
 }
 
@@ -102,6 +110,31 @@ type PSPClientProvisioner interface {
 // SetPSPProvisioner late-binds the v3.9.0 shadow dual-write (mirrors the other
 // SetXxx wiring). Until set, ResyncMembership skips the psp_client write.
 func (s *Service) SetPSPProvisioner(p PSPClientProvisioner) { s.psp = p }
+
+// SharedLifecycleSyncer pushes a user's enable/expiry/quota onto their v3.9.0
+// shared clients in 3X-UI. Implemented by sharedclient.Service; a local interface
+// so the user service stays decoupled and nil-tolerant.
+type SharedLifecycleSyncer interface {
+	SyncUserLifecycle(ctx context.Context, userID int64, enable bool, expiryTime, totalGB int64) error
+}
+
+// SetSharedLifecycleSyncer late-binds the v3.9.0 shared-client lifecycle push.
+// Until set, the change-driven paths skip it.
+func (s *Service) SetSharedLifecycleSyncer(p SharedLifecycleSyncer) { s.sharedLife = p }
+
+// syncSharedLifecycle best-effort pushes the user's current enable/expiry onto
+// their shared clients. totalGB is left 0 during the cutover: PSP already flips
+// the shared client's enable=false on quota-exceeded (via SetEnabledAndSync), so
+// the Xray-side quota floor is a Stage-2 concern (when traffic actually flows
+// through the shared client). Isolated from the real ownership push.
+func (s *Service) syncSharedLifecycle(ctx context.Context, u *domain.User) {
+	if s.sharedLife == nil || u == nil {
+		return
+	}
+	if err := s.sharedLife.SyncUserLifecycle(ctx, u.ID, u.EffectiveEnabled(time.Now()), u.PushExpireTime(), 0); err != nil {
+		log.Warn("shared-client lifecycle push failed (non-fatal)", "user_id", u.ID, "err", err)
+	}
+}
 
 // BackfillResult summarizes a BackfillPSPClients pass.
 type BackfillResult struct {
@@ -1706,6 +1739,10 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 			log.Warn("psp_client shadow dual-write failed (non-fatal)", "user_id", u.ID, "err", err)
 		}
 	}
+	// And keep the shared client's lifecycle (enable/expiry) in lockstep with the
+	// per-node clients pushed above (HOLE #1). Runs after SyncUser so the client
+	// row exists; best-effort.
+	s.syncSharedLifecycle(ctx, u)
 
 	return firstErr
 }
@@ -1761,7 +1798,13 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 				"user_id", userID, "err", err)
 		}
 	}
-	if err := s.pushClientConfigToAll(ctx, u); err != nil {
+	pushErr := s.pushClientConfigToAll(ctx, u)
+	// Mirror the enable/expiry flip onto the shared client (HOLE #1) — this is
+	// THE path admin disable + quota/expiry auto-disable funnel through, so it's
+	// what cuts a disabled user's shared client off. Runs regardless of the
+	// per-node push outcome (each is independently best-effort).
+	s.syncSharedLifecycle(ctx, u)
+	if pushErr != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
 		}
