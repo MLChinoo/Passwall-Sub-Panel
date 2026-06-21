@@ -135,6 +135,77 @@ func TestLive_SharedClientMigrationFlow(t *testing.T) {
 	}
 }
 
+// TestLive_BulkDelPreservesSharedClient validates the v3.9.0 migration-cleanup
+// safety claim on a real panel: DeleteLegacyForUser removes the legacy per-node
+// clients (emails u{uid}-n{id}@domain) with one panel-wide BulkDelByEmail, and the
+// shared client (a DISTINCT email u{uid}@domain) must SURVIVE — proving the
+// email-keyed bulk delete never nukes the just-provisioned shared client.
+func TestLive_BulkDelPreservesSharedClient(t *testing.T) {
+	base := os.Getenv("PSP_LIVE_XUI_URL")
+	token := os.Getenv("PSP_LIVE_XUI_TOKEN")
+	if base == "" || token == "" {
+		t.Skip("set PSP_LIVE_XUI_URL and PSP_LIVE_XUI_TOKEN to run the live 3X-UI smoke test")
+	}
+	c := &Client{
+		baseURL:  strings.TrimRight(base, "/"),
+		apiToken: token,
+		http: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // local smoke test only
+		},
+	}
+	ctx := context.Background()
+	inbounds, err := c.ListInbounds(ctx)
+	if err != nil {
+		t.Fatalf("ListInbounds: %v", err)
+	}
+	if len(inbounds) < 2 {
+		t.Skipf("need >=2 inbounds, panel has %d", len(inbounds))
+	}
+	a, b := inbounds[0].ID, inbounds[1].ID
+
+	const shared = "u9001@psp.local"     // shared client (survives)
+	const legacy1 = "u9001-n1@psp.local" // legacy per-node (deleted)
+	const legacy2 = "u9001-n2@psp.local" // legacy per-node (deleted)
+	for _, e := range []string{shared, legacy1, legacy2} {
+		_ = c.DelClientByEmail(ctx, a, e)
+		_ = c.DelClientByEmail(ctx, b, e)
+	}
+	t.Cleanup(func() {
+		for _, e := range []string{shared, legacy1, legacy2} {
+			_ = c.DelClientByEmail(ctx, a, e)
+			_ = c.DelClientByEmail(ctx, b, e)
+		}
+	})
+
+	// Shared client on both inbounds; one legacy client per inbound.
+	if err := c.AddClientToInbounds(ctx, []int{a, b}, ports.ClientSpec{Email: shared, Enable: true, ID: "10000000-0000-0000-0000-000000000001"}); err != nil {
+		t.Fatalf("add shared: %v", err)
+	}
+	if err := c.AddClientToInbounds(ctx, []int{a}, ports.ClientSpec{Email: legacy1, Enable: true, ID: "10000000-0000-0000-0000-000000000002"}); err != nil {
+		t.Fatalf("add legacy1: %v", err)
+	}
+	if err := c.AddClientToInbounds(ctx, []int{b}, ports.ClientSpec{Email: legacy2, Enable: true, ID: "10000000-0000-0000-0000-000000000003"}); err != nil {
+		t.Fatalf("add legacy2: %v", err)
+	}
+
+	// Batch-delete ONLY the legacy emails (what DeleteLegacyForUser does per panel).
+	if _, err := c.BulkDelByEmail(ctx, []string{legacy1, legacy2}); err != nil {
+		t.Fatalf("BulkDelByEmail: %v", err)
+	}
+
+	// The shared client must survive, still attached to both inbounds...
+	assertAttached(t, c, ctx, shared, a, b)
+	// ...while both legacy clients are gone.
+	for _, e := range []string{legacy1, legacy2} {
+		if cd, err := c.GetClient(ctx, e); err != nil {
+			t.Fatalf("GetClient(%s): %v", e, err)
+		} else if cd != nil {
+			t.Fatalf("legacy client %s must be gone after bulk delete, got %v", e, cd.InboundIDs)
+		}
+	}
+}
+
 func assertAttached(t *testing.T, c *Client, ctx context.Context, email string, want ...int) {
 	t.Helper()
 	cd, err := c.GetClient(ctx, email)
