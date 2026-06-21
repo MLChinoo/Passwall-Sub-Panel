@@ -94,11 +94,6 @@ export interface UISettings {
   emergency_access_max_count: number
   emergency_access_quota_gb: number
   sub_path: string
-  /** v3.9.0 cutover gate. OFF (default) → render emits legacy per-node derived
-   *  credentials. ON → render emits the stored shared-client credentials. Only
-   *  flip ON after the cutover runbook has provisioned every shared client, or
-   *  live subscriptions break. */
-  sub_render_use_shared_client: boolean
   sub_clients: SubClientFamily[]
   /** Client gate mode: "blacklist" (block only disabled families, unknown
    *  passes) or "whitelist" (only matched+enabled passes, unknown blocked). */
@@ -348,24 +343,6 @@ export async function resetMailTemplate(kind: MailReminderKind) {
 
 export async function sendTestMail(to: string) {
   const { data } = await client.post<{ sent: boolean }>('/admin/settings/mail/test', { to })
-  return data
-}
-
-// ---- v3.9.0 shared-client cutover (admin actions) ----
-export interface MigrateResult { backfilled: number; provisioned: number; skipped: number; errors: number }
-export interface CleanupResult { deleted: number; kept: number; skipped: number }
-
-/** One-click migration prep: backfill psp_client rows + provision/attach every
- *  shared client in 3X-UI. Safe + idempotent + re-runnable; does NOT flip the
- *  render gate and deletes nothing. */
-export async function migrateShared() {
-  const { data } = await client.post<MigrateResult>('/admin/clients/migrate-shared')
-  return data
-}
-/** Delete the legacy per-node clients now served by a provisioned shared client.
- *  Refuses unless the render gate is on. FINAL, irreversible step. */
-export async function cleanupLegacyClients() {
-  const { data } = await client.post<CleanupResult>('/admin/clients/cleanup-legacy')
   return data
 }
 

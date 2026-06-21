@@ -54,8 +54,6 @@ import {
   putSAML,
   putUISettings,
   sendTestMail,
-  migrateShared,
-  cleanupLegacyClients,
   getGeoIPStatus,
   updateGeoIPNow,
   type GeoIPStatus,
@@ -172,9 +170,6 @@ export default function SettingsView() {
   const [saving, setSaving] = useState(false)
   const [geoStatus, setGeoStatus] = useState<GeoIPStatus | null>(null)
   const [geoBusy, setGeoBusy] = useState(false)
-  // v3.9.0 cutover one-shot actions: '' idle, else the running action's key.
-  const [cutBusy, setCutBusy] = useState<'' | 'migrate' | 'cleanup'>('')
-  const [cutResult, setCutResult] = useState('')
   // changeGeoToken mirrors the SMTP-password "kept unchanged" pattern: when a
   // token is already stored, show a read-only chip until the admin clicks Change.
   const [changeGeoToken, setChangeGeoToken] = useState(false)
@@ -350,30 +345,6 @@ export default function SettingsView() {
 
   function patch<K extends keyof UISettings>(key: K, value: UISettings[K]) {
     setSettings(prev => prev ? { ...prev, [key]: value } : prev)
-  }
-
-  async function runMigrate() {
-    setCutBusy('migrate')
-    try {
-      const r = await migrateShared()
-      setCutResult(t('settings.subscription.cutover_migrate_done', { backfilled: r.backfilled, provisioned: r.provisioned, skipped: r.skipped, errors: r.errors }))
-      pushSnack(t('settings.subscription.cutover_done'), 'success')
-    } finally { setCutBusy('') }
-  }
-  async function runCleanup() {
-    const ok = await confirm({
-      title: t('settings.subscription.cutover_cleanup'),
-      message: t('settings.subscription.cutover_cleanup_confirm'),
-      confirmText: t('settings.subscription.cutover_cleanup'),
-      destructive: true,
-    })
-    if (!ok) return
-    setCutBusy('cleanup')
-    try {
-      const r = await cleanupLegacyClients()
-      setCutResult(t('settings.subscription.cutover_cleanup_done', { deleted: r.deleted, kept: r.kept, skipped: r.skipped }))
-      pushSnack(t('settings.subscription.cutover_done'), 'success')
-    } finally { setCutBusy('') }
   }
 
   if (loading || !settings) {
@@ -1164,46 +1135,6 @@ export default function SettingsView() {
               <NumField label={t('settings.subscription.sub_block_notify_max_per_day', { defaultValue: '每天最多发送（条）' })}
                 value={settings.sub_block_notify_max_per_day}
                 onChange={v => patch('sub_block_notify_max_per_day', v)} />
-            )}
-          </Section>
-
-          <Section title={t('settings.subscription.section_cutover')} md={md}>
-            <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-              {t('settings.subscription.cutover_hint')}
-            </Typography>
-            <FormControlLabel label={t('settings.subscription.sub_render_use_shared_client')}
-              control={<Switch checked={settings.sub_render_use_shared_client}
-                onChange={(_, c) => patch('sub_render_use_shared_client', c)} />}
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 1.5 } }} />
-            <Typography sx={{ fontSize: 12, color: md.error, mt: -1 }}>
-              {t('settings.subscription.sub_render_use_shared_client_warn')}
-            </Typography>
-            <Divider sx={{ my: 0.5 }} />
-            <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
-              {t('settings.subscription.cutover_actions')}
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
-              <Button variant="contained" disableElevation disabled={cutBusy !== ''} onClick={runMigrate}
-                startIcon={cutBusy === 'migrate' ? <CircularProgress size={14} /> : undefined}>
-                {t('settings.subscription.cutover_migrate')}
-              </Button>
-              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                {t('settings.subscription.cutover_migrate_hint')}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
-              <Button variant="outlined" color="error" disabled={cutBusy !== ''} onClick={runCleanup}
-                startIcon={cutBusy === 'cleanup' ? <CircularProgress size={14} /> : undefined}>
-                {t('settings.subscription.cutover_cleanup')}
-              </Button>
-              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                {t('settings.subscription.cutover_cleanup_hint')}
-              </Typography>
-            </Box>
-            {cutResult && (
-              <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, fontFamily: 'monospace' }}>
-                {cutResult}
-              </Typography>
             )}
           </Section>
         </Box>
