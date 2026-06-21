@@ -244,17 +244,45 @@ type panelInbound struct {
 	inbound int
 }
 
+// MigrateResult summarizes one user's full migration to the shared-client model.
+type MigrateResult struct {
+	Provisioned int // shared-client attachments confirmed in 3X-UI
+	Deleted     int // legacy per-node clients removed from 3X-UI + ownership
+	Skipped     int // provision/delete steps that failed (retried by the sync-task queue)
+}
+
+// MigrateUser is the V3-transitional one-shot: it fully migrates ONE user to the
+// shared-client model — provision the shared client(s) in 3X-UI (silent: the
+// stored creds are byte-identical to what render already emits), confirm the
+// attach, then delete that user's legacy per-node clients. Order is failure-safe:
+// if provisioning fails, the per-node clients are LEFT intact (the user keeps
+// working) and the sync-task queue retries. Idempotent — a re-run re-provisions
+// (no-op if present) and deletes any per-node clients now covered.
+//
+// V3-ONLY: this drives the upgrade migration and is removed at V4 (by then every
+// install is on the shared model and there are no per-node clients to delete).
+func (s *Service) MigrateUser(ctx context.Context, userID int64) (MigrateResult, error) {
+	pr, err := s.ProvisionUser(ctx, userID)
+	if err != nil {
+		// Provision failed → do NOT touch the per-node clients; the user keeps
+		// working on them and the task retries.
+		return MigrateResult{Skipped: pr.Skipped}, fmt.Errorf("provision: %w", err)
+	}
+	cr, err := s.deleteLegacyForUser(ctx, userID)
+	res := MigrateResult{Provisioned: pr.Provisioned, Deleted: cr.Deleted, Skipped: pr.Skipped + cr.Skipped}
+	if err != nil {
+		return res, fmt.Errorf("delete legacy: %w", err)
+	}
+	return res, nil
+}
+
 // CleanupLegacyUser removes a user's legacy per-node clients (the XUIClientEntry
-// ownership model) from 3X-UI — Stage 4, the FINAL, irreversible cutover step. It
-// deletes a per-node client ONLY when (a) the render gate SubRenderUseSharedClient
-// is on AND (b) that node is CONFIRMED provisioned under the user's shared client,
-// so render is already emitting the shared credential there and the per-node
-// client is genuinely unused. Nodes not yet covered by a provisioned shared client
-// are KEPT (render still falls back to them). Deleting removes the fallback, so
-// the gate must stay on afterwards.
+// ownership model) from 3X-UI, gated on the (legacy) render flag being on. Kept
+// only for the deprecated Stage-4 cleanup endpoint; the migration path uses the
+// gate-free deleteLegacyForUser directly.
 func (s *Service) CleanupLegacyUser(ctx context.Context, userID int64) (CleanupResult, error) {
 	var res CleanupResult
-	if s.ownership == nil || s.settings == nil {
+	if s.settings == nil {
 		return res, fmt.Errorf("cleanup deps not wired")
 	}
 	st, err := s.settings.Load(ctx, ports.UISettings{})
@@ -263,6 +291,19 @@ func (s *Service) CleanupLegacyUser(ctx context.Context, userID int64) (CleanupR
 	}
 	if !st.SubRenderUseSharedClient {
 		return res, fmt.Errorf("refusing legacy cleanup: render gate SubRenderUseSharedClient is OFF (per-node clients are still the rendered creds)")
+	}
+	return s.deleteLegacyForUser(ctx, userID)
+}
+
+// deleteLegacyForUser is the gate-free core: delete every legacy per-node client
+// whose (panel, inbound) is now served by a CONFIRMED-provisioned shared client,
+// plus its ownership row. Nodes not yet provisioned under a shared client are
+// KEPT (render still falls back to them), so a partial migration never strands a
+// user. Idempotent.
+func (s *Service) deleteLegacyForUser(ctx context.Context, userID int64) (CleanupResult, error) {
+	var res CleanupResult
+	if s.ownership == nil {
+		return res, fmt.Errorf("ownership repo not wired")
 	}
 
 	// Which (panel, inbound) pairs are now served by a PROVISIONED shared client?
