@@ -36,9 +36,6 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 	// Local snapshot for captured nodes, one batched ListInbounds per panel for
 	// the un-captured transition-window remainder. See resolveInbounds.
 	inboundByNode := s.resolveInbounds(ctx, items, st)
-	// v3.9.0 cutover gate (Stage 2): stored shared-client passwords for
-	// provisioned nodes when SubRenderUseSharedClient is on; nil = legacy derive.
-	cp := s.buildCredPlan(ctx, u, st)
 
 	lines := make([]string, 0, len(items))
 	for _, it := range items {
@@ -63,7 +60,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 		// it.name (not DisplayName) carries the layout-applied name — the
 		// region-flag prefix and, for relay variants, the per-line suffix —
 		// so each transit entry gets a distinct fragment.
-		uri, err := buildURI(it.name, it.node, u, inb, userEmail, it.relay, cp)
+		uri, err := buildURI(it.name, it.node, u, inb, userEmail, it.relay)
 		if err != nil {
 			log.Warn("uri-list: skip node, build uri failed", "node_id", it.node.ID, "err", err)
 			continue
@@ -107,7 +104,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 // userEmail is unused for URI builds today (WireGuard has no standard URI
 // form) but kept in the signature so adding it in the future is a one-line
 // switch case.
-func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _ string, relay *domain.RelayLine, cp *credPlan) (string, error) {
+func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _ string, relay *domain.RelayLine) (string, error) {
 	var settings xuiInboundSettings
 	_ = json.Unmarshal([]byte(inb.Settings), &settings)
 	var stream xuiStreamSettings
@@ -132,13 +129,13 @@ func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _
 		return buildVMessURI(name, host, port, u.UUID, stream), nil
 	case domain.ProtoTrojan:
 		return buildTrojanURI(name, host, port,
-			cp.password(n.ID, u.UUID, protocol, settings.Method), stream), nil
+			crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method), stream), nil
 	case domain.ProtoSS:
 		return buildSSURI(name, host, port, settings.Method,
-			cp.password(n.ID, u.UUID, protocol, settings.Method)), nil
+			crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoSS2022:
 		return buildSS2022URI(name, host, port, settings.Method,
-			settings.Password, cp.password(n.ID, u.UUID, protocol, settings.Method)), nil
+			settings.Password, crypto.DeriveProxyPassword(u.UUID, protocol, settings.Method)), nil
 	case domain.ProtoHysteria2:
 		opts := parseHysteria2Opts(inb.Settings, inb.StreamSettings)
 		if sni := relaySNIOverride(relay); sni != "" {
