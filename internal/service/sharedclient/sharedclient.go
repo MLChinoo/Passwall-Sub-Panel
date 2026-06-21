@@ -157,6 +157,52 @@ func (s *Service) ProvisionAll(ctx context.Context) (ProvisionResult, error) {
 	return total, firstErr
 }
 
+// SyncLifecycle pushes the user's current enable / expiry / quota-floor onto the
+// shared client in 3X-UI (UpdateClient by email — propagates to every inbound the
+// client is attached to). This is HOLE #1: without it, a disabled / expired /
+// over-quota user whose subs render the shared client would keep working because
+// only the legacy per-node clients get toggled. UpdateClient is full-replace, so
+// the stored creds + the partition's flow are re-sent unchanged. A client with no
+// attachments (hence no flow) is skipped.
+func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient, enable bool, expiryTime, totalGB int64) error {
+	if c == nil {
+		return nil
+	}
+	atts, err := s.clients.ListInbounds(ctx, c.ID)
+	if err != nil {
+		return fmt.Errorf("list attachments: %w", err)
+	}
+	if len(atts) == 0 {
+		return nil // nothing attached → nothing to keep in lockstep
+	}
+	cli, err := s.pool.Get(c.PanelID)
+	if err != nil {
+		return fmt.Errorf("xui pool get %d: %w", c.PanelID, err)
+	}
+	spec := buildSharedClientSpec(c, atts[0].FlowOverride) // uniform flow across the partition
+	spec.Enable = enable
+	spec.ExpiryTime = expiryTime
+	spec.TotalGB = totalGB
+	return cli.UpdateClient(ctx, 0, c.UUID, spec) // inbound/uuid args vestigial; keyed by spec.Email
+}
+
+// SyncUserLifecycle pushes the given lifecycle state onto ALL of a user's shared
+// clients (across panels/partitions). enable/expiry/quota are user-level, so they
+// apply identically to every client. Returns the first error, attempts all.
+func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, enable bool, expiryTime, totalGB int64) error {
+	clients, err := s.clients.ListByUser(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("list clients: %w", err)
+	}
+	var firstErr error
+	for _, c := range clients {
+		if err := s.SyncLifecycle(ctx, c, enable, expiryTime, totalGB); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // ProvisionUser provisions every shared client a user holds (across panels).
 // Returns the first error but attempts all clients.
 func (s *Service) ProvisionUser(ctx context.Context, userID int64) (ProvisionResult, error) {

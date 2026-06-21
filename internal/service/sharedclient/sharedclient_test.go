@@ -44,6 +44,8 @@ type fakeXUI struct {
 	addedInbounds []int
 	addedSpec     ports.ClientSpec
 	confirm       []int // inboundIDs GetClient reports the client attached to
+	updatedSpec   ports.ClientSpec
+	updateCalls   int
 }
 
 func (c *fakeXUI) AddClientToInbounds(_ context.Context, inboundIDs []int, spec ports.ClientSpec) error {
@@ -53,6 +55,11 @@ func (c *fakeXUI) AddClientToInbounds(_ context.Context, inboundIDs []int, spec 
 }
 func (c *fakeXUI) GetClient(context.Context, string) (*ports.ClientDetail, error) {
 	return &ports.ClientDetail{InboundIDs: c.confirm}, nil
+}
+func (c *fakeXUI) UpdateClient(_ context.Context, _ int, _ string, spec ports.ClientSpec) error {
+	c.updatedSpec = spec
+	c.updateCalls++
+	return nil
 }
 
 type fakePool struct {
@@ -115,6 +122,44 @@ func TestProvisionClient_MarksOnlyConfirmed(t *testing.T) {
 	}
 	if res.Provisioned != 1 || !clients.provisioned[11] || clients.provisioned[12] {
 		t.Fatalf("only node 11 should be provisioned (12 unconfirmed): res=%+v marks=%v", res, clients.provisioned)
+	}
+}
+
+func TestSyncLifecycle_PushesEnableExpiryQuotaWithCredsAndFlow(t *testing.T) {
+	clients := &fakeClients{attachments: []domain.PSPClientInbound{
+		{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision"},
+	}}
+	xui := &fakeXUI{}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+
+	c := &domain.PSPClient{ID: 1, PanelID: 10, Email: "u1@psp.local", UUID: "uuid-x", Password: "pw-x"}
+	// disabled, with an expiry + a quota floor
+	if err := svc.SyncLifecycle(context.Background(), c, false, 1893456000000, 5<<30); err != nil {
+		t.Fatal(err)
+	}
+	if xui.updateCalls != 1 {
+		t.Fatalf("update calls = %d, want 1", xui.updateCalls)
+	}
+	s := xui.updatedSpec
+	if s.Enable || s.ExpiryTime != 1893456000000 || s.TotalGB != 5<<30 {
+		t.Fatalf("lifecycle fields not pushed: %+v", s)
+	}
+	// UpdateClient is full-replace, so creds + flow must ride along unchanged.
+	if s.Email != "u1@psp.local" || s.ID != "uuid-x" || s.Password != "pw-x" || s.Auth != "uuid-x" ||
+		s.Flow != "xtls-rprx-vision" {
+		t.Fatalf("creds/flow not preserved on lifecycle push: %+v", s)
+	}
+}
+
+func TestSyncLifecycle_NoAttachmentsSkips(t *testing.T) {
+	clients := &fakeClients{attachments: nil}
+	xui := &fakeXUI{}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	if err := svc.SyncLifecycle(context.Background(), &domain.PSPClient{ID: 1, PanelID: 10}, true, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if xui.updateCalls != 0 {
+		t.Fatalf("a client with no attachments must not be pushed (calls=%d)", xui.updateCalls)
 	}
 }
 
