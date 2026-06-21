@@ -263,6 +263,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// service so the change-driven paths push enable/expiry onto shared clients.
 	sharedClientSvc := sharedclient.New(repos.PSPClient, pool, repos.Node)
 	userSvc.SetSharedLifecycleSyncer(sharedClientSvc)
+	// v3.9.0 Stage 3: let the traffic poll meter shared-client usage once the
+	// render gate is on (otherwise post-flip traffic on u{uid}@ is uncounted).
+	trafficSvc.SetPSPClientRepo(repos.PSPClient)
 	mailSvc := mailer.New(repos.Mail, repos.User, repos.Traffic, repos.ScopedSettings, repos.SyncTask)
 	// Late-bind the mailer into the traffic poll so quota-exhaustion disables
 	// and period-rollover re-enables actually email the user (the only path

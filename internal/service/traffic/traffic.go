@@ -54,6 +54,12 @@ type Service struct {
 	nodeTraffic ports.NodeTrafficRepo
 	pool        ports.XUIPool
 	disabler    UserDisabler
+	// pspClient is the v3.9.0 shared-client repo, late-bound via SetPSPClientRepo
+	// (nil before wiring / in tests). When the SubRenderUseSharedClient gate is on
+	// the poll meters each shared client's per-email traffic (read once, aggregate)
+	// into the user's quota total — Stage 3, so usage isn't lost after the render
+	// flip moves it from the per-node clients to the shared client.
+	pspClient ports.PSPClientRepo
 	// settings is optional — used for the bulk per-cycle config Load AND, for an
 	// active-emergency user, a per-user LoadForUser so the poll ends the window at
 	// THIS user's effective EmergencyAccessQuotaGB (global ⊕ group override). That
@@ -135,6 +141,11 @@ func (s *Service) notifyEnabled(userID int64, reason, detail string) {
 func (s *Service) SetConfigPusher(p UserConfigPusher) {
 	s.configPusher = p
 }
+
+// SetPSPClientRepo late-binds the v3.9.0 shared-client repo so the poll can
+// meter shared-client traffic (Stage 3). Nil-tolerant: until set (and until the
+// SubRenderUseSharedClient gate is on) the shared-client metering pass is skipped.
+func (s *Service) SetPSPClientRepo(r ports.PSPClientRepo) { s.pspClient = r }
 
 // CurrentPeriodUsage returns the bytes u has consumed since the start of
 // their current traffic period. Used by user.Service to compute the per-
@@ -517,6 +528,68 @@ func (s *Service) PollOnce(ctx context.Context) error {
 
 	mark("Phase 2 inbound processing (sink appends)")
 
+	// v3.9.0 Stage 3 — meter shared-client traffic into the user quota totals.
+	// After the render flip (SubRenderUseSharedClient) a user's traffic accrues
+	// under the shared client's email (u{uid}@), which has no ownership row, so the
+	// per-node loop above misses it. Read it ONCE per shared client by email from
+	// the panel's aggregate (every attached inbound echoes the same figure — never
+	// sum per-inbound) and fold the monotonic delta into totals so quota/lifetime
+	// stay correct. Gated + nil-tolerant: zero cost until the cutover gate is on.
+	if pollCfg.SubRenderUseSharedClient && s.pspClient != nil {
+		if clients, err := s.pspClient.ListAll(ctx); err != nil {
+			log.Warn("traffic poll shared-client list failed; skipping shared metering this cycle", "err", err)
+		} else {
+			// Restrict the per-panel email aggregate to shared emails (bounds memory).
+			want := make(map[int64]map[string]bool)
+			for _, c := range clients {
+				m := want[c.PanelID]
+				if m == nil {
+					m = make(map[string]bool)
+					want[c.PanelID] = m
+				}
+				m[c.Email] = true
+			}
+			agg := make(map[int64]map[string]inboundCounter, len(panelData))
+			for pid, pd := range panelData {
+				w := want[pid]
+				if pd.err != nil || len(w) == 0 {
+					continue
+				}
+				m := make(map[string]inboundCounter)
+				for _, traffics := range pd.stats {
+					for _, t := range traffics {
+						if !w[t.Email] {
+							continue
+						}
+						// Shared aggregate is echoed identically per inbound; max guards
+						// a partial/stale echo.
+						if cur, ok := m[t.Email]; !ok || t.Up+t.Down > cur.up+cur.down {
+							m[t.Email] = inboundCounter{up: t.Up, down: t.Down}
+						}
+					}
+				}
+				agg[pid] = m
+			}
+			for _, c := range clients {
+				ct, ok := agg[c.PanelID][c.Email]
+				if !ok {
+					continue
+				}
+				delta := s.recordSharedClientStats(ctx, c, ct.up, ct.down, sink)
+				if delta.up == 0 && delta.down == 0 && delta.total == 0 {
+					continue
+				}
+				tot := totals[c.UserID]
+				tot.deltaUp += delta.up
+				tot.deltaDown += delta.down
+				tot.deltaTotal += delta.total
+				tot.hits++ // ensure recordAndEnforceWith advances lifetime for shared-only users
+				totals[c.UserID] = tot
+			}
+		}
+		mark("Phase 2b shared-client metering")
+	}
+
 	for _, u := range users {
 		if skipUsers[u.ID] {
 			log.Warn("traffic poll user skipped due to inbound fetch failure", "user_id", u.ID)
@@ -604,6 +677,11 @@ func (s *Service) PollOnce(ctx context.Context) error {
 	if len(sink.ownershipUpdates) > 0 {
 		if err := s.ownership.BatchUpdateCounters(ctx, sink.ownershipUpdates); err != nil {
 			log.Warn("traffic poll flush ownership counters", "count", len(sink.ownershipUpdates), "err", err)
+		}
+	}
+	if len(sink.pspClientUpdates) > 0 && s.pspClient != nil {
+		if err := s.pspClient.BatchUpdateCounters(ctx, sink.pspClientUpdates); err != nil {
+			log.Warn("traffic poll flush shared-client counters", "count", len(sink.pspClientUpdates), "err", err)
 		}
 	}
 	if len(sink.userUpdates) > 0 {
@@ -716,6 +794,10 @@ type pollSink struct {
 	// unique ID so no dedup is needed — the slice is one append per
 	// client that produced a non-zero delta this cycle.
 	ownershipUpdates []*domain.XUIClientEntry
+	// pspClientUpdates buffers per-shared-client counter writes (v3.9.0 Stage 3);
+	// flushed via PSPClientRepo.BatchUpdateCounters at end-of-cycle. One append per
+	// shared client that produced a non-zero delta this cycle.
+	pspClientUpdates []*domain.PSPClient
 	// userUpdates buffers per-user traffic-state writes from the snapshot
 	// hot path; flushed via BatchUpdateTrafficState at end-of-cycle. Keyed
 	// by user ID so repeated appends for the same user collapse into ONE
@@ -853,6 +935,61 @@ func (s *Service) recordClientStats(ctx context.Context, ownership *domain.XUICl
 		return trafficDelta{}, fmt.Errorf("insert client snapshot: %w", err)
 	}
 	return trafficDelta{up: deltaUp, down: deltaDown, total: deltaTotal, hadPrev: hadPrev}, nil
+}
+
+// recordSharedClientStats folds one shared client's (up, down) — read ONCE by
+// email from the panel's aggregate counter (every attached inbound echoes the
+// same figure; summing per-inbound would double-count) — into its psp_client
+// lifetime, advancing the raw baseline. Mirror of recordClientStats but for the
+// v3.9.0 shared client; returns the monotonic delta so the caller folds it into
+// the user's quota total. No per-inbound ClientTrafficSnapshot is written — a
+// shared client spans many inbounds (the InboundID would be ambiguous) and
+// per-server usage is sourced from node counters, not per-client snapshots.
+func (s *Service) recordSharedClientStats(ctx context.Context, c *domain.PSPClient, up, down int64, sink *pollSink) trafficDelta {
+	totalBytes := up + down
+	hadPrev := c.LastRawUpBytes != 0 || c.LastRawDownBytes != 0 || c.LastRawTotalBytes != 0
+
+	// Seed-on-first-observation: adopt the current counter as the baseline with a
+	// ZERO delta. Unlike the ownership bootstrap path (which folds the first
+	// cumulative into lifetime), a shared client may be read mid-stream with a
+	// non-zero counter (e.g. the gate flipped a few minutes before this poll), so
+	// counting that whole figure at once would spike the user's quota. We give up
+	// at most one poll-interval of the very first reading to stay spike-proof —
+	// the same trade-off as the node-counter LastInbound seed.
+	if !hadPrev {
+		if up == 0 && down == 0 {
+			return trafficDelta{} // genuinely idle — nothing to seed, no write
+		}
+		c.LastRawUpBytes, c.LastRawDownBytes, c.LastRawTotalBytes = up, down, totalBytes
+		s.flushSharedCounters(ctx, c, sink)
+		return trafficDelta{}
+	}
+
+	deltaUp := monotonicDelta(up, c.LastRawUpBytes)
+	deltaDown := monotonicDelta(down, c.LastRawDownBytes)
+	deltaTotal := monotonicDelta(totalBytes, c.LastRawTotalBytes)
+	if deltaUp == 0 && deltaDown == 0 && deltaTotal == 0 {
+		return trafficDelta{hadPrev: true} // idle client → pure no-op (no write)
+	}
+
+	c.LifetimeUpBytes += deltaUp
+	c.LifetimeDownBytes += deltaDown
+	c.LifetimeTotalBytes += deltaTotal
+	c.LastRawUpBytes, c.LastRawDownBytes, c.LastRawTotalBytes = up, down, totalBytes
+	s.flushSharedCounters(ctx, c, sink)
+	return trafficDelta{up: deltaUp, down: deltaDown, total: deltaTotal, hadPrev: true}
+}
+
+// flushSharedCounters buffers the shared client's counter write into the sink
+// (batched at end-of-cycle) or writes it inline for non-poll callers.
+func (s *Service) flushSharedCounters(ctx context.Context, c *domain.PSPClient, sink *pollSink) {
+	if sink != nil {
+		sink.pspClientUpdates = append(sink.pspClientUpdates, c)
+	} else if s.pspClient != nil {
+		if err := s.pspClient.UpdateCounters(ctx, c); err != nil {
+			log.Warn("traffic poll update shared-client counters", "client_id", c.ID, "err", err)
+		}
+	}
 }
 
 // recordAndEnforce is the back-compat entry preserved for tests and any
