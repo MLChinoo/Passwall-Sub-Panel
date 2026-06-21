@@ -97,6 +97,10 @@ type Service struct {
 	// client not yet provisioned in 3X-UI) never affects the real ownership push.
 	sharedLife SharedLifecycleSyncer
 
+	// migrator runs the V3-transitional shared-client migration for one user
+	// (user_migrate task). Late-bound via SetSharedMigrator; nil = task is a no-op.
+	migrator SharedMigrator
+
 	emergencyMu sync.Mutex
 }
 
@@ -121,6 +125,17 @@ type SharedLifecycleSyncer interface {
 // SetSharedLifecycleSyncer late-binds the v3.9.0 shared-client lifecycle push.
 // Until set, the change-driven paths skip it.
 func (s *Service) SetSharedLifecycleSyncer(p SharedLifecycleSyncer) { s.sharedLife = p }
+
+// SharedMigrator fully migrates ONE user to the shared-client model (provision +
+// delete legacy per-node). Implemented by sharedclient.Service (adapted in the
+// composition root). V3-transitional — drives the user_migrate sync task.
+type SharedMigrator interface {
+	MigrateUser(ctx context.Context, userID int64) error
+}
+
+// SetSharedMigrator late-binds the V3 shared-client migrator. Until set, a
+// user_migrate task is a no-op (treated as done).
+func (s *Service) SetSharedMigrator(m SharedMigrator) { s.migrator = m }
 
 // syncSharedLifecycle best-effort pushes the user's current enable/expiry onto
 // their shared clients. totalGB is left 0 during the cutover: PSP already flips
@@ -2017,7 +2032,8 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 	for _, task := range tasks {
 		if task.Type != domain.SyncTaskUserDelete &&
 			task.Type != domain.SyncTaskUserResync &&
-			task.Type != domain.SyncTaskUserPushConfig {
+			task.Type != domain.SyncTaskUserPushConfig &&
+			task.Type != domain.SyncTaskUserMigrate {
 			continue
 		}
 		claimed, err := s.tasks.MarkRunning(ctx, task.ID)
@@ -2090,6 +2106,17 @@ func (s *Service) runUserTask(ctx context.Context, task *domain.SyncTask) error 
 			return err
 		}
 		return s.pushClientConfigToAll(ctx, u)
+	case domain.SyncTaskUserMigrate:
+		if s.migrator == nil {
+			return nil // not wired (tests / non-shared build) → task is done
+		}
+		if err := s.migrator.MigrateUser(ctx, task.TargetID); err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return nil // user deleted between enqueue and run → done
+			}
+			return err // transient (e.g. 3X-UI down) → the queue retries with backoff
+		}
+		return nil
 	default:
 		return nil
 	}

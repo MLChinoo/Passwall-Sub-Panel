@@ -83,6 +83,9 @@ const (
 	SyncTaskUserDelete     SyncTaskType = "user_delete"
 	SyncTaskUserResync     SyncTaskType = "user_resync"
 	SyncTaskUserPushConfig SyncTaskType = "user_push_config"
+	// SyncTaskUserMigrate is the V3-transitional shared-client migration of one
+	// user (provision shared client + delete legacy per-node). Removed at V4.
+	SyncTaskUserMigrate    SyncTaskType = "user_migrate"
 	SyncTaskNodeCreate     SyncTaskType = "node_create"
 	SyncTaskNodeDelete     SyncTaskType = "node_delete"
 	SyncTaskNodeSetEnabled SyncTaskType = "node_set_enabled"
