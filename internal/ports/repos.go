@@ -376,6 +376,9 @@ type PSPClientRepo interface {
 	GetByID(ctx context.Context, id int64) (*domain.PSPClient, error)
 	GetByEmail(ctx context.Context, panelID int64, email string) (*domain.PSPClient, error)
 	ListByUser(ctx context.Context, userID int64) ([]*domain.PSPClient, error)
+	// ListAll returns every psp_client — used by the Stage-1 reconcile pass to
+	// provision all shared clients in 3X-UI.
+	ListAll(ctx context.Context) ([]*domain.PSPClient, error)
 	// DeleteByEmail removes the client and (cascading) its attachment rows.
 	DeleteByEmail(ctx context.Context, panelID int64, email string) error
 

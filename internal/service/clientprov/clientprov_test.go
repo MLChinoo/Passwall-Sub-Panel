@@ -69,6 +69,14 @@ func (r *fakePSPClientRepo) GetByEmail(ctx context.Context, panelID int64, email
 	}
 	return nil, domain.ErrNotFound
 }
+func (r *fakePSPClientRepo) ListAll(ctx context.Context) ([]*domain.PSPClient, error) {
+	var out []*domain.PSPClient
+	for _, c := range r.clients {
+		cp := *c
+		out = append(out, &cp)
+	}
+	return out, nil
+}
 func (r *fakePSPClientRepo) ListByUser(ctx context.Context, userID int64) ([]*domain.PSPClient, error) {
 	var out []*domain.PSPClient
 	for _, c := range r.clients {

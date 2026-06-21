@@ -36,6 +36,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/rollup"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/sharedclient"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
@@ -329,6 +330,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		Mail:             mailSvc,
 		Reconcile:        reconcileSvc,
 		Geo:              geoSvc,
+		Shared:           sharedclient.New(repos.PSPClient, pool, repos.Node),
 		SubPerIPPerMin:   sysSettings.SubPerIPPerMin,
 		LoginPerIPPerMin: sysSettings.LoginPerIPPerMin,
 	})

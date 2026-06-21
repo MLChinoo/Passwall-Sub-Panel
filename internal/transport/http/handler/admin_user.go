@@ -17,6 +17,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/mailer"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/passkey"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/sharedclient"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/twofa"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/middleware"
@@ -92,10 +93,11 @@ type AdminUserHandler struct {
 	async    AsyncDispatcher
 	twofa    *twofa.Service
 	passkey  *passkey.Service
+	shared   *sharedclient.Service
 }
 
-func NewAdminUserHandler(userSvc *user.Service, settings ports.SettingsRepo, mailerSvc *mailer.Service, async AsyncDispatcher, twofaSvc *twofa.Service, passkeySvc *passkey.Service) *AdminUserHandler {
-	return &AdminUserHandler{user: userSvc, settings: settings, mailer: mailerSvc, async: async, twofa: twofaSvc, passkey: passkeySvc}
+func NewAdminUserHandler(userSvc *user.Service, settings ports.SettingsRepo, mailerSvc *mailer.Service, async AsyncDispatcher, twofaSvc *twofa.Service, passkeySvc *passkey.Service, sharedSvc *sharedclient.Service) *AdminUserHandler {
+	return &AdminUserHandler{user: userSvc, settings: settings, mailer: mailerSvc, async: async, twofa: twofaSvc, passkey: passkeySvc, shared: sharedSvc}
 }
 
 // ---- DTOs ----
@@ -775,6 +777,25 @@ func (h *AdminUserHandler) BackfillSharedClients(c *gin.Context) {
 		"skipped":   res.Skipped,
 		"errors":    res.Errors,
 	})
+}
+
+// ProvisionSharedClients is the v3.9.0 cutover Stage-1b trigger (admin-only): it
+// creates every backfilled shared client in 3X-UI (AddClientToInbounds) and marks
+// each confirmed attachment provisioned. Run AFTER backfill-shared. Additive —
+// the shared clients coexist with the legacy per-node clients and nothing renders
+// them yet, so this is safe to run during cutover prep. Returns provisioned /
+// skipped counts.
+func (h *AdminUserHandler) ProvisionSharedClients(c *gin.Context) {
+	if h.shared == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "shared-client reconcile not wired"})
+		return
+	}
+	res, err := h.shared.ProvisionAll(c.Request.Context())
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"provisioned": res.Provisioned, "skipped": res.Skipped})
 }
 
 // toDTO is the single-row path (Get / Create / Update). It loads

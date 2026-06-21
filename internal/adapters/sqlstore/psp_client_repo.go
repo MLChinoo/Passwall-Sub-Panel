@@ -165,6 +165,18 @@ func (r *pspClientRepo) GetByEmail(ctx context.Context, panelID int64, email str
 	return rowToPSPClient(&row), nil
 }
 
+func (r *pspClientRepo) ListAll(ctx context.Context) ([]*domain.PSPClient, error) {
+	var rows []pspClientRow
+	if err := r.db.WithContext(ctx).Order("panel_id, user_id, cred_class").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*domain.PSPClient, len(rows))
+	for i := range rows {
+		out[i] = rowToPSPClient(&rows[i])
+	}
+	return out, nil
+}
+
 func (r *pspClientRepo) ListByUser(ctx context.Context, userID int64) ([]*domain.PSPClient, error) {
 	var rows []pspClientRow
 	if err := r.db.WithContext(ctx).
