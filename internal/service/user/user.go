@@ -1091,38 +1091,21 @@ func (s *Service) CreateLocalAndSync(ctx context.Context, in CreateLocalInput) (
 		return nil, fmt.Errorf("resolve nodes: %w", err)
 	}
 
-	rules := s.emailRules(ctx)
-	floor := s.trafficFloor(ctx, u)
-	synced := 0
-	needsRetry := false
-	for _, n := range nodes {
-		info, err := s.inspectInbound(ctx, n)
-		if err != nil {
-			needsRetry = true
-			continue
-		}
-		if info.protocol == "" {
-			continue // unrecognised protocol — skip rather than fail the whole create
-		}
-		email := u.ClientEmail(n.ID, rules)
-		expireTime := u.PushExpireTime()
-		if err := s.syncer.AddClientToInbound(ctx, u.ID, n.PanelID, n.InboundID,
-			info.protocol, info.ssMethod, u.UUID, email, info.flow, expireTime, floor); err != nil {
-			needsRetry = true
-			continue
-		}
-		synced++
-	}
-	if needsRetry {
-		if err := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, u.ID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
-			return nil, err
+	// v3.9.0 inverted enrollment: provision the new user's SHARED client.
+	// ResyncMembership builds the psp_client set, reconciles it into 3X-UI, and
+	// pushes lifecycle — NO per-node ownership rows are created. Any 3X-UI failure
+	// is recorded as a durable resync task so the worker retries with backoff.
+	if err := s.ResyncMembership(ctx, u.ID); err != nil {
+		log.Warn("create-local shared provision failed (queued for retry)", "user_id", u.ID, "err", err)
+		if terr := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, u.ID, fmt.Sprintf("sync node membership for user %s", u.UPN)); terr != nil {
+			return nil, terr
 		}
 	}
 
 	return &CreateLocalSyncedResult{
 		User:            u,
 		InitialPassword: base.InitialPassword,
-		SyncedInbounds:  synced,
+		SyncedInbounds:  len(nodes),
 	}, nil
 }
 

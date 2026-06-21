@@ -333,6 +333,15 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 		// genuinely has zero rows" — no SELECT needed.
 		entries, _ = s.ownership.ListByUser(ctx, u.ID)
 	}
+	// v3.9.0 inverted enrollment: a user with ZERO legacy ownership rows is on the
+	// shared-client model (migrated, or newly created post-inversion). Their shared
+	// client is provisioned by ResyncMembership / the migration sweep, so reconcile
+	// must NOT re-derive per-node clients from the group here — doing so would
+	// regrow the retired ownership table for every migrated user on every pass.
+	// Users still holding ownership rows (mid-migration) keep getting healed.
+	if len(entries) == 0 {
+		return
+	}
 	type nodeKey struct {
 		panelID int64
 		id      int
