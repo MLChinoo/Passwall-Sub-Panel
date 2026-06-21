@@ -6,18 +6,20 @@ small improvement).
 
 ## v3.9.0-beta.2 — 2026-06-21
 
-共享客户端模型「全链路打通」:从在 3X-UI 建共享 client、生命周期接管、render 切换、流量计量到删除旧客户端,五个阶段全部落地。**默认仍走旧的 per-node 路径,对生产零行为影响**——切换由一个默认关闭的开关 `SubRenderUseSharedClient` 守护,操作员按 runbook 主动开启才生效。设计与切换 runbook 见 `docs/v3.9.0-client-multi-inbound.md`。
+**共享客户端模型正式启用 + 自动静默迁移。** 同一用户在同一面板上,从「每个节点一个 3X-UI client」收敛为「一个共享 client 挂多个 inbound」——client 数量大幅减少、同步开销更小。升级**全自动、用户全程无感、操作员零操作**。设计见 `docs/v3.9.0-client-multi-inbound.md`。
 
-### 工程(dormant,默认不启用;开关开启后生效)
+### 行为
 
-- **Stage 1 —— 在 3X-UI 建共享 client + 全生命周期**:
-  - 共享 client 按 `(密码类, 有效 flow)` 分桶(3X-UI 无 per-inbound flowOverride 写 API,一个 client 只带一个 flow);client email 是分桶键的**稳定无碰撞**函数(默认 `u{uid}@` 不变、SS-2022-128 `-c1`、其余 `-k{hash}`),绝大多数用户仍是 1 个 client。
-  - `sharedclient` reconcile 服务:一次 `AddClientToInbounds` 覆盖用户全部 inbound(单次 Xray 重启)→ 读回确认 → 仅对确认的 attachment 标 provisioned;端点 `POST /api/admin/clients/provision-shared`。
-  - **生命周期接管(关键)**:禁用 / 到期 / 超量翻转共享 client 的 enable/expire——接到变更驱动路径(`ResyncMembership` / `SetEnabledAndSync`),不碰每-poll floor 刷新,零稳态抖动。
-- **Stage 2 —— render 切换开关**:`SubRenderUseSharedClient`(默认关)。开启后 render 改用存储的共享凭据;只有密码协议变(Trojan/SS 需重拉订阅,VLESS/VMess/Hy2/SS-2022 不变),且只对已 provisioned 的节点切换,其余回退派生——部分迁移不会断订阅。
-- **Stage 3 —— 共享 client 流量计量**:开关开启后,按 email **只读一次**面板聚合计数(绝不按 inbound 求和),折进用户 quota；首次观测 seed 防尖峰。每用户×每 Server 用量本就读 node 计数,flip 无关。
-- **Stage 4 —— 删除旧 per-node client**:端点 `POST /api/admin/clients/cleanup-legacy`,两道护栏(开关须开 + 只删已被 provisioned 共享 client 覆盖的节点),其余保留回退。最终不可逆步骤。
-- **管理 UI**:设置 → 订阅 新增「v3.9.0 共享客户端迁移」区块——渲染开关(带不可逆警告)+ 回填 / 建客户端 / 删除旧 client 三个一键操作(删除带确认弹窗),整套迁移可在面板内按 runbook 完成。
+- **自动静默迁移**:首次启动 v3.9.0 即给每个老用户入队一个迁移任务,后台逐个迁移(创建共享 client → 删除其旧的每节点 client)。**凭据逐字节不变** → 用户**无需重拉订阅、连接不中断**;新建用户直接拿共享 client。
+- **兜底**:迁移走 `sync_task` 队列,3X-UI 暂时不可达就排队、指数退避重试,**最终一致、不丢**。
+- **自动清理**:全部用户迁完后,自动删除遗留的每节点 client,并物理 `DROP` 掉退役的 `user_xui_clients` 表(不是留空表)。
+- **凭据分桶**:共享 client 按密码类 + flow 分桶,绝大多数用户是 1 个 client(`u{uid}@`);仅同时使用 SS-2022 或不同 VLESS flow 的用户会多几个。每个分桶的凭据与旧的逐字节一致,故迁移静默。
+- **配额/流量正确**:用户用量按共享 client 的 email 聚合计量(只读一次、不双计),迁移前后及窗口期始终正确;「每用户 × 每 Server」用量本就读 inbound 计数器,不受影响。
+
+### 说明
+
+- 这是个**单向迁移**:升级后即转入共享模型,无回退开关——回退到 v3.8.0 需先恢复数据库备份(标准做法)。**升级前请备份数据库。**
+- 旧的每节点路径(ownership 表 + 相关代码)在本版本里全部退役;残留的过渡代码会在下个大版本彻底移除。
 
 ## v3.9.0-beta.1 — 2026-06-20
 
