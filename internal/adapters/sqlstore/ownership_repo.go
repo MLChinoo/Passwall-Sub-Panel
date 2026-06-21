@@ -3,13 +3,60 @@ package sqlstore
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"gorm.io/gorm"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 )
 
-type ownershipRepo struct{ db *gorm.DB }
+type ownershipRepo struct {
+	db *gorm.DB
+	// gone is set once the user_xui_clients table is confirmed absent — a fresh
+	// v3.9.0 install never creates it (dropped from schemaModels), and the
+	// shared-client migration DROPs it after every user moves over. Read methods
+	// then short-circuit to an empty result, so the surviving self-regulating
+	// per-node code paths no-op instead of erroring on a missing table.
+	gone atomic.Bool
+}
+
+// confirmGone is called only when a read errored: it checks whether the table is
+// actually missing (vs a real error), caching the answer. Keeping the check off
+// the success path means zero overhead while the table still exists.
+func (r *ownershipRepo) confirmGone() bool {
+	if !r.db.Migrator().HasTable(&ownershipRow{}) {
+		r.gone.Store(true)
+		return true
+	}
+	return false
+}
+
+// DropIfMigrated physically removes the legacy user_xui_clients table ONCE the
+// shared-client migration has emptied it (0 rows). Returns done=true when no
+// further attempt is needed — the table was dropped, or never existed (a fresh
+// v3.9.0 install), or is already gone. Returns done=false while rows remain
+// (migration still draining), so the caller should poll again. V3-transitional.
+func (r *ownershipRepo) DropIfMigrated(ctx context.Context) (done bool, err error) {
+	if r.gone.Load() {
+		return true, nil
+	}
+	if !r.db.Migrator().HasTable(&ownershipRow{}) {
+		r.gone.Store(true)
+		return true, nil // fresh install / already dropped
+	}
+	var n int64
+	if err := r.db.WithContext(ctx).Model(&ownershipRow{}).Count(&n).Error; err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil // migration still in progress — keep the table + poll again
+	}
+	if err := r.db.Migrator().DropTable(&ownershipRow{}); err != nil {
+		return false, fmt.Errorf("drop user_xui_clients: %w", err)
+	}
+	r.gone.Store(true)
+	return true, nil
+}
 
 func (r *ownershipRepo) Add(ctx context.Context, e *domain.XUIClientEntry) error {
 	row := ownershipFromDomain(e)
@@ -32,11 +79,17 @@ func (r *ownershipRepo) RemoveByMatch(ctx context.Context, panelID int64, inboun
 }
 
 func (r *ownershipRepo) GetByMatch(ctx context.Context, panelID int64, inboundID int, email string) (*domain.XUIClientEntry, error) {
+	if r.gone.Load() {
+		return nil, domain.ErrNotFound
+	}
 	var row ownershipRow
 	err := r.db.WithContext(ctx).
 		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		First(&row).Error
 	if err != nil {
+		if r.confirmGone() {
+			return nil, domain.ErrNotFound
+		}
 		return nil, wrapNotFound(err)
 	}
 	return row.toDomain(), nil
@@ -47,17 +100,29 @@ func (r *ownershipRepo) GetByMatch(ctx context.Context, panelID int64, inboundID
 // model. The V3 migration sweep enqueues a user_migrate task per returned id;
 // an empty result means the migration is complete. V3-transitional.
 func (r *ownershipRepo) DistinctUserIDs(ctx context.Context) ([]int64, error) {
+	if r.gone.Load() {
+		return nil, nil
+	}
 	var ids []int64
 	if err := r.db.WithContext(ctx).Model(&ownershipRow{}).
 		Distinct().Pluck("user_id", &ids).Error; err != nil {
+		if r.confirmGone() {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return ids, nil
 }
 
 func (r *ownershipRepo) ListByUser(ctx context.Context, userID int64) ([]*domain.XUIClientEntry, error) {
+	if r.gone.Load() {
+		return nil, nil
+	}
 	var rows []ownershipRow
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&rows).Error; err != nil {
+		if r.confirmGone() {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]*domain.XUIClientEntry, len(rows))
@@ -81,13 +146,16 @@ func (r *ownershipRepo) ListByUser(ctx context.Context, userID int64) ([]*domain
 // nil-valued, not zero-length); an empty input returns an empty non-nil
 // map so callers don't need a guard.
 func (r *ownershipRepo) ListByUsers(ctx context.Context, userIDs []int64) (map[int64][]*domain.XUIClientEntry, error) {
-	if len(userIDs) == 0 {
+	if len(userIDs) == 0 || r.gone.Load() {
 		return map[int64][]*domain.XUIClientEntry{}, nil
 	}
 	var rows []ownershipRow
 	if err := r.db.WithContext(ctx).
 		Where("user_id IN ?", userIDs).
 		Find(&rows).Error; err != nil {
+		if r.confirmGone() {
+			return map[int64][]*domain.XUIClientEntry{}, nil
+		}
 		return nil, err
 	}
 	out := make(map[int64][]*domain.XUIClientEntry, len(userIDs))
@@ -99,11 +167,17 @@ func (r *ownershipRepo) ListByUsers(ctx context.Context, userIDs []int64) (map[i
 }
 
 func (r *ownershipRepo) ListByInbound(ctx context.Context, panelID int64, inboundID int) ([]*domain.XUIClientEntry, error) {
+	if r.gone.Load() {
+		return nil, nil
+	}
 	var rows []ownershipRow
 	err := r.db.WithContext(ctx).
 		Where("panel_id = ? AND inbound_id = ?", panelID, inboundID).
 		Find(&rows).Error
 	if err != nil {
+		if r.confirmGone() {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]*domain.XUIClientEntry, len(rows))
@@ -189,9 +263,15 @@ func (r *ownershipRepo) BatchUpdateCounters(ctx context.Context, items []*domain
 }
 
 func (r *ownershipRepo) Exists(ctx context.Context, panelID int64, inboundID int, email string) (bool, error) {
+	if r.gone.Load() {
+		return false, nil
+	}
 	var n int64
 	err := r.db.WithContext(ctx).Model(&ownershipRow{}).
 		Where("panel_id = ? AND inbound_id = ? AND client_email = ?", panelID, inboundID, email).
 		Count(&n).Error
+	if err != nil && r.confirmGone() {
+		return false, nil
+	}
 	return n > 0, err
 }

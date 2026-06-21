@@ -20,6 +20,10 @@ func TestOwnershipBatchUpdateCounters(t *testing.T) {
 	if err := EnsureSchema(db); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
+	// v3.9.0 retired user_xui_clients from schemaModels; recreate it to test the repo.
+	if err := db.Migrator().CreateTable(&ownershipRow{}); err != nil {
+		t.Fatalf("create ownership table: %v", err)
+	}
 	t.Cleanup(func() {
 		if sqlDB, _ := db.DB(); sqlDB != nil {
 			_ = sqlDB.Close()
@@ -111,6 +115,10 @@ func TestOwnershipListByUsers(t *testing.T) {
 	if err := EnsureSchema(db); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
+	// v3.9.0 retired user_xui_clients from schemaModels; recreate it to test the repo.
+	if err := db.Migrator().CreateTable(&ownershipRow{}); err != nil {
+		t.Fatalf("create ownership table: %v", err)
+	}
 	t.Cleanup(func() {
 		if sqlDB, _ := db.DB(); sqlDB != nil {
 			_ = sqlDB.Close()
@@ -188,4 +196,57 @@ func lookupEmail(target *domain.XUIClientEntry, originals []*domain.XUIClientEnt
 		}
 	}
 	return ""
+}
+
+// TestOwnershipDropIfMigrated covers the v3.9.0 table retirement: DropIfMigrated
+// keeps the table while rows remain, drops it once empty, and afterwards reads
+// short-circuit to empty (the table is gone) instead of erroring.
+func TestOwnershipDropIfMigrated(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if err := db.Migrator().CreateTable(&ownershipRow{}); err != nil {
+		t.Fatalf("create ownership table: %v", err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, _ := db.DB(); sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	})
+	repo := &ownershipRepo{db: db}
+	ctx := context.Background()
+
+	// A row present → not done; the table must be kept (migration still draining).
+	if err := repo.Add(ctx, &domain.XUIClientEntry{UserID: 1, PanelID: 10, InboundID: 20, ClientEmail: "a@x"}); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := repo.DropIfMigrated(ctx); err != nil || done {
+		t.Fatalf("with rows present: done=%v err=%v, want done=false", done, err)
+	}
+	if !db.Migrator().HasTable(&ownershipRow{}) {
+		t.Fatal("table must NOT be dropped while rows remain")
+	}
+
+	// Empty the table → done + the table is dropped for real.
+	if err := repo.RemoveByMatch(ctx, 10, 20, "a@x"); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := repo.DropIfMigrated(ctx); err != nil || !done {
+		t.Fatalf("empty table: done=%v err=%v, want done=true", done, err)
+	}
+	if db.Migrator().HasTable(&ownershipRow{}) {
+		t.Fatal("table must be dropped once empty")
+	}
+
+	// Reads now short-circuit to empty (table gone), never error.
+	if ids, err := repo.DistinctUserIDs(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("post-drop DistinctUserIDs = %v, %v; want empty, nil", ids, err)
+	}
+	if entries, err := repo.ListByUser(ctx, 1); err != nil || len(entries) != 0 {
+		t.Fatalf("post-drop ListByUser = %v, %v; want empty, nil", entries, err)
+	}
 }

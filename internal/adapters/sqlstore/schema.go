@@ -1210,7 +1210,10 @@ var schemaModels = []any{
 	&userRow{},
 	&groupRow{},
 	&nodeRow{},
-	&ownershipRow{},
+	// ownershipRow (user_xui_clients) is intentionally NOT here: v3.9.0 retired the
+	// per-node ownership model. A fresh install never creates the table; an upgrade
+	// keeps its existing one (AutoMigrate leaves untracked tables alone) until the
+	// shared-client migration DROPs it. The ownership repo tolerates its absence.
 	&pspClientRow{},
 	&pspClientInboundRow{},
 	&trafficRow{},

@@ -339,6 +339,9 @@ type OwnershipRepo interface {
 	// DistinctUserIDs returns every user_id still holding a legacy ownership row
 	// (the not-yet-migrated set). Empty = shared-client migration complete. V3-only.
 	DistinctUserIDs(ctx context.Context) ([]int64, error)
+	// DropIfMigrated drops the user_xui_clients table once the migration has
+	// emptied it; done=true means no further attempt is needed. V3-only.
+	DropIfMigrated(ctx context.Context) (done bool, err error)
 	// ListByUsers is the batched form of ListByUser. PollOnce calls it once
 	// at the top of each cycle to bucket every user's ownership rows in a
 	// single SQL roundtrip instead of N. Mirrors TrafficRepo.LatestForUsers's

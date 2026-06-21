@@ -471,6 +471,22 @@ func (a *App) Run() error {
 		} else if n > 0 {
 			log.Info("shared-client migration started", "users_enqueued", n)
 		}
+		// Then poll until every user has migrated (0 ownership rows) and DROP the
+		// retired user_xui_clients table — v3.9.0 removes it for real, not just
+		// empties it. done=true (dropped / fresh install / already gone) stops the
+		// loop; otherwise re-check while the queue drains. bgCtx cancels on shutdown.
+		for {
+			if done, err := a.repos.Ownership.DropIfMigrated(bgCtx); err != nil {
+				log.Warn("shared-client migration table drop", "err", err)
+			} else if done {
+				return
+			}
+			select {
+			case <-bgCtx.Done():
+				return
+			case <-time.After(time.Minute):
+			}
+		}
 	})
 	safego.GoTracked(&a.bgWG, "audit-cleanup-loop", func() { a.runAuditCleanupLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "geo-update-loop", func() { a.runGeoUpdateLoop(bgCtx) })
