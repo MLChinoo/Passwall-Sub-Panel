@@ -57,7 +57,9 @@ type fakeXUI struct {
 	ports.XUIClient
 	addedInbounds []int
 	addedSpec     ports.ClientSpec
-	confirm       []int // inboundIDs GetClient reports the client attached to
+	confirm       []int // inboundIDs GetClient reports the client attached to AFTER an add
+	preExist      []int // if non-nil, GetClient reports this BEFORE any add (pre-existing client); nil = absent
+	added         bool
 	updatedSpec   ports.ClientSpec
 	updateCalls   int
 	deleted       []deletedClient
@@ -71,11 +73,21 @@ func (c *fakeXUI) AddClientToInbounds(_ context.Context, inboundIDs []int, spec 
 	if c.failAdd {
 		return errFakeAdd
 	}
+	c.added = true
 	c.addedInbounds = append([]int(nil), inboundIDs...)
 	c.addedSpec = spec
 	return nil
 }
+
+// GetClient models 3X-UI: a client does not exist until added (returns nil), then
+// reports `confirm`. preExist simulates a client already present before provision.
 func (c *fakeXUI) GetClient(context.Context, string) (*ports.ClientDetail, error) {
+	if !c.added {
+		if c.preExist == nil {
+			return nil, nil
+		}
+		return &ports.ClientDetail{InboundIDs: c.preExist}, nil
+	}
 	return &ports.ClientDetail{InboundIDs: c.confirm}, nil
 }
 func (c *fakeXUI) DetachClient(_ context.Context, _ string, inboundIDs []int) error {
@@ -150,6 +162,36 @@ func TestProvisionClient_CreatesAndMarksConfirmed(t *testing.T) {
 	}
 	if !clients.provisioned[11] || !clients.provisioned[12] {
 		t.Fatalf("both nodes should be marked provisioned: %v", clients.provisioned)
+	}
+}
+
+// No-op-skip: when the live client is ALREADY attached to exactly the desired
+// inbound set, ProvisionClient must NOT call AddClientToInbounds (which restarts
+// Xray) — it just re-marks the attachments provisioned. This restores the legacy
+// per-node clientUnchanged behaviour so a steady-state resync costs 0 restarts.
+func TestProvisionClient_SkipsRedundantReattach(t *testing.T) {
+	clients := &fakeClients{attachments: []domain.PSPClientInbound{
+		{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision"},
+		{ClientID: 1, NodeID: 12, FlowOverride: "xtls-rprx-vision"},
+	}}
+	nodes := fakeNodes{byID: map[int64]*domain.Node{
+		11: {ID: 11, PanelID: 10, InboundID: 101},
+		12: {ID: 12, PanelID: 10, InboundID: 102},
+	}}
+	// Client already present on EXACTLY the desired inbounds (101,102) before provision.
+	xui := &fakeXUI{preExist: []int{101, 102}}
+	svc := New(clients, fakePool{c: xui}, nodes)
+
+	c := &domain.PSPClient{ID: 1, PanelID: 10, Email: "u1@psp.local", UUID: "uuid-x", Password: "pw-x"}
+	res, err := svc.ProvisionClient(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(xui.addedInbounds) != 0 || res.Created {
+		t.Fatalf("must skip the re-add when already attached: added=%v created=%v", xui.addedInbounds, res.Created)
+	}
+	if res.Provisioned != 2 || !clients.provisioned[11] || !clients.provisioned[12] {
+		t.Fatalf("both nodes must still be marked provisioned: res=%+v marks=%v", res, clients.provisioned)
 	}
 }
 

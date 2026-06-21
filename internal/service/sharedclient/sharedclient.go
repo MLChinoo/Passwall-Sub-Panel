@@ -107,6 +107,31 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 	if err != nil {
 		return res, fmt.Errorf("xui pool get %d: %w", c.PanelID, err)
 	}
+	desiredSet := make(map[int]bool, len(inboundIDs))
+	for _, id := range inboundIDs {
+		desiredSet[id] = true
+	}
+
+	// No-op-skip: read the live client FIRST. If it already exists and is attached
+	// to EXACTLY the desired inbound set, AddClientToInbounds would be a no-op that
+	// still triggers an Xray restart — skip it. This restores the legacy per-node
+	// clientUnchanged behaviour: a steady-state resync (group re-tag, profile edit
+	// with no node delta) costs 0 restarts. Credentials are (re)pushed separately
+	// by SyncLifecycle, so skipping the attach never leaves stale creds — a UUID
+	// reset keeps the same attachment (skipped here) but differs in lifecycle/creds
+	// (pushed there). A nil read (absent client / transient error) falls through to
+	// the attach path, which is idempotent.
+	if cur, _ := cli.GetClient(ctx, c.Email); cur != nil && sameInboundSet(cur.InboundIDs, desiredSet) {
+		for _, nodeID := range nodeByInbound {
+			if err := s.clients.MarkInboundProvisioned(ctx, c.ID, nodeID, true); err != nil {
+				log.Warn("sharedclient: mark provisioned", "client_id", c.ID, "node_id", nodeID, "err", err)
+				continue
+			}
+			res.Provisioned++
+		}
+		return res, nil
+	}
+
 	if err := cli.AddClientToInbounds(ctx, inboundIDs, buildSharedClientSpec(c, flow)); err != nil {
 		return res, fmt.Errorf("create shared client %s: %w", c.Email, err)
 	}
@@ -124,10 +149,6 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 	// Full reconcile, not just attach: detach the client from any inbound it is
 	// attached to in 3X-UI but no longer desired (a node left the user's group).
 	// Without this a removed node would keep serving the user until a manual fix.
-	desiredSet := make(map[int]bool, len(inboundIDs))
-	for _, id := range inboundIDs {
-		desiredSet[id] = true
-	}
 	var stale []int
 	for _, id := range detail.InboundIDs {
 		if !desiredSet[id] {
@@ -200,7 +221,32 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient, enable
 	spec.Enable = enable
 	spec.ExpiryTime = expiryTime
 	spec.TotalGB = totalGB
+	// No-op-skip: if 3X-UI already holds this exact lifecycle AND creds, skip the
+	// UpdateClient. ResyncMembership calls this on every resync and the traffic poll
+	// calls it every cycle for active users; without the skip an unchanged user
+	// would issue a redundant full-replace each time. Creds are compared too, so a
+	// UUID reset (id/password differ) still propagates; an active user's shrinking
+	// quota-floor (totalGB differs) still refreshes the Xray-side cap.
+	if cur, err := cli.GetClient(ctx, c.Email); err == nil && cur != nil &&
+		cur.Enable == spec.Enable && cur.ExpiryTime == spec.ExpiryTime && cur.TotalGB == spec.TotalGB &&
+		cur.ID == spec.ID && cur.Password == spec.Password && cur.Flow == spec.Flow && cur.Auth == spec.Auth {
+		return nil
+	}
 	return cli.UpdateClient(ctx, 0, c.UUID, spec) // inbound/uuid args vestigial; keyed by spec.Email
+}
+
+// sameInboundSet reports whether the live attachment set equals the desired set
+// (used by the provision no-op-skip to avoid a needless Xray-restarting re-add).
+func sameInboundSet(have []int, want map[int]bool) bool {
+	if len(have) != len(want) {
+		return false
+	}
+	for _, id := range have {
+		if !want[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // SyncUserLifecycle pushes the given lifecycle state onto ALL of a user's shared
