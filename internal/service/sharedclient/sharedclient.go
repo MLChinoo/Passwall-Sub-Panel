@@ -184,14 +184,31 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient, enable
 	if err != nil {
 		return fmt.Errorf("list attachments: %w", err)
 	}
-	if len(atts) == 0 {
-		return nil // nothing attached → nothing to keep in lockstep
+	// Only push once the shared client actually EXISTS in 3X-UI — i.e. at least
+	// one attachment is confirmed Provisioned by the reconcile read-back. Before
+	// provisioning (the default on every install where the operator hasn't run the
+	// cutover, yet the shadow dual-write has already created psp_client rows +
+	// attachments), the client's email is unknown to 3X-UI, so an UpdateClient
+	// would fail on every resync / enable / disable and spam non-fatal warnings +
+	// waste a 3X-UI round-trip. Skip until reconcile has confirmed an attach; the
+	// cutover runbook provisions BEFORE the gate flip, so lifecycle is in lockstep
+	// exactly from the moment the shared client is live.
+	flow := ""
+	provisioned := false
+	for _, a := range atts {
+		if a.Provisioned {
+			provisioned, flow = true, a.FlowOverride // uniform flow across the partition
+			break
+		}
+	}
+	if !provisioned {
+		return nil
 	}
 	cli, err := s.pool.Get(c.PanelID)
 	if err != nil {
 		return fmt.Errorf("xui pool get %d: %w", c.PanelID, err)
 	}
-	spec := buildSharedClientSpec(c, atts[0].FlowOverride) // uniform flow across the partition
+	spec := buildSharedClientSpec(c, flow)
 	spec.Enable = enable
 	spec.ExpiryTime = expiryTime
 	spec.TotalGB = totalGB

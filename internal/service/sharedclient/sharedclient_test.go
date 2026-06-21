@@ -165,7 +165,7 @@ func TestProvisionClient_MarksOnlyConfirmed(t *testing.T) {
 
 func TestSyncLifecycle_PushesEnableExpiryQuotaWithCredsAndFlow(t *testing.T) {
 	clients := &fakeClients{attachments: []domain.PSPClientInbound{
-		{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision"},
+		{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision", Provisioned: true},
 	}}
 	xui := &fakeXUI{}
 	svc := New(clients, fakePool{c: xui}, fakeNodes{})
@@ -198,6 +198,23 @@ func TestSyncLifecycle_NoAttachmentsSkips(t *testing.T) {
 	}
 	if xui.updateCalls != 0 {
 		t.Fatalf("a client with no attachments must not be pushed (calls=%d)", xui.updateCalls)
+	}
+}
+
+// Until the cutover provisions the shared client in 3X-UI, a lifecycle push would
+// hit a non-existent email and fail noisily — so an UN-provisioned client (the
+// default on every install) must be skipped entirely, no 3X-UI call.
+func TestSyncLifecycle_UnprovisionedSkips(t *testing.T) {
+	clients := &fakeClients{attachments: []domain.PSPClientInbound{
+		{ClientID: 1, NodeID: 11}, // Provisioned: false (dual-write wrote the row; reconcile hasn't run)
+	}}
+	xui := &fakeXUI{}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	if err := svc.SyncLifecycle(context.Background(), &domain.PSPClient{ID: 1, PanelID: 10, Email: "u1@psp.local"}, false, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if xui.updateCalls != 0 {
+		t.Fatalf("an un-provisioned shared client must not be pushed to 3X-UI (calls=%d)", xui.updateCalls)
 	}
 }
 

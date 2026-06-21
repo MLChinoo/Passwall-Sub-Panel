@@ -56,6 +56,7 @@ type settingsDTO struct {
 	EmergencyAccessMaxCount    int                      `json:"emergency_access_max_count"`
 	EmergencyAccessQuotaGB     float64                  `json:"emergency_access_quota_gb"`
 	SubPath                    string                   `json:"sub_path"`
+	SubRenderUseSharedClient   bool                     `json:"sub_render_use_shared_client"`
 	SubClients                 []ports.SubClientFamily  `json:"sub_clients"`
 	SubClientFilterMode        string                   `json:"sub_client_filter_mode"`
 	SubImportTutorialURL       string                   `json:"sub_import_tutorial_url"`
@@ -195,6 +196,7 @@ func settingsToDTO(s ports.UISettings) settingsDTO {
 		EmergencyAccessMaxCount:    s.EmergencyAccessMaxCount,
 		EmergencyAccessQuotaGB:     s.EmergencyAccessQuotaGB,
 		SubPath:                    s.SubPath,
+		SubRenderUseSharedClient:   s.SubRenderUseSharedClient,
 		SubClients:                 s.SubClients,
 		SubClientFilterMode:        s.SubClientFilterMode,
 		SubImportTutorialURL:       s.SubImportTutorialURL,
@@ -307,6 +309,7 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		EmergencyAccessMaxCount:    req.EmergencyAccessMaxCount,
 		EmergencyAccessQuotaGB:     req.EmergencyAccessQuotaGB,
 		SubPath:                    strings.TrimSpace(req.SubPath),
+		SubRenderUseSharedClient:   req.SubRenderUseSharedClient,
 		SubClients:                 normalizeSubClients(req.SubClients),
 		SubClientFilterMode:        normalizeFilterMode(req.SubClientFilterMode),
 		SubImportTutorialURL:       strings.TrimSpace(req.SubImportTutorialURL),
