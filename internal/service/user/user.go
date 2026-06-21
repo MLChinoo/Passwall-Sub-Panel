@@ -2189,7 +2189,14 @@ func (s *Service) ResetUUIDAndSync(ctx context.Context, userID int64) (string, e
 			needsRetry = true
 		}
 	}
-	if needsRetry {
+	// Enqueue a resync after a UUID rotation. On the error path it retries the
+	// failed per-node pushes; on the happy path it still runs so the v3.9.0
+	// dual-write advances the psp_client's UUID/Password and syncSharedLifecycle
+	// pushes the rotated credentials onto the shared client — without this, a
+	// successful rotation wouldn't reach the shared client until the next periodic
+	// reconcile. The per-node re-push is a no-op (already rotated inline + the
+	// no-op-skip), so the resync's real work is just the shared-model propagation.
+	if needsRetry || s.sharedLife != nil {
 		_ = s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.UPN))
 	}
 	return newUUID, nil
