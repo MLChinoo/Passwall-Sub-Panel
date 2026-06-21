@@ -110,6 +110,15 @@ func (c *fakeXUI) DelClientByEmail(_ context.Context, inboundID int, email strin
 	return nil
 }
 
+// BulkDelByEmail is the panel-wide batch delete the legacy cleanup now uses (one
+// call per panel). Record each email so len(deleted) still reflects client count.
+func (c *fakeXUI) BulkDelByEmail(_ context.Context, emails []string) (int, error) {
+	for _, e := range emails {
+		c.deleted = append(c.deleted, deletedClient{email: e})
+	}
+	return len(emails), nil
+}
+
 type fakeOwnership struct {
 	ports.OwnershipRepo
 	entries   []*domain.XUIClientEntry

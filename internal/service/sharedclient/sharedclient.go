@@ -348,29 +348,50 @@ func (s *Service) DeleteLegacyForUser(ctx context.Context, userID int64) (Cleanu
 	if err != nil {
 		return res, fmt.Errorf("list ownership: %w", err)
 	}
+	// Group the deletable legacy clients by panel and remove them with ONE
+	// BulkDelByEmail per panel — one Xray restart per panel instead of one per
+	// client. Legacy emails are u{uid}-n{nodeID}@domain: panel-wide unique and
+	// DISTINCT from the shared client's u{uid}[-k…]@domain, so a panel-wide
+	// (email-keyed) delete can never touch the just-provisioned shared client.
+	type delRow struct {
+		entryID int64
+		email   string
+	}
+	byPanel := map[int64][]delRow{}
 	for _, e := range entries {
 		if !provisioned[panelInbound{e.PanelID, e.InboundID}] {
 			res.Kept++ // no provisioned shared replacement yet → keep the fallback
 			continue
 		}
-		cli, err := s.pool.Get(e.PanelID)
+		byPanel[e.PanelID] = append(byPanel[e.PanelID], delRow{e.ID, e.ClientEmail})
+	}
+	for panelID, rows := range byPanel {
+		cli, err := s.pool.Get(panelID)
 		if err != nil {
-			log.Warn("sharedclient cleanup: pool get", "panel_id", e.PanelID, "err", err)
-			res.Skipped++
+			log.Warn("sharedclient cleanup: pool get", "panel_id", panelID, "err", err)
+			res.Skipped += len(rows)
 			continue
 		}
-		if err := cli.DelClientByEmail(ctx, e.InboundID, e.ClientEmail); err != nil {
-			log.Warn("sharedclient cleanup: delete legacy client", "panel_id", e.PanelID,
-				"inbound_id", e.InboundID, "email", e.ClientEmail, "err", err)
-			res.Skipped++
+		emails := make([]string, len(rows))
+		for i, r := range rows {
+			emails[i] = r.email
+		}
+		if _, err := cli.BulkDelByEmail(ctx, emails); err != nil {
+			log.Warn("sharedclient cleanup: bulk delete legacy clients", "panel_id", panelID,
+				"count", len(emails), "err", err)
+			res.Skipped += len(rows)
 			continue
 		}
-		if err := s.ownership.Remove(ctx, e.ID); err != nil {
-			// 3X-UI delete succeeded; the stale ownership row is harmless and the
-			// next reconcile drops it. Don't double-count as deleted-but-tracked.
-			log.Warn("sharedclient cleanup: remove ownership row", "id", e.ID, "err", err)
+		// Bulk delete succeeded (emails already absent upstream are silently
+		// skipped — still effectively gone). Drop each ownership row + count.
+		for _, r := range rows {
+			if err := s.ownership.Remove(ctx, r.entryID); err != nil {
+				// 3X-UI delete succeeded; the stale ownership row is harmless and the
+				// next reconcile drops it. Don't double-count as deleted-but-tracked.
+				log.Warn("sharedclient cleanup: remove ownership row", "id", r.entryID, "err", err)
+			}
+			res.Deleted++
 		}
-		res.Deleted++
 	}
 	return res, nil
 }
