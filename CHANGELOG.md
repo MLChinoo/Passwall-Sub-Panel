@@ -4,6 +4,20 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.2 — 2026-06-21
+
+共享客户端模型「全链路打通」:从在 3X-UI 建共享 client、生命周期接管、render 切换、流量计量到删除旧客户端,五个阶段全部落地。**默认仍走旧的 per-node 路径,对生产零行为影响**——切换由一个默认关闭的开关 `SubRenderUseSharedClient` 守护,操作员按 runbook 主动开启才生效。设计与切换 runbook 见 `docs/v3.9.0-client-multi-inbound.md`。
+
+### 工程(dormant,默认不启用;开关开启后生效)
+
+- **Stage 1 —— 在 3X-UI 建共享 client + 全生命周期**:
+  - 共享 client 按 `(密码类, 有效 flow)` 分桶(3X-UI 无 per-inbound flowOverride 写 API,一个 client 只带一个 flow);client email 是分桶键的**稳定无碰撞**函数(默认 `u{uid}@` 不变、SS-2022-128 `-c1`、其余 `-k{hash}`),绝大多数用户仍是 1 个 client。
+  - `sharedclient` reconcile 服务:一次 `AddClientToInbounds` 覆盖用户全部 inbound(单次 Xray 重启)→ 读回确认 → 仅对确认的 attachment 标 provisioned;端点 `POST /api/admin/clients/provision-shared`。
+  - **生命周期接管(关键)**:禁用 / 到期 / 超量翻转共享 client 的 enable/expire——接到变更驱动路径(`ResyncMembership` / `SetEnabledAndSync`),不碰每-poll floor 刷新,零稳态抖动。
+- **Stage 2 —— render 切换开关**:`SubRenderUseSharedClient`(默认关)。开启后 render 改用存储的共享凭据;只有密码协议变(Trojan/SS 需重拉订阅,VLESS/VMess/Hy2/SS-2022 不变),且只对已 provisioned 的节点切换,其余回退派生——部分迁移不会断订阅。
+- **Stage 3 —— 共享 client 流量计量**:开关开启后,按 email **只读一次**面板聚合计数(绝不按 inbound 求和),折进用户 quota；首次观测 seed 防尖峰。每用户×每 Server 用量本就读 node 计数,flip 无关。
+- **Stage 4 —— 删除旧 per-node client**:端点 `POST /api/admin/clients/cleanup-legacy`,两道护栏(开关须开 + 只删已被 provisioned 共享 client 覆盖的节点),其余保留回退。最终不可逆步骤。
+
 ## v3.9.0-beta.1 — 2026-06-20
 
 「一个 client 挂多 inbound」共享客户端模型的地基,加上一项可立即用的可观测功能与一项规模化性能修复。共享模型本身(render / sync 切到共享 client)**尚未启用**,本期只落地基础设施,对生产无行为影响。
