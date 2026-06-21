@@ -1601,6 +1601,12 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	if err != nil {
 		return err
 	}
+	// v3.9.0 silent-migration correctness: a Shadowsocks node that was never
+	// captured has empty InboundSettings, so the plan builder can't tell SS from
+	// SS-2022 and would drop it into the raw-UUID credential class — rendering an
+	// unusable PSK. Resolve the live cipher method before the psp_client plan is
+	// built (clientplan.NodeCredFromNode's documented contract).
+	desiredNodes = s.resolveShadowsocksMethods(ctx, desiredNodes)
 	rules := s.emailRules(ctx)
 	var firstErr error
 
@@ -2118,6 +2124,46 @@ func (s *Service) ResetUUIDAndSync(ctx context.Context, userID int64) (string, e
 		_ = s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.UPN))
 	}
 	return newUUID, nil
+}
+
+// resolveShadowsocksMethods returns desiredNodes with InboundSettings filled in
+// for any Shadowsocks node missing it (never captured), so the plan builder can
+// distinguish SS from SS-2022 (and the 16- vs 32-byte PSK) and pick the right
+// credential class. Non-SS nodes and already-captured SS nodes pass through with
+// NO extra 3X-UI call. Best-effort: a node whose inbound can't be fetched passes
+// through unchanged (the next resync after capture self-corrects). Patches COPIES
+// — never mutates the selector's cached *domain.Node rows.
+func (s *Service) resolveShadowsocksMethods(ctx context.Context, nodes []*domain.Node) []*domain.Node {
+	var out []*domain.Node // lazily cloned on first patch; nil → return input as-is
+	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
+		p := strings.ToLower(strings.TrimSpace(n.Protocol))
+		if p != "shadowsocks" && p != "ss" {
+			continue
+		}
+		if extractSSMethod(n.InboundSettings) != "" {
+			continue // already captured → exact
+		}
+		info, err := s.inspectInbound(ctx, n)
+		if err != nil || info == nil || info.ssMethod == "" {
+			continue // best-effort; next resync after capture self-corrects
+		}
+		if out == nil {
+			out = append([]*domain.Node(nil), nodes...)
+		}
+		patched := *n
+		b, _ := json.Marshal(struct {
+			Method string `json:"method"`
+		}{info.ssMethod})
+		patched.InboundSettings = string(b)
+		out[i] = &patched
+	}
+	if out == nil {
+		return nodes
+	}
+	return out
 }
 
 // inspectInboundByPanel is the address-by-(panel_id, inbound) version of

@@ -371,7 +371,13 @@ func (s *Service) PollOnce(ctx context.Context) error {
 	// calls drop the wall-clock to roughly one ListInbounds time
 	// regardless of panel count, while the cap prevents tail-end
 	// regressions when admins eventually attach many panels.
-	type inboundCounter struct{ up, down int64 }
+	type inboundCounter struct {
+		up, down int64
+		// lastOnline is the most recent client-online unix-ms across echoes; the
+		// shared-metering pass carries it so a fully-migrated user's last_online_at
+		// keeps advancing (the per-node pass that used to source it is gone).
+		lastOnline int64
+	}
 	type panelListResult struct {
 		stats map[int]([]ports.ClientTraffic)
 		// counters holds each inbound's OWN cumulative up/down (ports.Inbound.Up/
@@ -562,10 +568,15 @@ func (s *Service) PollOnce(ctx context.Context) error {
 							continue
 						}
 						// Shared aggregate is echoed identically per inbound; max guards
-						// a partial/stale echo.
-						if cur, ok := m[t.Email]; !ok || t.Up+t.Down > cur.up+cur.down {
-							m[t.Email] = inboundCounter{up: t.Up, down: t.Down}
+						// a partial/stale echo. last-online is the most recent echo.
+						cur := m[t.Email]
+						if t.Up+t.Down > cur.up+cur.down {
+							cur.up, cur.down = t.Up, t.Down
 						}
+						if t.LastOnline > cur.lastOnline {
+							cur.lastOnline = t.LastOnline
+						}
+						m[t.Email] = cur
 					}
 				}
 				agg[pid] = m
@@ -576,6 +587,12 @@ func (s *Service) PollOnce(ctx context.Context) error {
 					continue
 				}
 				delta := s.recordSharedClientStats(ctx, c, ct.up, ct.down, sink)
+				// Advance last_online_at even when no NEW bytes accrued this cycle —
+				// the 3X-UI server-side timestamp is independent of our delta, and a
+				// migrated user has no per-node pass left to source it.
+				if ct.lastOnline > sink.lastOnlineMs[c.UserID] {
+					sink.lastOnlineMs[c.UserID] = ct.lastOnline
+				}
 				if delta.up == 0 && delta.down == 0 && delta.total == 0 {
 					continue
 				}
