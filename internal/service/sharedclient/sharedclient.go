@@ -124,6 +124,25 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 	if detail == nil {
 		return res, fmt.Errorf("shared client %s absent after create", c.Email)
 	}
+	// Full reconcile, not just attach: detach the client from any inbound it is
+	// attached to in 3X-UI but no longer desired (a node left the user's group).
+	// Without this a removed node would keep serving the user until a manual fix.
+	desiredSet := make(map[int]bool, len(inboundIDs))
+	for _, id := range inboundIDs {
+		desiredSet[id] = true
+	}
+	var stale []int
+	for _, id := range detail.InboundIDs {
+		if !desiredSet[id] {
+			stale = append(stale, id)
+		}
+	}
+	if len(stale) > 0 {
+		if err := cli.DetachClient(ctx, c.Email, stale); err != nil {
+			log.Warn("sharedclient: detach stale inbounds", "client_id", c.ID, "email", c.Email, "inbounds", stale, "err", err)
+		}
+	}
+
 	confirmed := make(map[int]bool, len(detail.InboundIDs))
 	for _, id := range detail.InboundIDs {
 		confirmed[id] = true

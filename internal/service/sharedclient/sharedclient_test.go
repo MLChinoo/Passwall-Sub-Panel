@@ -61,6 +61,7 @@ type fakeXUI struct {
 	updatedSpec   ports.ClientSpec
 	updateCalls   int
 	deleted       []deletedClient
+	detached      []int
 	failAdd       bool
 }
 
@@ -76,6 +77,10 @@ func (c *fakeXUI) AddClientToInbounds(_ context.Context, inboundIDs []int, spec 
 }
 func (c *fakeXUI) GetClient(context.Context, string) (*ports.ClientDetail, error) {
 	return &ports.ClientDetail{InboundIDs: c.confirm}, nil
+}
+func (c *fakeXUI) DetachClient(_ context.Context, _ string, inboundIDs []int) error {
+	c.detached = append(c.detached, inboundIDs...)
+	return nil
 }
 func (c *fakeXUI) UpdateClient(_ context.Context, _ int, _ string, spec ports.ClientSpec) error {
 	c.updatedSpec = spec
@@ -154,6 +159,26 @@ func TestProvisionClient_CreatesAndMarksConfirmed(t *testing.T) {
 	}
 	if !clients.provisioned[11] || !clients.provisioned[12] {
 		t.Fatalf("both nodes should be marked provisioned: %v", clients.provisioned)
+	}
+}
+
+// Full reconcile: if 3X-UI reports the shared client attached to an inbound that
+// is no longer in the desired set (a node left the group), ProvisionClient must
+// DETACH it — not just attach the desired ones.
+func TestProvisionClient_DetachesStaleInbound(t *testing.T) {
+	clients := &fakeClients{attachments: []domain.PSPClientInbound{
+		{ClientID: 1, NodeID: 11}, // desired → inbound 101
+	}}
+	nodes := fakeNodes{byID: map[int64]*domain.Node{11: {ID: 11, PanelID: 10, InboundID: 101}}}
+	// 3X-UI says the client is on 101 (desired) AND 102 (stale — node removed).
+	xui := &fakeXUI{confirm: []int{101, 102}}
+	svc := New(clients, fakePool{c: xui}, nodes)
+
+	if _, err := svc.ProvisionClient(context.Background(), &domain.PSPClient{ID: 1, PanelID: 10, Email: "u1@psp.local"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(xui.detached) != 1 || xui.detached[0] != 102 {
+		t.Fatalf("stale inbound 102 must be detached, got %v", xui.detached)
 	}
 }
 
