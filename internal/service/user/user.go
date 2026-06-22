@@ -144,23 +144,31 @@ type SharedMigrator interface {
 // user_migrate task is a no-op (treated as done).
 func (s *Service) SetSharedMigrator(m SharedMigrator) { s.migrator = m }
 
-// syncSharedLifecycle best-effort pushes the user's current enable/expiry onto
-// their shared clients. totalGB is left 0 during the cutover: PSP already flips
-// the shared client's enable=false on quota-exceeded (via SetEnabledAndSync), so
-// the Xray-side quota floor is a Stage-2 concern (when traffic actually flows
-// through the shared client). Isolated from the real ownership push.
-func (s *Service) syncSharedLifecycle(ctx context.Context, u *domain.User) {
+// syncSharedLifecycle pushes the user's current enable/expiry/quota-floor onto
+// their shared clients and RETURNS the push error. The error matters for the
+// migration: ProvisionClient creates the shared client at the spec default
+// (Enable:true, no expiry/quota), and this push is the ONLY thing that corrects
+// it to the user's real state — so a caller that is about to delete the legacy
+// per-node fallback (ResyncMembership) MUST NOT proceed if this failed, or a
+// disabled/expired/over-quota user would be left with a fully-enabled shared
+// client and no fallback (the audit-#1 bypass). Callers that aren't deleting a
+// fallback (per-poll refresh, the reconcile heal) may ignore the returned error;
+// it is logged here either way.
+//
+// Push the quota floor (limit - period_used) too, parity with the per-node path:
+// it is the Xray-side safety net that cuts the client off even while PSP is
+// offline. This is the change-driven snapshot; the per-poll refresh keeps it
+// current as traffic accrues.
+func (s *Service) syncSharedLifecycle(ctx context.Context, u *domain.User) error {
 	if s.sharedLife == nil || u == nil {
-		return
+		return nil
 	}
-	// Push the quota floor (limit - period_used) too, parity with the per-node
-	// path: it is the Xray-side safety net that cuts the client off even while PSP
-	// is offline. This is the change-driven snapshot; the per-poll refresh keeps it
-	// current as traffic accrues.
 	floor := s.trafficFloor(ctx, u)
 	if err := s.sharedLife.SyncUserLifecycle(ctx, u.ID, u.EffectiveEnabled(time.Now()), u.PushExpireTime(), floor); err != nil {
-		log.Warn("shared-client lifecycle push failed (non-fatal)", "user_id", u.ID, "err", err)
+		log.Warn("shared-client lifecycle push failed", "user_id", u.ID, "err", err)
+		return err
 	}
+	return nil
 }
 
 // BackfillResult summarizes a BackfillPSPClients pass.
@@ -1640,8 +1648,17 @@ func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 			provisioned = true
 		}
 	}
-	s.syncSharedLifecycle(ctx, u)
-	if provisioned && s.migrator != nil {
+	// The lifecycle push corrects the shared client from its provision default
+	// (Enable:true / no expiry / no quota) to the user's REAL state. If it FAILS,
+	// the shared client is still at that default, so we must NOT delete the legacy
+	// per-node fallback (which holds the correct disabled/expired state) — doing so
+	// would leave a disabled/expired/over-quota user fully enabled with no fallback
+	// (audit #1). Surface the error so the sync-task retries and re-pushes next run.
+	lifeErr := s.syncSharedLifecycle(ctx, u)
+	if lifeErr != nil && firstErr == nil {
+		firstErr = fmt.Errorf("shared lifecycle: %w", lifeErr)
+	}
+	if provisioned && lifeErr == nil && s.migrator != nil {
 		if err := s.migrator.DeleteLegacyForUser(ctx, u.ID); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete legacy: %w", err)
@@ -1780,12 +1797,12 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 				"user_id", userID, "err", err)
 		}
 	}
+	// pushClientConfigToAll mirrors the enable/expiry flip onto the shared client
+	// (HOLE #1) before its per-node work — this is THE path admin disable +
+	// quota/expiry auto-disable funnel through, so it's what cuts a disabled user's
+	// shared client off. (No separate syncSharedLifecycle call here: that would be
+	// a redundant second UpdateClient — pushClientConfigToAll already does it.)
 	pushErr := s.pushClientConfigToAll(ctx, u)
-	// Mirror the enable/expiry flip onto the shared client (HOLE #1) — this is
-	// THE path admin disable + quota/expiry auto-disable funnel through, so it's
-	// what cuts a disabled user's shared client off. Runs regardless of the
-	// per-node push outcome (each is independently best-effort).
-	s.syncSharedLifecycle(ctx, u)
 	if pushErr != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
