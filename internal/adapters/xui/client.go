@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -97,6 +98,37 @@ func (c *Client) lockClientEmail(email string) func() {
 	c.clientWriteMu.Unlock()
 	m.Lock()
 	return m.Unlock
+}
+
+// isInboundConflict reports whether a client mutation failed on 3X-UI's transient
+// "UNIQUE constraint failed: client_inbounds..." — raised when two writers touch
+// one inbound's client_inbounds join rows at once. 3X-UI rolls the whole
+// transaction back, so the change did NOT apply and a retry can clear it.
+func isInboundConflict(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "client_inbounds")
+}
+
+// mutateWithRetry runs a client-mutation POST, retrying on isInboundConflict with a
+// short jittered backoff. lockClientEmail already serializes SAME-process writes to
+// one client; this additionally survives CROSS-process / multi-instance races
+// (e.g. a second PSP instance, or a not-yet-stopped old container, running the same
+// migrate/poll loops against the same panel) that a per-process lock cannot cover —
+// the racer commits in ~ms, so an immediate jittered retry succeeds. Bounded so a
+// genuinely stuck client surfaces the error instead of looping forever.
+func (c *Client) mutateWithRetry(ctx context.Context, path string, body any) error {
+	const maxAttempts = 5
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err = c.doJSON(ctx, http.MethodPost, path, body, nil); err == nil || !isInboundConflict(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt)*40*time.Millisecond + rand.N(60*time.Millisecond)):
+		}
+	}
+	return err
 }
 
 // lockClientEmails locks several emails at once (BulkDelByEmail), acquiring in
@@ -546,7 +578,7 @@ func (c *Client) AddClientToInbounds(ctx context.Context, inboundIDs []int, spec
 		"client":     json.RawMessage(clientJSON),
 		"inboundIds": inboundIDs,
 	}
-	return c.doJSON(ctx, http.MethodPost, "/panel/api/clients/add", body, nil)
+	return c.mutateWithRetry(ctx, "/panel/api/clients/add", body)
 }
 
 // AttachClient attaches the existing client identified by email to the given
@@ -561,7 +593,7 @@ func (c *Client) AttachClient(ctx context.Context, email string, inboundIDs []in
 	}
 	defer c.lockClientEmail(email)()
 	path := "/panel/api/clients/" + url.PathEscape(email) + "/attach"
-	return c.doJSON(ctx, http.MethodPost, path, map[string]any{"inboundIds": inboundIDs}, nil)
+	return c.mutateWithRetry(ctx, path, map[string]any{"inboundIds": inboundIDs})
 }
 
 // DetachClient removes the client identified by email from the given inbounds
@@ -576,7 +608,7 @@ func (c *Client) DetachClient(ctx context.Context, email string, inboundIDs []in
 	}
 	defer c.lockClientEmail(email)()
 	path := "/panel/api/clients/" + url.PathEscape(email) + "/detach"
-	return c.doJSON(ctx, http.MethodPost, path, map[string]any{"inboundIds": inboundIDs}, nil)
+	return c.mutateWithRetry(ctx, path, map[string]any{"inboundIds": inboundIDs})
 }
 
 // BulkAttach attaches many existing clients to many inbounds in one
@@ -657,7 +689,7 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		return err
 	}
 	path := "/panel/api/clients/update/" + url.PathEscape(spec.Email)
-	return c.doJSON(ctx, http.MethodPost, path, json.RawMessage(clientJSON), nil)
+	return c.mutateWithRetry(ctx, path, json.RawMessage(clientJSON))
 }
 
 // UpdateClientWithInbound delegated to a read-modify-write of the inbound in
