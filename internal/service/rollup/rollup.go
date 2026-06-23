@@ -419,21 +419,43 @@ func (s *Service) upsert(ctx context.Context, table string, conflictCols []strin
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	conflict := make([]clause.Column, len(conflictCols))
-	for i, c := range conflictCols {
-		conflict[i] = clause.Column{Name: c}
-	}
-	onConflict := clause.OnConflict{Columns: conflict}
-	if keepOnConflict {
-		onConflict.DoNothing = true
-	} else {
-		onConflict.DoUpdates = clause.AssignmentColumns([]string{"up_bytes", "down_bytes", "total_bytes"})
-	}
+	onConflict := onConflictClause(s.db.Dialector.Name(), conflictCols, keepOnConflict)
 	res := s.db.WithContext(ctx).
 		Table(table).
 		Clauses(onConflict).
 		CreateInBatches(rows, 500)
 	return res.RowsAffected, res.Error
+}
+
+// onConflictClause builds the per-dialect conflict action for the hourly upsert.
+// keepOnConflict=false → overwrite the up/down/total counters with the recomputed
+// values. keepOnConflict=true → keep the existing row (insert-once, never shrink).
+//
+// The "keep" action is dialect-specific. SQLite/Postgres render
+// OnConflict.DoNothing as a native "DO NOTHING". MySQL, however, renders it as an
+// EMPTY "ON DUPLICATE KEY UPDATE" with no assignments — invalid SQL that fails with
+// "Error 1064 ... near ''" (observed in production on a MySQL deployment). For
+// MySQL we instead emit a no-op self-assignment of a conflict-key column
+// ("`col`=`col`"): a valid "keep the existing row" that touches no data column.
+// Verified via offline DryRun SQL generation across dialects (see the test).
+func onConflictClause(dialect string, conflictCols []string, keepOnConflict bool) clause.OnConflict {
+	conflict := make([]clause.Column, len(conflictCols))
+	for i, c := range conflictCols {
+		conflict[i] = clause.Column{Name: c}
+	}
+	oc := clause.OnConflict{Columns: conflict}
+	if !keepOnConflict {
+		oc.DoUpdates = clause.AssignmentColumns([]string{"up_bytes", "down_bytes", "total_bytes"})
+		return oc
+	}
+	if dialect == "mysql" && len(conflictCols) > 0 {
+		oc.DoUpdates = clause.Assignments(map[string]any{
+			conflictCols[0]: clause.Column{Name: conflictCols[0]},
+		})
+	} else {
+		oc.DoNothing = true
+	}
+	return oc
 }
 
 // hourFloor truncates t to the start of its containing UTC hour. The
