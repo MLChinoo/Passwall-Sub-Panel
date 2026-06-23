@@ -4,6 +4,24 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.5 — 2026-06-23
+
+**修复真机上迁移卡住的问题(beta.4 引入的并发副作用)。** 建议从 beta.4 升级。
+
+### 修复
+
+- **串行化对同一 3X-UI client 的写操作(关键)** —— 真机现象:部分用户迁移成功,但同一入站(inbound)下的若干用户**持续失败**,报 `UNIQUE constraint failed: client_inbounds...` 或 `email already in use`。根因(已在真机确认):3X-UI 的 client 接口**不支持对同一 client 的并发写**——两个并发写会在其 `client_inbounds` 表上冲突,失败的那次整个事务回滚(启用/到期的改动也随之丢失)。而 PSP 有多个并发来源会同时改同一 client:beta.4 新增的启动自愈、迁移/重同步任务、每 2 分钟的流量轮询推送、reconcile 自愈、以及管理员启用/禁用。beta.4 的启动自愈让这种碰撞变得频繁,卡住了迁移。现按 client 邮箱(email)串行化所有写操作(读操作不受影响,不同 client 仍并行)。
+- **启动自愈改到迁移完成之后再跑** —— 不再与迁移任务并发抢同一 client(reconcile 周期自愈仍是兜底)。
+- **去重 inbound 列表** —— 两个 PSP 节点可能指向同一个 3X-UI 入站,provision 时去重避免下发重复的 inbound id。
+
+### 升级后
+
+- 部署 beta.5 后,卡住的迁移任务会在下次重试时自动成功(无需手动清理——真机确认相关 client 数据本身是干净的,失败纯属并发碰撞);也可在「同步任务」页手动点重试加速。
+
+### 已知问题(与本次无关,单独跟进)
+
+- MySQL 上流量小时级 rollup 报 `Error 1064 ... near ''`(`ON DUPLICATE KEY UPDATE` 子句为空,GORM 在 MySQL 下的已知行为)。属既有问题、仅影响 MySQL 的流量历史聚合,将单独修复。
+
 ## v3.9.0-beta.4 — 2026-06-22
 
 **beta.3 的二次审计修复版。** 对 beta.3 的修复本身又做了一轮对抗式审计,发现并修掉一处在 beta.3 引入的高危回归,外加两处小问题。**建议从 beta.3 升级。**
