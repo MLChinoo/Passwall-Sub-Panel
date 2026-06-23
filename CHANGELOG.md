@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.8 — 2026-06-23
+
+### 修复
+
+- **同一 3X-UI 被注册成多个 PSP 面板时,迁移持续失败的真正根因** —— 运维确认**只跑了一个 PSP 实例**,排除了跨进程。单进程内 per-`*Client` 锁本应串行化对同一后端 client 的所有写——**除非同一台 3X-UI 被注册成了不止一个 PSP 面板**(reconcile 里的「Taiwan HiNet Dynamic **OLD**」就是线索:同一台机器的旧+新两次注册)。这时 Pool 为每个面板各持一个 `*Client`,共享 client(email 与面板无关)会通过**两个** `*Client` 分别下发,而 per-`*Client` 锁互不协调 → 迁移任务与每 2 分钟的流量轮询推送在同一后端的 `client_inbounds` 行上相撞。现把客户端写锁改为**进程级、按(后端 URL + email)加锁**,让指向同一台 3X-UI 的所有面板共享一把锁;不同 client / 不同后端仍并行。启动时若发现两个面板指向同一后端 URL 会**告警**(便于你删掉重复注册)。
+  - 新增:两 `*Client` 同后端串行化的单测 + 真机 `TestLive_TwoClientsSameBackendNoCorruption`(在旧锁下会失败)。
+
+### 升级后
+
+- 部署 beta.8。**先看启动日志**有没有 `two PSP panels point to the SAME 3X-UI backend URL` 告警——有则印证根因,建议在「服务器」里删掉重复的面板注册。
+- 卡住的迁移任务会自动恢复:`<100` 次的下次重试即成功(冲突已消除);已到 100 被取消的会在重启后重新入队。**无需手动取消任务**(你提的「启动时清掉旧任务」思路是对的,但有了本修复后不再必要——任务会自愈)。
+
 ## v3.9.0-beta.7 — 2026-06-23
 
 ### 修复
