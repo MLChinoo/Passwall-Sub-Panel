@@ -4,6 +4,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.6 — 2026-06-23
+
+### 修复
+
+- **MySQL 流量小时级 rollup 报错(Error 1064)** —— 「插入即保留」(keep-on-conflict)路径用了 GORM 的 `DoNothing`,在 MySQL 上会渲染成**空的 `ON DUPLICATE KEY UPDATE`**(无赋值)→ 非法 SQL,导致 MySQL 部署上每轮流量小时级聚合失败(SQLite/Postgres 有原生 `DO NOTHING`,不受影响)。现按方言区分:MySQL 改用对冲突键列的空操作自赋值(`` `col`=`col` ``,合法的「保留现有行」、不改动任何数据列),SQLite/Postgres 保持原生 `DO NOTHING` 不变。通过 GORM DryRun 离线生成各方言 SQL 验证(无需真机 MySQL)。
+- **Sub clients 页保存按钮位置统一** —— 原来钉在右上角,现改为与其他设置页一致的底部 sticky 操作栏(取消 + 保存)。
+
 ## v3.9.0-beta.5 — 2026-06-23
 
 **修复真机上迁移卡住的问题(beta.4 引入的并发副作用)。** 建议从 beta.4 升级。
