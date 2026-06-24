@@ -1149,16 +1149,39 @@ func (a *App) runTrafficLoop(ctx context.Context) {
 	}
 }
 
+// sharedHealBackstopEvery is how often (in reconcile ticks) the heavy shared-client
+// heal runs ONCE migration is complete. The heal is a full per-user sweep; while
+// users are still migrating it runs every tick to converge fast, but once everyone
+// is on the shared model, steady-state correctness is carried by event-driven resync
+// (user/node/group/UUID changes enqueue a resync task via the 30s sync-task loop), so
+// the periodic full sweep is only a drift backstop and need not run every tick.
+// MIGRATION(v3→v4): with the legacy path gone the "migrating" branch disappears; the
+// heal can simply run on this backstop cadence always.
+const sharedHealBackstopEvery = 4
+
+// shouldRunSharedHeal decides whether to run the heavy shared-client heal on this
+// reconcile tick: every tick while migration is incomplete (converge), every Nth
+// tick once complete (drift backstop). Pure for testability.
+func shouldRunSharedHeal(tick int, migrationComplete bool) bool {
+	if !migrationComplete {
+		return true
+	}
+	return tick%sharedHealBackstopEvery == 0
+}
+
 func (a *App) runReconcileLoop(ctx context.Context) {
 	interval := a.reconcileInterval
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	log.Info("reconcile loop started", "interval", interval.String())
+	log.Info("reconcile loop started", "interval", interval.String(), "shared_heal_backstop_ticks", sharedHealBackstopEvery)
+	tick := 0
+	migrationComplete := false // monotonic: once the shared migration is done it stays done
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			tick++
 			report, err := a.reconcile.RunOnce(ctx, reconcile.LevelFull)
 			if err != nil {
 				log.Warn("reconcile run", "err", err)
@@ -1168,13 +1191,27 @@ func (a *App) runReconcileLoop(ctx context.Context) {
 				log.Info("reconcile pass",
 					"scanned", report.Scanned, "fixed", report.Fixed, "issues", len(report.Issues))
 			}
-			// v3.9.0: heal shared-client drift the per-node reconcile can't see
-			// (the ownership table is dropped post-migration). No-op-skips make a
-			// no-drift sweep read-only (no Xray restarts).
-			if healed, herr := a.user.HealSharedClients(ctx); herr != nil {
-				log.Warn("shared-client heal", "repaired", healed, "err", herr)
-			} else if healed > 0 {
-				log.Debug("shared-client heal pass", "verified_or_repaired", healed)
+			// Detect the migration→done transition once, then cache it: a no-longer-
+			// migrating panel must not re-query every tick, and the table is dropped
+			// post-migration so it never flips back.
+			if !migrationComplete {
+				if done, derr := a.user.SharedMigrationComplete(ctx); derr == nil && done {
+					migrationComplete = true
+					log.Info("shared-client migration complete; heal drops to drift-backstop cadence",
+						"every_ticks", sharedHealBackstopEvery)
+				}
+			}
+			// v3.9.0: heal shared-client drift the per-node reconcile can't see (the
+			// ownership table is dropped post-migration). No-op-skips make a no-drift
+			// sweep read-only (no Xray restarts), but it still costs a GetClient +
+			// per-panel client list per user, so once migration is complete we run it
+			// only every Nth tick rather than every tick.
+			if shouldRunSharedHeal(tick, migrationComplete) {
+				if healed, herr := a.user.HealSharedClients(ctx); herr != nil {
+					log.Warn("shared-client heal", "repaired", healed, "err", herr)
+				} else if healed > 0 {
+					log.Debug("shared-client heal pass", "verified_or_repaired", healed)
+				}
 			}
 		}
 	}

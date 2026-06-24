@@ -213,6 +213,26 @@ type BackfillResult struct {
 // "兜底"). Self-regulating: once every user is migrated (no ownership rows) it
 // enqueues nothing, so it is cheap to call on every boot until done; enqueue is
 // deduped per (type, user). Returns the number of users enqueued. V3-ONLY.
+// SharedMigrationComplete reports whether the v3.9.0 shared-client migration has
+// nothing left to do — no user remains on the legacy per-node ownership model.
+// Once true it stays true (the ownership table is emptied then dropped and never
+// repopulated), so the reconcile loop can drop the heavy per-user heal from
+// every-tick (converge fast while migrating) to a slow drift backstop. A nil
+// ownership repo (fresh install / shared model not wired) means nothing to migrate.
+//
+// MIGRATION(v3→v4): when the legacy ownership path is removed, "incomplete" can no
+// longer happen — collapse this to always-true or delete it with the legacy code.
+func (s *Service) SharedMigrationComplete(ctx context.Context) (bool, error) {
+	if s.ownership == nil {
+		return true, nil
+	}
+	pending, err := s.ownership.DistinctUserIDs(ctx)
+	if err != nil {
+		return false, err
+	}
+	return len(pending) == 0, nil
+}
+
 func (s *Service) EnqueueSharedMigration(ctx context.Context) (int, error) {
 	if s.ownership == nil || s.tasks == nil {
 		return 0, nil
