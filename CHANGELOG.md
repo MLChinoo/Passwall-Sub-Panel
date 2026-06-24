@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.21 — 2026-06-25
+
+### 修复
+
+- **reconcile 的 `panel_unreachable` 现在显示真正的原因** —— 把节点换到新 Server 后 reconcile 失败时,Issue 之前只写死一句「could not list inbounds」,把真因藏了:看不出是新服务器的 DNS/认证/TLS/路径不对、节点还指着已失效的旧面板、还是面板没在连接池里。现在 `prefetchInbounds` 把每个面板的真实失败(`pool.Get` 未注册,或 `ListInbounds` 的真实错误——本就带 `[面板 @ host]` 前缀 + 底层原因如 `no such host`/`401`/`x509`)返回,`checkNodes` 把它写进 `panel_unreachable` 的 detail;泛化文案只在没捕获到错误时兜底。部署后重试 reconcile,Issue 会直接点名哪台 host、为什么连不上。
+
 ## v3.9.0-beta.20 — 2026-06-24
 
 ### 内部清理
