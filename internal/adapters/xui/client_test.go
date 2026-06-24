@@ -354,59 +354,6 @@ func TestGetClientEmptyEmailErrorsBeforeHTTP(t *testing.T) {
 	}
 }
 
-// bulkCreate body is a JSON array of {client,inboundIds}; the result parses
-// created + skipped[{email,reason}].
-func TestBulkAddToInboundPostsArrayAndParsesResult(t *testing.T) {
-	var got capturedReq
-	reply := `{"success":true,"obj":{"created":1,"skipped":[{"email":"dup@psp.local","reason":"email already in use: dup@psp.local"}]}}`
-	c := captureReq(t, reply, &got)
-	res, err := c.BulkAddToInbound(context.Background(), 7, []ports.ClientSpec{
-		{ID: "uuid-1", Email: "new@psp.local"},
-		{ID: "uuid-2", Email: "dup@psp.local"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.method != http.MethodPost || got.path != "/panel/api/clients/bulkCreate" {
-		t.Fatalf("method/path = %s %s", got.method, got.path)
-	}
-	var items []struct {
-		Client     map[string]any `json:"client"`
-		InboundIDs []int          `json:"inboundIds"`
-	}
-	if err := json.Unmarshal([]byte(got.body), &items); err != nil {
-		t.Fatalf("body is not a JSON array: %v (%s)", err, got.body)
-	}
-	if len(items) != 2 || len(items[0].InboundIDs) != 1 || items[0].InboundIDs[0] != 7 {
-		t.Fatalf("items = %#v", items)
-	}
-	if items[0].Client["email"] != "new@psp.local" {
-		t.Fatalf("item[0] client = %#v", items[0].Client)
-	}
-	if res.Created != 1 {
-		t.Fatalf("Created = %d, want 1", res.Created)
-	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Email != "dup@psp.local" ||
-		!strings.Contains(res.Skipped[0].Reason, "already in use") {
-		t.Fatalf("Skipped = %#v", res.Skipped)
-	}
-}
-
-func TestBulkAddToInboundEmptyIsNoop(t *testing.T) {
-	var got capturedReq
-	c := captureReq(t, `{"success":true}`, &got)
-	res, err := c.BulkAddToInbound(context.Background(), 7, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.method != "" {
-		t.Fatalf("empty specs must not hit the API, got %s %s", got.method, got.path)
-	}
-	if res.Created != 0 || len(res.Skipped) != 0 {
-		t.Fatalf("want zero result, got %#v", res)
-	}
-}
-
 // bulkDel body must be {emails,keepTraffic} (a bare array is rejected by the
 // panel); keepTraffic is false so xray traffic rows are dropped.
 func TestBulkDelByEmailPostsEmailsObject(t *testing.T) {

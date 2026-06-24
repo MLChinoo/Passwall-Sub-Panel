@@ -64,14 +64,6 @@ type XUIClient interface {
 	// reconcile uses it to find clients PSP no longer tracks in psp_client.
 	ListClientInbounds(ctx context.Context) (map[string][]int, error)
 
-	// BulkAddToInbound creates many clients on one inbound in a single
-	// /panel/api/clients/bulkCreate call (one Xray restart instead of N). The
-	// panel processes items sequentially and returns how many were created plus
-	// per-email skip reasons — a duplicate email lands in Skipped with reason
-	// "email already in use", which the caller adopts (mirrors the single-add
-	// orphan-adoption path) rather than treating as a hard failure.
-	BulkAddToInbound(ctx context.Context, inboundID int, specs []ClientSpec) (BulkAddResult, error)
-
 	// BulkDelByEmail deletes many clients by their panel-wide email key in a
 	// single /panel/api/clients/bulkDel call (one Xray restart instead of N).
 	// keepTraffic is false — the xray traffic rows are dropped, matching
@@ -214,21 +206,6 @@ type ClientDetail struct {
 	InboundIDs []int
 }
 
-// BulkAddResult is the parsed obj of /panel/api/clients/bulkCreate. Created is
-// the number of brand-new clients; Skipped lists the items the panel did not
-// create, each with its reason (a duplicate email reports "email already in
-// use"). The two together account for every requested item.
-type BulkAddResult struct {
-	Created int
-	Skipped []BulkSkip
-}
-
-// BulkSkip is one entry the panel declined to create in a bulk call.
-type BulkSkip struct {
-	Email  string
-	Reason string
-}
-
 // BulkAttachResult is the parsed obj of /panel/api/clients/bulkAttach and
 // /bulkDetach. Done holds the emails the panel attached (bulkAttach) or
 // detached (bulkDetach); Skipped lists emails already in the target state
@@ -238,22 +215,6 @@ type BulkAttachResult struct {
 	Done    []string
 	Skipped []string
 	Errors  []string
-}
-
-// BulkClientAdd is one client to create-and-own in a batched enrollment (e.g.
-// attaching a node and adding every eligible group member to its inbound). It
-// lives in ports so the node service can describe a bulk request without
-// importing the sync service. The protocol-specific secret is derived from
-// UserUUID by the sync layer; callers only supply the universal fields.
-type BulkClientAdd struct {
-	UserID     int64
-	Protocol   domain.Protocol
-	SSMethod   string
-	UserUUID   string
-	Email      string
-	Flow       string
-	ExpireTime int64
-	TotalGB    int64
 }
 
 // Inbound is the DTO returned by 3X-UI inbound endpoints. The Settings,

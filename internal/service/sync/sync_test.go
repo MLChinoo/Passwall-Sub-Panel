@@ -43,63 +43,6 @@ func TestAddClientToInbound_NonDuplicateErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestDelOwnedClientDeletesSSClientWithEmptyIDByEmail(t *testing.T) {
-	xui := &fakeXUIClient{clients: []ports.ClientDetail{{Email: "u1@example.test"}}}
-	own := newFakeOwnership("u1@example.test", "")
-	s := New(&fakePool{xui: xui}, own)
-
-	if err := s.DelOwnedClient(context.Background(), 1, 100, "u1@example.test"); err != nil {
-		t.Fatal(err)
-	}
-	if xui.deletedByEmail != "u1@example.test" {
-		t.Fatalf("deletedByEmail = %q", xui.deletedByEmail)
-	}
-	if !own.removed {
-		t.Fatalf("ownership was not removed")
-	}
-}
-
-// TestDelOwnedClientDeletesByEmailNotByStoredID pins that deletion always
-// goes through delClientByEmail and never delClient-by-id, so it works
-// regardless of which per-protocol key 3X-UI's delClient/:id expects
-// (Shadowsocks, confirmed in production, rejects delete by the stored id).
-func TestDelOwnedClientDeletesByEmailNotByStoredID(t *testing.T) {
-	xui := &fakeXUIClient{clients: []ports.ClientDetail{{ID: "some-uuid", Email: "u1@example.test"}}}
-	own := newFakeOwnership("u1@example.test", "stale-id")
-	s := New(&fakePool{xui: xui}, own)
-
-	if err := s.DelOwnedClient(context.Background(), 1, 100, "u1@example.test"); err != nil {
-		t.Fatal(err)
-	}
-	if xui.deletedByEmail != "u1@example.test" {
-		t.Fatalf("deletedByEmail = %q, want u1@example.test", xui.deletedByEmail)
-	}
-	if xui.deletedID != "" {
-		t.Fatalf("must not use the by-id delete path, deletedID = %q", xui.deletedID)
-	}
-	if !own.removed {
-		t.Fatalf("ownership was not removed")
-	}
-}
-
-// With the pre-flight GetClient dropped, an already-absent client surfaces as a
-// DelClientByEmail "not found" error; DelOwnedClient must still converge to
-// success (clientMissingByEmail confirms absence → drop the ownership row),
-// never propagate the error and loop a stale resync DEL.
-func TestDelOwnedClientAlreadyAbsentConvergesToSuccess(t *testing.T) {
-	// clients empty → GetClient returns (nil, nil) = absent; DelClientByEmail errors.
-	xui := &fakeXUIClient{delByEmailErr: fmt.Errorf("record not found")}
-	own := newFakeOwnership("u1@example.test", "")
-	s := New(&fakePool{xui: xui}, own)
-
-	if err := s.DelOwnedClient(context.Background(), 1, 100, "u1@example.test"); err != nil {
-		t.Fatalf("already-absent delete must converge to success, got %v", err)
-	}
-	if !own.removed {
-		t.Fatal("ownership row should be removed after converging on absence")
-	}
-}
-
 // TestBuildClientSpecHysteria2SetsAuth pins that Hysteria2 clients carry the
 // per-user credential in the `auth` field (3X-UI's client id for HY2), not id
 // or password — otherwise 3X-UI rejects the client as "empty client ID". The
@@ -198,77 +141,6 @@ func TestDelAllOwnedForUserBulkDels(t *testing.T) {
 	}
 }
 
-// BulkAddClientsToInbound: created clients and duplicates (adopt) get an
-// ownership row; any OTHER skip reason means the client wasn't created, so it
-// is NOT owned and the error surfaces. All specs go out in one bulkCreate.
-func TestBulkAddClientsToInboundCreatesAdoptsSkips(t *testing.T) {
-	no := false
-	xui := &fakeXUIClient{bulkAddResult: ports.BulkAddResult{
-		Created: 1,
-		Skipped: []ports.BulkSkip{
-			{Email: "dup@x", Reason: "email already in use: dup@x"},
-			{Email: "bad@x", Reason: "invalid spec"},
-		},
-	}}
-	own := &fakeOwnership{existsVal: &no} // nothing owned yet → created/adopted go through Add
-	s := New(&fakePool{xui: xui}, own)
-	reqs := []ports.BulkClientAdd{
-		{UserID: 1, Protocol: domain.ProtoVLESS, UserUUID: "uuid-new", Email: "new@x"},
-		{UserID: 2, Protocol: domain.ProtoVLESS, UserUUID: "uuid-dup", Email: "dup@x"},
-		{UserID: 3, Protocol: domain.ProtoVLESS, UserUUID: "uuid-bad", Email: "bad@x"},
-	}
-	owned, err := s.BulkAddClientsToInbound(context.Background(), 1, 100, reqs)
-	if err == nil {
-		t.Fatal("the non-duplicate skip (bad@x) must surface as an error")
-	}
-	if owned != 2 {
-		t.Fatalf("owned = %d, want 2 (created new@x + adopted dup@x)", owned)
-	}
-	if len(xui.bulkAddSpecs) != 3 {
-		t.Fatalf("all 3 specs must go in one bulkCreate, got %d", len(xui.bulkAddSpecs))
-	}
-	if !containsStr(own.addedEmails, "new@x") || !containsStr(own.addedEmails, "dup@x") {
-		t.Fatalf("created + adopted must be owned, addedEmails = %v", own.addedEmails)
-	}
-	if containsStr(own.addedEmails, "bad@x") {
-		t.Fatal("bad@x was not created upstream — it must NOT be owned")
-	}
-}
-
-// Adopting a duplicate that ALREADY has an ownership row refreshes its uuid
-// (upsert), never a second Add.
-func TestBulkAddClientsToInboundAdoptRefreshesUUIDWhenOwned(t *testing.T) {
-	yes := true
-	xui := &fakeXUIClient{bulkAddResult: ports.BulkAddResult{
-		Skipped: []ports.BulkSkip{{Email: "dup@x", Reason: "email already in use"}},
-	}}
-	own := &fakeOwnership{existsVal: &yes}
-	s := New(&fakePool{xui: xui}, own)
-	owned, err := s.BulkAddClientsToInbound(context.Background(), 1, 100,
-		[]ports.BulkClientAdd{{UserID: 1, Protocol: domain.ProtoVLESS, UserUUID: "u", Email: "dup@x"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if owned != 1 {
-		t.Fatalf("owned = %d, want 1 (adopted)", owned)
-	}
-	if len(own.updatedUUIDs) != 1 {
-		t.Fatalf("adopt of an already-owned client must refresh uuid, updatedUUIDs = %v", own.updatedUUIDs)
-	}
-	if own.addCalled {
-		t.Fatal("must not Add when the row already exists (upsert refreshes uuid)")
-	}
-}
-
-func containsStr(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
 type fakePool struct {
 	xui ports.XUIClient
 }
@@ -323,7 +195,7 @@ func (r *fakeOwnership) ListByUser(ctx context.Context, userID int64) ([]*domain
 	return r.listEntries, nil
 }
 func (r *fakeOwnership) DistinctUserIDs(ctx context.Context) ([]int64, error) { return nil, nil }
-func (r *fakeOwnership) DropIfMigrated(ctx context.Context) (bool, error) { return true, nil }
+func (r *fakeOwnership) DropIfMigrated(ctx context.Context) (bool, error)     { return true, nil }
 func (r *fakeOwnership) ListByInbound(ctx context.Context, panelID int64, inboundID int) ([]*domain.XUIClientEntry, error) {
 	return r.listEntries, nil
 }
@@ -346,19 +218,12 @@ func (r *fakeOwnership) BatchUpdateCounters(ctx context.Context, items []*domain
 
 type fakeXUIClient struct {
 	ports.XUIClient
-	clients        []ports.ClientDetail
-	deletedID      string
 	deletedByEmail string
-	delClientErr   error // when set, DelClient (by id) fails with this
-	delByEmailErr  error // when set, DelClientByEmail fails with this
 	addClientErr   error // when set, AddClient fails with this
 
-	// bulk knobs
-	bulkDeleted    []string           // emails passed to BulkDelByEmail
-	bulkDelErr     error              // when set, BulkDelByEmail fails with this
-	bulkAddSpecs   []ports.ClientSpec // specs passed to BulkAddToInbound
-	bulkAddResult  ports.BulkAddResult
-	bulkAddErr     error
+	// bulk-delete knobs
+	bulkDeleted []string // emails passed to BulkDelByEmail
+	bulkDelErr  error    // when set, BulkDelByEmail fails with this
 }
 
 func (c *fakeXUIClient) AddClient(ctx context.Context, inboundID int, spec ports.ClientSpec) error {
@@ -366,21 +231,11 @@ func (c *fakeXUIClient) AddClient(ctx context.Context, inboundID int, spec ports
 }
 
 func (c *fakeXUIClient) GetClient(ctx context.Context, email string) (*ports.ClientDetail, error) {
-	for i := range c.clients {
-		if c.clients[i].Email == email {
-			cd := c.clients[i]
-			return &cd, nil
-		}
-	}
 	return nil, nil
-}
-func (c *fakeXUIClient) DelClient(ctx context.Context, inboundID int, clientUUID string) error {
-	c.deletedID = clientUUID
-	return c.delClientErr
 }
 func (c *fakeXUIClient) DelClientByEmail(ctx context.Context, inboundID int, email string) error {
 	c.deletedByEmail = email
-	return c.delByEmailErr
+	return nil
 }
 func (c *fakeXUIClient) BulkDelByEmail(ctx context.Context, emails []string) (int, error) {
 	if c.bulkDelErr != nil {
@@ -388,13 +243,6 @@ func (c *fakeXUIClient) BulkDelByEmail(ctx context.Context, emails []string) (in
 	}
 	c.bulkDeleted = append(c.bulkDeleted, emails...)
 	return len(emails), nil
-}
-func (c *fakeXUIClient) BulkAddToInbound(ctx context.Context, inboundID int, specs []ports.ClientSpec) (ports.BulkAddResult, error) {
-	if c.bulkAddErr != nil {
-		return ports.BulkAddResult{}, c.bulkAddErr
-	}
-	c.bulkAddSpecs = append(c.bulkAddSpecs, specs...)
-	return c.bulkAddResult, nil
 }
 
 var _ ports.OwnershipRepo = (*fakeOwnership)(nil)

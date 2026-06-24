@@ -60,7 +60,6 @@ type Client struct {
 	// no inbound read-modify-write.)
 	inboundWriteMu    sync.Mutex
 	inboundWriteLocks map[int]*sync.Mutex
-
 }
 
 // clientWriteLocks serializes mutating client operations per (backend, email)
@@ -725,57 +724,13 @@ func (c *Client) UpdateClientWithInbound(ctx context.Context, inb *ports.Inbound
 
 // DelClientByEmail deletes the client by its panel-wide email key (POST
 // /clients/del/{email}). This removes the client from every inbound it is
-// attached to — for PSP that is exactly one, since the email encodes the
-// node. keepTraffic=0 drops the xray traffic row too; PSP keeps its own
-// accounting. The ownership guard in sync.DelOwnedClient runs before this, so
-// only PSP-managed clients ever reach here.
+// attached to. keepTraffic=0 drops the xray traffic row too; PSP keeps its own
+// accounting. Callers are responsible for scoping deletes to PSP-managed
+// legacy or shared-client emails before reaching here.
 func (c *Client) DelClientByEmail(ctx context.Context, inboundID int, email string) error {
 	defer c.lockClientEmail(email)()
 	path := "/panel/api/clients/del/" + url.PathEscape(email) + "?keepTraffic=0"
 	return c.doJSON(ctx, http.MethodPost, path, nil, nil)
-}
-
-// BulkAddToInbound creates many clients on one inbound via POST
-// /panel/api/clients/bulkCreate. The body is a JSON array of {client,
-// inboundIds} items (the same per-item shape /clients/add accepts); the panel
-// processes them sequentially, restarts xray at most once, and returns
-// {created, skipped:[{email,reason}]}. Per-protocol secrets follow the same
-// rules as AddClient (buildClientJSON). An empty specs slice is a no-op.
-func (c *Client) BulkAddToInbound(ctx context.Context, inboundID int, specs []ports.ClientSpec) (ports.BulkAddResult, error) {
-	if len(specs) == 0 {
-		return ports.BulkAddResult{}, nil
-	}
-	emails := make([]string, 0, len(specs))
-	for _, s := range specs {
-		emails = append(emails, s.Email)
-	}
-	defer c.lockClientEmails(emails)()
-	items := make([]map[string]any, 0, len(specs))
-	for _, s := range specs {
-		clientJSON, err := buildClientJSON(s)
-		if err != nil {
-			return ports.BulkAddResult{}, err
-		}
-		items = append(items, map[string]any{
-			"client":     json.RawMessage(clientJSON),
-			"inboundIds": []int{inboundID},
-		})
-	}
-	var out struct {
-		Created int `json:"created"`
-		Skipped []struct {
-			Email  string `json:"email"`
-			Reason string `json:"reason"`
-		} `json:"skipped"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/panel/api/clients/bulkCreate", items, &out); err != nil {
-		return ports.BulkAddResult{}, err
-	}
-	res := ports.BulkAddResult{Created: out.Created}
-	for _, s := range out.Skipped {
-		res.Skipped = append(res.Skipped, ports.BulkSkip{Email: s.Email, Reason: s.Reason})
-	}
-	return res, nil
 }
 
 // BulkDelByEmail deletes many clients by email via POST

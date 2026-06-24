@@ -35,11 +35,6 @@ type NodeSelector interface {
 // ClientSyncer is the subset of sync.Service this package needs.
 // Defined here (not imported) so the user package never imports sync.
 type ClientSyncer interface {
-	AddClientToInbound(ctx context.Context, userID int64, panelID int64, inboundID int,
-		protocol domain.Protocol, ssMethod, userUUID, email, flow string, expireTime, totalGB int64) error
-	DelOwnedClient(ctx context.Context, panelID int64, inboundID int, email string) error
-	SetOwnedClientEnable(ctx context.Context, panelID int64, inboundID int, email string,
-		protocol domain.Protocol, ssMethod, userUUID, flow string, enable bool, expireTime, totalGB int64) error
 	// SetOwnedClientEnableWithInbound is the pre-fetched-inbound form
 	// used by pushClientConfigToAll to skip the redundant GetInbound
 	// each per-client push otherwise incurs.
@@ -1647,20 +1642,15 @@ func (s *Service) ResyncGroupMembersInBackground(groupID int64) {
 	safego.Go("user.resync-group-members", func() { work(context.Background()) })
 }
 
-// ResyncMembership recomputes a user's 3X-UI client memberships against
-// the CURRENT group definition (after potential changes) and applies the
-// diff via SyncSvc.
+// ResyncMembership recomputes a user's 3X-UI client memberships against the
+// CURRENT group definition (after potential changes) and converges the shared
+// client plus any remaining legacy fallback state.
 //
-// Algorithm:
-//  1. desired = NodesFor(user's group) — set of (panel, inbound) tuples
-//  2. current = ownership.ListByUser — set of (panel, inbound, email)
-//  3. ADD = desired - current  → AddClientToInbound for each
-//  4. UPDATE = desired ∩ current → SetOwnedClientEnable for current config
-//  5. DEL = current - desired  → DelOwnedClient for each
-//
-// Errors during individual sync calls are returned as a single wrapped error
-// after the loop so partial progress is preserved. Drift left behind is
-// healed by the next reconciliation pass.
+// v3.9 makes the shared-client model primary: this builds the user's desired
+// psp_client set, provisions it into 3X-UI, pushes lifecycle/quota state, and
+// only then removes the legacy per-node fallback rows. Errors during individual
+// phases are returned as a single wrapped error after partial progress is
+// preserved. Drift left behind is healed by the next reconciliation pass.
 func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	// Serialize concurrent resyncs of the SAME user (heal sweep + sync-task drain +
 	// request threads) so a re-key in one pass can't race the orphan reconcile in

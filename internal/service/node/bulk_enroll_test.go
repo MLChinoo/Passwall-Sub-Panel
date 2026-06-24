@@ -8,27 +8,6 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
-// recordingSyncer satisfies ClientSyncer and records which enrollment path was
-// taken — the per-client AddClientToInbound or the batched
-// BulkAddClientsToInbound.
-type recordingSyncer struct {
-	addCalls  int
-	bulkCalls int
-	bulkReqs  []ports.BulkClientAdd
-}
-
-func (r *recordingSyncer) AddClientToInbound(_ context.Context, _ int64, _ int64, _ int,
-	_ domain.Protocol, _, _, _, _ string, _, _ int64) error {
-	r.addCalls++
-	return nil
-}
-
-func (r *recordingSyncer) BulkAddClientsToInbound(_ context.Context, _ int64, _ int, reqs []ports.BulkClientAdd) (int, error) {
-	r.bulkCalls++
-	r.bulkReqs = append(r.bulkReqs, reqs...)
-	return len(reqs), nil
-}
-
 type oneAllGroup struct{ ports.GroupRepo }
 
 func (oneAllGroup) List(context.Context) ([]*domain.Group, error) {
@@ -61,7 +40,6 @@ func (r *recordingTasks) Create(_ context.Context, t *domain.SyncTask) error {
 // model is retired). Instead it enqueues a user_resync per eligible member, and
 // ResyncMembership re-provisions each member's SHARED client to include the node.
 func TestSyncExistingUsersToNodeEnqueuesResync(t *testing.T) {
-	rec := &recordingSyncer{}
 	tasks := &recordingTasks{}
 	client := &stubXUIClient{getResp: &ports.Inbound{
 		ID: 20, Protocol: "vless", StreamSettings: `{"security":"reality"}`,
@@ -70,7 +48,6 @@ func TestSyncExistingUsersToNodeEnqueuesResync(t *testing.T) {
 		pool:     stubXUIPool{c: client},
 		groups:   oneAllGroup{},
 		users:    twoMembers{},
-		syncer:   rec,
 		settings: settingsStub{},
 		tasks:    tasks,
 	}
@@ -78,10 +55,6 @@ func TestSyncExistingUsersToNodeEnqueuesResync(t *testing.T) {
 
 	if err := svc.syncExistingUsersToNode(context.Background(), n); err != nil {
 		t.Fatalf("syncExistingUsersToNode: %v", err)
-	}
-	// No per-node client writes (no add, no bulk).
-	if rec.addCalls != 0 || rec.bulkCalls != 0 {
-		t.Fatalf("must NOT create per-node clients: add=%d bulk=%d", rec.addCalls, rec.bulkCalls)
 	}
 	// One user_resync task per eligible member.
 	if len(tasks.created) != 2 {

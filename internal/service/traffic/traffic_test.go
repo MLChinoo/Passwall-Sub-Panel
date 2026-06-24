@@ -1184,7 +1184,7 @@ func (r *fakeOwnershipRepo) ListByUser(ctx context.Context, userID int64) ([]*do
 	return out, nil
 }
 func (r *fakeOwnershipRepo) DistinctUserIDs(ctx context.Context) ([]int64, error) { return nil, nil }
-func (r *fakeOwnershipRepo) DropIfMigrated(ctx context.Context) (bool, error) { return true, nil }
+func (r *fakeOwnershipRepo) DropIfMigrated(ctx context.Context) (bool, error)     { return true, nil }
 func (r *fakeOwnershipRepo) ListByUsers(ctx context.Context, userIDs []int64) (map[int64][]*domain.XUIClientEntry, error) {
 	out := make(map[int64][]*domain.XUIClientEntry, len(userIDs))
 	for _, id := range userIDs {
@@ -1298,9 +1298,6 @@ func (c *fakeXUIClient) GetClient(ctx context.Context, email string) (*ports.Cli
 }
 func (c *fakeXUIClient) ListClientInbounds(ctx context.Context) (map[string][]int, error) {
 	return nil, nil
-}
-func (c *fakeXUIClient) BulkAddToInbound(ctx context.Context, inboundID int, specs []ports.ClientSpec) (ports.BulkAddResult, error) {
-	return ports.BulkAddResult{}, nil
 }
 func (c *fakeXUIClient) BulkDelByEmail(ctx context.Context, emails []string) (int, error) {
 	return 0, nil

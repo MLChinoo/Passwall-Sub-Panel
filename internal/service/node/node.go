@@ -39,22 +39,6 @@ type InboundCleaner interface {
 	DeleteInbound(ctx context.Context, panelID int64, inboundID int) error
 }
 
-// ClientSyncer is the narrow subset of sync.Service used when syncing users
-// onto a newly registered node.
-type ClientSyncer interface {
-	// totalGB is the per-client traffic floor for 3X-UI (0 = unlimited).
-	// node.Service doesn't have a TrafficUsageReader to compute the real
-	// floor, so callers pass 0; the next traffic-poll cycle's
-	// pushClientConfigToAll will set the correct value.
-	AddClientToInbound(ctx context.Context, userID int64, panelID int64, inboundID int,
-		protocol domain.Protocol, ssMethod, userUUID, email, flow string, expireTime, totalGB int64) error
-	// BulkAddClientsToInbound adds many clients to ONE inbound in a single
-	// 3X-UI bulkCreate call (one Xray restart instead of N) and records
-	// ownership for each, preserving the duplicate-adopt rule. Used when
-	// attaching a node and enrolling every eligible group member at once.
-	BulkAddClientsToInbound(ctx context.Context, panelID int64, inboundID int, reqs []ports.BulkClientAdd) (int, error)
-}
-
 type Service struct {
 	nodes      ports.NodeRepo
 	separators ports.SeparatorRepo
@@ -63,12 +47,11 @@ type Service struct {
 	tasks      ports.SyncTaskRepo
 	groups     ports.GroupRepo
 	users      ports.UserRepo
-	syncer     ClientSyncer
 	settings   ports.SettingsRepo
 }
 
 func New(nodes ports.NodeRepo, separators ports.SeparatorRepo, pool ports.XUIPool, cleaner InboundCleaner,
-	tasks ports.SyncTaskRepo, groups ports.GroupRepo, users ports.UserRepo, syncer ClientSyncer, settings ports.SettingsRepo) *Service {
+	tasks ports.SyncTaskRepo, groups ports.GroupRepo, users ports.UserRepo, settings ports.SettingsRepo) *Service {
 	return &Service{
 		nodes:      nodes,
 		separators: separators,
@@ -77,7 +60,6 @@ func New(nodes ports.NodeRepo, separators ports.SeparatorRepo, pool ports.XUIPoo
 		tasks:      tasks,
 		groups:     groups,
 		users:      users,
-		syncer:     syncer,
 		settings:   settings,
 	}
 }
@@ -564,9 +546,8 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 		// in 3X-UI — the common orphan case), the clients went with it: skip the
 		// guard and per-client deletes (which would each fail "record not found"
 		// and the task would retry forever, never reaching nodes.Delete). Just
-		// drop the local ownership rows and the PSP node row. Mirrors
-		// DelOwnedClient's "already absent upstream → done" idempotency, lifted
-		// to the inbound level.
+		// drop the local ownership rows and the PSP node row; the desired end
+		// state is already true upstream.
 		if _, err := c.GetInbound(ctx, n.InboundID); err != nil {
 			if isInboundGoneError(err) {
 				if err := s.cleaner.UnclaimAllForInbound(ctx, n.PanelID, n.InboundID); err != nil {
@@ -897,9 +878,9 @@ func (s *Service) syncExistingUsersToNodeInBackground(n *domain.Node) {
 }
 
 // syncExistingUsersToNode walks every group; for groups whose tag_filter would
-// include this node, every enabled member gets a client pushed via the
-// ClientSyncer. Errors per user are logged and the loop continues — the
-// reconciliation pass heals anything left behind.
+// include this node, every enabled member gets a user_resync task. Errors per
+// user are logged and the loop continues — the reconciliation pass heals
+// anything left behind.
 func (s *Service) syncExistingUsersToNode(ctx context.Context, n *domain.Node) error {
 	info, err := s.inspectInbound(ctx, n)
 	if err != nil {
