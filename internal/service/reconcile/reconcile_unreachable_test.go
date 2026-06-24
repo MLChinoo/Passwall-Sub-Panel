@@ -35,3 +35,17 @@ func TestCheckNodes_PanelUnreachableSurfacesRealError(t *testing.T) {
 		t.Fatalf("panel_unreachable detail must surface the real prefetch error, got %q", found.Detail)
 	}
 }
+
+// A panel that is reachable but whose ListInbounds returns ZERO inbounds (fresh/
+// empty new server, or a token without access) leaves nothing in the cache and
+// yet has NO fetch error — prefetchInbounds must still record a reason so the
+// panel_unreachable Issue isn't a content-free generic string.
+func TestPrefetchInbounds_EmptyListIsCaptured(t *testing.T) {
+	cache := map[inboundCacheKey]*inboundCacheEntry{}
+	errs := prefetchInbounds(context.Background(),
+		recPool{c: &recClient{inbounds: nil}}, // ListInbounds → (empty, nil)
+		map[int64]struct{}{7: {}}, cache, 1)
+	if errs[7] == nil || !strings.Contains(errs[7].Error(), "0 inbounds") {
+		t.Fatalf("empty ListInbounds for panel 7 must be captured as a reason, got %v", errs[7])
+	}
+}

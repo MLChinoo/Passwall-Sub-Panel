@@ -466,6 +466,7 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 			prefetchErrs[r.panelID] = r.err
 			continue
 		}
+		cached := 0
 		for i := range r.inbounds {
 			inb := &r.inbounds[i]
 			settings, perr := xrayspec.ParseSettings(inb.Settings)
@@ -479,6 +480,18 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 				clients: settings.Clients,
 				method:  settings.Method,
 				flow:    firstClientFlow(settings.Clients),
+			}
+			cached++
+		}
+		// Reachable but nothing landed in the cache → the node loop will still see
+		// the panel as "unreachable", so record WHY (no fetch error fired here):
+		// either the panel returned zero inbounds (fresh/empty server, or a token
+		// without inbound access) or every inbound failed to parse.
+		if cached == 0 {
+			if len(r.inbounds) == 0 {
+				prefetchErrs[r.panelID] = fmt.Errorf("panel reachable but returned 0 inbounds (fresh/empty server, or the API token lacks inbound access)")
+			} else {
+				prefetchErrs[r.panelID] = fmt.Errorf("panel returned %d inbound(s) but none were parseable", len(r.inbounds))
 			}
 		}
 	}
@@ -735,7 +748,7 @@ func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inbo
 				// pool doesn't have) so an admin who just moved a node to a new
 				// server can tell the new server's config from a PSP issue. Falls
 				// back to the generic line only if no error was captured.
-				detail := "axis-A skipped: reconcile prefetch could not list inbounds"
+				detail := "axis-A skipped: panel not prefetched this cycle (no detail captured)"
 				if e := prefetchErrs[n.PanelID]; e != nil {
 					detail = "axis-A skipped: " + e.Error()
 				}
