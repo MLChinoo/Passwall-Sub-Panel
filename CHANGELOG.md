@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.13 — 2026-06-24
+
+### 修复
+
+- **「Reconcile」按钮现在也会触发共享 client 自愈(合并)** —— 之前管理页的「Reconcile」只跑逐节点 reconcile(迁移后基本是 no-op),**不会**触发 `HealSharedClients`,所以点它**不会**把存量用户收敛到合并形态——合并只在开机自愈和每 15 分钟的 reconcile 循环里发生。现在该按钮在跑完逐节点 reconcile 后**也会跑一遍共享 client 自愈**,于是手动点一下「Reconcile」就能**立即**完成合并(把拆成 per-class 的用户归并、删旧 client),不用等 15 分钟。
+
 ## v3.9.0-beta.12 — 2026-06-24
 
 ### 修复
