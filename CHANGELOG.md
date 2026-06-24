@@ -4,6 +4,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.16 — 2026-06-24
+
+### 修复
+
+- **流量/在线轮询迁移后查询了 0 台面板(Last Online、配额、节点流量都不再更新)** —— 轮询的「要查哪些面板/入站」完全从**旧的 ownership 表**推导,而迁移后该表已被删,于是日志里 `traffic poll start ... panels:0 inbounds_to_query:0`,Phase 1 什么都没拉,导致共享计量、`last_online_at`、用户配额累计、按节点流量**全部停止更新**。修复:把要查的面板集改为**旧 ownership 表 ∪ 共享 client(psp_client)表**的并集——迁移后用户的流量记在 `u{uid}@` 上、没有 ownership 行。同时把**按节点流量**的记录从(迁移后已空的)ownership 循环里挪到**遍历每个已拉取入站**的独立 pass(`recordNodeStats` 本来就会跳过非 PSP 入站、且首次无 spike),这样节点流量不依赖 ownership 也能计量。已在 3.4.0 上确认数据源 `ListInboundsSlim` 带有 `u{uid}@` 的 client 统计。
+- **「Reconcile」按钮不再跑重型自愈** —— 之前点一次 Reconcile 会对**每个用户**跑完整 `ResyncMembership`(还要逐面板列 client),导致每次点击都要好几秒、且随用户数变慢。改回**只跑轻量的逐节点 reconcile**;合并/孤儿清理/自愈仍由 reconcile 循环(每 `cron_reconcile` 分钟)和开机时自动执行,手动收敛照常发生,只是不再卡在按钮上同步等。
+
 ## v3.9.0-beta.15 — 2026-06-24
 
 ### 修复 + 改进
