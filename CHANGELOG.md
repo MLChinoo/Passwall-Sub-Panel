@@ -4,6 +4,22 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.15 — 2026-06-24
+
+### 修复 + 改进
+
+- **自愈式清理「孤儿」共享 client** —— 合并后有用户在一台面板上出现 **3 个 client**:正确的合并 client + **两个没被删掉的旧 per-class client**(`kf2d62608`、`k49f8cae4`)。根因:`SyncUser` 把旧的 psp_client **行**删了并返回它们的 email,但 `deletePrunedSharedClients` 用的是**全局** `provisioned && lifeErr==nil` 门控——当**另一台面板(Taiwan)宕机**导致下发失败时,连**健康面板(198-23)**上的删除也被跳过;而 DB 行已被删,这些 email 之后再也推导不出来 → **永久失联的孤儿**。现在 `ResyncMembership` 会跑 `ReconcileOrphans`:**直接列出每台面板的实时 client 来发现孤儿**(新增 `ListClientInbounds`,一次 `/list` 调用),不再依赖丢失的 prune map —— 因此对 email 后缀漂移(历史 `-c1`)和域名漂移都鲁棒。它**按面板**用「覆盖」门控:只有当某 client 的每个入站都已被一个**确认在线的目标 client** 覆盖时才删它,所以一台宕机面板不会阻塞健康面板的清理,用户也绝不会在「替代 client 尚未接管的入站」上掉线。只删匹配共享方案的 email(裸 / `-k{8hex}` / 历史 `-c{n}`),**绝不碰**旧的 per-node 兜底(`-n{node}`)、运营者手建 client 或别的用户。`ResyncMembership` 现在**按用户串行**,避免并发重建与清理打架。
+- **单 client 用裸邮箱 `u{id}@`(去掉后缀)** —— 一台面板只需要一个 client 时(合并后的常态),`clientplan.Build` 直接用裸 `u{id}@psp.local`,不再加 `-k{hash}` 后缀;后缀只在真有 2+ 个同字段冲突 client 时才出现。自愈会把之前带后缀的合并 client 收敛成裸的。凭据从 UUID 推导,改名对订阅者无感。
+
+### 验证
+
+- 设计经 4 路对抗式评审(否决了我第一版「枚举后缀探测」的方案:会漏掉 `-c1`/旧域名孤儿,且「有任意入站即通过」的门控可能误删仍在服务的 client)。
+- 在真实 3.4.0 面板上端到端验证:预置「合并 client + 2 个 per-class 孤儿 + 1 个 legacy `-n` client」,跑完清理序列后 → 两个孤儿被删、合并 client 与 legacy client 都保留。
+
+### 生效方式
+
+- 部署 beta.15 后,下一轮 reconcile 自愈(≤15 分钟)或点一次 Reconcile:每个用户在每台面板上收敛成**一个裸邮箱 client `u{id}@`**,旧的 per-class / 带后缀孤儿被删除。
+
 ## v3.9.0-beta.14 — 2026-06-24
 
 ### 修复(合并失败的真正根因)
