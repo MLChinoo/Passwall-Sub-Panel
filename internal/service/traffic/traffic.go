@@ -361,7 +361,30 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		byPanel[k.panelID][k.inboundID] = refs
 	}
 
-	log.Info("traffic poll start", "users", len(users), "panels", len(byPanel), "inbounds_to_query", len(byInbound))
+	// v3.9.0: the panels to poll come from BOTH the legacy ownership table AND the
+	// shared-client table. A MIGRATED user's traffic accrues under u{uid}@ with no
+	// ownership row, so post-migration byPanel is EMPTY — without unioning in the
+	// shared-client panels, Phase 1 fetches nothing and neither user traffic,
+	// last_online, nor node traffic update at all. Fetch the shared clients ONCE here
+	// (reused by the shared-metering pass below) and add their panels to the set.
+	var sharedClients []*domain.PSPClient
+	if s.pspClient != nil {
+		var serr error
+		if sharedClients, serr = s.pspClient.ListAll(ctx); serr != nil {
+			log.Warn("traffic poll shared-client list failed; shared metering skipped this cycle", "err", serr)
+			sharedClients = nil
+		}
+	}
+	panelsToFetch := make(map[int64]struct{}, len(byPanel)+len(sharedClients))
+	for pid := range byPanel {
+		panelsToFetch[pid] = struct{}{}
+	}
+	for _, c := range sharedClients {
+		panelsToFetch[c.PanelID] = struct{}{}
+	}
+
+	log.Info("traffic poll start", "users", len(users), "panels", len(panelsToFetch),
+		"legacy_inbounds", len(byInbound), "shared_clients", len(sharedClients))
 
 	// Phase 1 — parallel ListInbounds across every panel, bounded by a
 	// semaphore so a 50-panel deployment can't fan out into 50
@@ -387,11 +410,11 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		counters map[int]inboundCounter
 		err      error
 	}
-	panelData := make(map[int64]panelListResult, len(byPanel))
+	panelData := make(map[int64]panelListResult, len(panelsToFetch))
 	var panelMu sync.Mutex
 	var panelWG sync.WaitGroup
 	panelSem := make(chan struct{}, paneltz.ResolveMaxPanelConcurrency(pollCfg.MaxPanelConcurrency))
-	for panelID := range byPanel {
+	for panelID := range panelsToFetch {
 		panelWG.Add(1)
 		go func(pid int64) {
 			defer safego.Recover("traffic.PollOnce.panelFetch")
@@ -512,26 +535,32 @@ func (s *Service) PollOnce(ctx context.Context) error {
 					"panel_owned_emails", wanted)
 			}
 
-			// Persist per-node traffic from the inbound's OWN cumulative counter
-			// (v3.9.0), not a sum of owned clients. Sourcing from the inbound
-			// keeps node stats correct once a client is attached to multiple
-			// inbounds — a client-sum double-counts a shared client (LIVE-VERIFIED
-			// on 3.3.1: both inbounds echo the same aggregate) — and records the
-			// node's real total even when no managed client matched this cycle.
-			// Trade-off: the figure now includes any non-PSP-managed clients on
-			// the same inbound (none on a PSP-exclusive inbound). recordNodeStats
-			// re-seeds its baseline from this counter on the first post-upgrade
-			// poll, so the source switch produces no spike.
-			if ctr, ok := pd.counters[inboundID]; ok {
-				if err := s.recordNodeStats(ctx, panelID, inboundID, ctr.up, ctr.down, sink); err != nil {
-					log.Warn("traffic poll node snapshot",
-						"panel_id", panelID, "inbound_id", inboundID, "err", err)
-				}
-			}
 		}
 	}
 
 	mark("Phase 2 inbound processing (sink appends)")
+
+	// Phase 2a — per-node traffic from each fetched inbound's OWN cumulative counter
+	// (v3.9.0), not a sum of owned clients. This runs over EVERY fetched inbound, not
+	// just the ownership-referenced ones, because (a) post-migration there are NO
+	// ownership refs yet a node's usage must still be metered, and (b) sourcing from
+	// the inbound keeps node stats correct when a client spans multiple inbounds
+	// (a client-sum double-counts; LIVE-VERIFIED on 3.3.1 both inbounds echo the same
+	// aggregate). recordNodeStats no-ops an inbound that isn't a PSP node, and
+	// re-seeds its baseline on the first post-upgrade poll so the switch is
+	// spike-free. (Was inside the ownership loop, which is empty after migration.)
+	for pid, pd := range panelData {
+		if pd.err != nil {
+			continue
+		}
+		for inboundID, ctr := range pd.counters {
+			if err := s.recordNodeStats(ctx, pid, inboundID, ctr.up, ctr.down, sink); err != nil {
+				log.Warn("traffic poll node snapshot", "panel_id", pid, "inbound_id", inboundID, "err", err)
+			}
+		}
+	}
+
+	mark("Phase 2a node-traffic snapshots")
 
 	// v3.9.0 — meter shared-client traffic into the user quota totals. Once a user
 	// is migrated, their traffic accrues under the shared client's email (u{uid}@),
@@ -541,10 +570,9 @@ func (s *Service) PollOnce(ctx context.Context) error {
 	// into totals. Runs UNCONDITIONALLY whenever the repo is wired: before a user
 	// migrates the shared client has no 3X-UI traffic so this is a no-op for them,
 	// and summing per-node + shared stays correct across the migration window.
-	if s.pspClient != nil {
-		if clients, err := s.pspClient.ListAll(ctx); err != nil {
-			log.Warn("traffic poll shared-client list failed; skipping shared metering this cycle", "err", err)
-		} else {
+	if len(sharedClients) > 0 {
+		{
+			clients := sharedClients
 			// Restrict the per-panel email aggregate to shared emails (bounds memory).
 			want := make(map[int64]map[string]bool)
 			for _, c := range clients {

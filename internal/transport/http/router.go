@@ -517,7 +517,7 @@ func NewRouter(d Deps) *gin.Engine {
 		adminGroup.GET("/settings/oidc", oidcAdmin.Get)
 		adminGroup.PUT("/settings/oidc", oidcAdmin.Put)
 
-		recon := handler.NewAdminReconcileHandler(d.Reconcile, d.User)
+		recon := handler.NewAdminReconcileHandler(d.Reconcile)
 		// Reconcile rewrites 3X-UI side state — admin only.
 		adminGroup.POST("/reconcile/run", recon.Run)
 
