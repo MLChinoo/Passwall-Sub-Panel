@@ -4,6 +4,17 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.14 — 2026-06-24
+
+### 修复(合并失败的真正根因)
+
+- **合并复用旧 email 时改用 AttachClient,不再 AddClientToInbounds(`email already in use`)** —— 这才是 China Shanghai 自愈一直报 `create shared client u17-kf2d62608@psp.local: email already in use` 的**真正原因**,**和 3X-UI 版本无关**(在 3.4.0 上稳定复现)。当合并把一个用户的 per-class client 归并、且**合并后的 email 复用了某个已有 client 的 email**(面板上没有 SS-2022 时,合并键 = (pwClass0, vision) 正好等于 VLESS-vision 那个 `u…-kf…` email)——这个合并 client 现在要挂**比它当前更多的入站**(被并进来的那些 per-class client 的入站)。原代码只在「live client 正好挂在目标入站集合」时跳过,否则一律走 `AddClientToInbounds(全部目标入站)`,而它会在 client **已经挂着的**入站上**重新创建**,3X-UI 直接整笔拒绝 `email already in use`。改为:当 `GetClient` 显示 client 已存在但入站集合不同时,用**幂等的 `AttachClient`**(已挂的入站自动 no-op、只补挂缺的)来收敛;复用的 email 是 (密码类, flow) 的纯函数、凭据完全一致,无需重推;多余入站仍由原有的回读 reconcile 摘除。
+- 在真实 3.4.0 面板上验证:① 对已挂载的 email 调 `AddClientToInbounds` 会 `email already in use`,而 `AttachClient` 成功且可重复调用;② 合并的「先挂新、后删旧」过程中,某入站会短暂同时存在两个**同 UUID、不同 email** 的 client,3X-UI 接受、无 `duplicate id`。
+
+### 关于之前的 MinXUI 3.3.0
+
+- 之前把 China Shanghai 的报错归因于 3X-UI 3.2.0 并抬高了 `MinXUI` 到 3.3.0——**那是误判**,真正原因是上面这个逻辑 bug。`MinXUI=3.3.0` 仍**保留**(3.3.0+ 经过验证、是更稳妥的下限),但 3.2.0 不再是这个报错的元凶;升级 China Shanghai 没有坏处,真正的修复是本版本。
+
 ## v3.9.0-beta.13 — 2026-06-24
 
 ### 修复
