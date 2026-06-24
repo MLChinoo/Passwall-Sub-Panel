@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.22 — 2026-06-25
+
+### 修复
+
+- **补全 `panel_unreachable` 的诊断 + 让兜底文案可区分版本** —— beta.21 只在预取「报错」时才显示真因。但一台面板可达、`ListInbounds` 却返回 **0 个入站**(全新/空服务器,或 token 没有入站权限),或入站全部解析失败时,没有报错可显示,于是仍回落到和 beta.21 之前一模一样的泛化文案。现在 `prefetchInbounds` 对这些「拉到了但缓存为空」的面板也记原因(「panel reachable but returned 0 inbounds …」/「returned N inbound(s) but none parseable」),并把 `checkNodes` 的兜底文案改成「panel not prefetched this cycle (no detail captured)」,绝不会再和旧版撞串——**如果部署后仍看到一字不差的「could not list inbounds」,就说明跑的还是旧构建**。
+
 ## v3.9.0-beta.21 — 2026-06-25
 
 ### 修复
