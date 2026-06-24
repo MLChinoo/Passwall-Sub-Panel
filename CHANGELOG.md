@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.18 — 2026-06-24
+
+### 修复
+
+- **B4 —— 管理端「按服务器/按节点用量」对迁移用户全空,改为从 psp_client 重建「按服务器」** —— 该视图原来读已删的 ownership 表,所以选中用户后底部「Usage by server / Usage by node」都显示空。现在 `UserServerUsage` 直接从 `psp_client` 重建(按面板聚合:累计取行内计数、本周期 = 累计 − 基线、节点数 = 该面板上挂载的去重节点数、服务器名取自面板池);用户没有 psp_client(迁移前)时回落到旧的 ownership 聚合,不回归。**「按节点用量」视图已下线**:共享 client 跨多入站、3X-UI 只报一个聚合计数,「按节点分用户」的拆分在共享模型下不存在了;前端只保留「按服务器」。这也顺带解决了按节点视图的长列表/翻页问题——一个用户可能在很多节点上,但只在少数服务器上。
+
 ## v3.9.0-beta.17 — 2026-06-24
 
 ### 修复(多智能体审计发现的迁移后破绽)
