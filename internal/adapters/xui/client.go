@@ -288,8 +288,31 @@ func (c *Client) fetchCSRFLocked(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) error {
+func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) (err error) {
+	// Tag every request error with which PANEL it came from. The 3X-UI API path is
+	// relative (e.g. /panel/api/clients/update/<email>), so in a multi-panel
+	// deployment a bare error can't tell you which 3X-UI failed — which made a
+	// client_inbounds failure impossible to localize. %w preserves the underlying
+	// message so isInboundConflict / errors.Is still match.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("[%s] %w", c.reqTag(), err)
+		}
+	}()
 	return c.doJSONRetry(ctx, method, path, body, out, false)
+}
+
+// reqTag identifies the panel a request belongs to, for error messages. Format:
+// `name @ host` (or just host when the name is unset, e.g. in tests).
+func (c *Client) reqTag() string {
+	host := c.baseURL
+	if u, perr := url.Parse(c.baseURL); perr == nil && u.Host != "" {
+		host = u.Host
+	}
+	if c.panelName != "" {
+		return c.panelName + " @ " + host
+	}
+	return host
 }
 
 // doJSONRetry issues the request and, in cookie-auth mode, transparently
