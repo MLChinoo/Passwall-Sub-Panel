@@ -153,7 +153,7 @@ func TestCheckNodes_BackfillsMissingConfig(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, live))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, live), nil)
 
 	// Snapshot writes MUST take the column-scoped path (UpdateInboundConfig)
 	// to coexist with the concurrent health-pass writer. A full-row Save
@@ -220,7 +220,7 @@ func TestCheckNodes_DisappearedInboundDisablesViaColumnWriter(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, other))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, other), nil)
 
 	if len(repo.updates) != 0 {
 		t.Fatalf("disable must use the column-scoped UpdateEnabled, not a full-row Save; got %d full-row writes", len(repo.updates))
@@ -257,7 +257,7 @@ func TestCheckNodes_DriftPushed(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if len(client.updated) != 1 {
 		t.Fatalf("want 1 push to 3X-UI on drift, got %d", len(client.updated))
@@ -301,7 +301,7 @@ func TestCheckNodes_DriftAdoptedWhenReversePushDisabled(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit} // axisAReversePush defaults false
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if len(client.updated) != 0 {
 		t.Fatalf("reverse-push disabled: must NOT write to the 3X-UI inbound, got %d UpdateInbound calls", len(client.updated))
@@ -356,7 +356,7 @@ func TestCheckNodes_StaleReadDoesNotRevertAdminEdit(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if len(client.updated) != 0 {
 		t.Fatalf("stale reconcile must NOT push to 3X-UI when admin row advanced; got %d pushes", len(client.updated))
@@ -392,7 +392,7 @@ func TestCheckNodes_InSync_NoOp(t *testing.T) {
 	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
 
 	report := &Report{}
-	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if len(client.updated) != 0 || len(repo.updates)+len(repo.updatesCfg) != 0 {
 		t.Fatalf("in-sync node must be a no-op: pushes=%d full-row=%d snapshot=%d",
@@ -415,7 +415,7 @@ func TestCheckNodes_BackfillEmitsAudit(t *testing.T) {
 	audit := &recAudit{}
 	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
-	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, live))
+	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, live), nil)
 
 	if got := audit.findAuditByAction("inbound_config_backfilled"); got == nil {
 		t.Fatalf("expected per-inbound backfill audit, got entries=%+v", audit.entries)
@@ -439,7 +439,7 @@ func TestCheckNodes_DriftPushedEmitsAudit(t *testing.T) {
 	audit := &recAudit{}
 	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
-	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if got := audit.findAuditByAction("inbound_config_drift_pushed"); got == nil {
 		t.Fatalf("expected per-inbound drift-push audit, got entries=%+v", audit.entries)
@@ -468,7 +468,7 @@ func TestCheckNodes_PushFailMarksPendingAndAudits(t *testing.T) {
 	audit := &recAudit{}
 	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
-	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if got := audit.findAuditByAction("inbound_config_push_failed"); got == nil {
 		t.Fatalf("expected push-failed audit, got entries=%+v", audit.entries)
@@ -505,7 +505,7 @@ func TestCheckNodes_RecaptureFailMarksPendingAndAudits(t *testing.T) {
 	audit := &recAudit{}
 	svc := &Service{nodes: repo, pool: recPool{c: client}, audit: audit, axisAReversePush: true}
 
-	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}))
+	svc.checkNodes(context.Background(), &Report{}, cacheFromInbounds(1, []ports.Inbound{live}), nil)
 
 	if got := audit.findAuditByAction("inbound_config_recapture_failed"); got == nil {
 		t.Fatalf("expected recapture-failed audit, got entries=%+v", audit.entries)

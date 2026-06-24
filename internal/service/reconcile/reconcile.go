@@ -172,7 +172,7 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 	// loadInbound calls become cache hits. Errors aren't fatal:
 	// per-inbound loadInbound stays as the fallback if a particular
 	// ListInbounds failed.
-	prefetchInbounds(ctx, s.pool, uniquePanels, cache, concurrency)
+	prefetchErrs := prefetchInbounds(ctx, s.pool, uniquePanels, cache, concurrency)
 
 	// Preload every group once into a map so checkMissingOwnerships
 	// can look up by ID instead of issuing one SELECT per user. Groups
@@ -262,7 +262,7 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 	}
 
 	if level == LevelFull {
-		s.checkNodes(ctx, report, cache)
+		s.checkNodes(ctx, report, cache, prefetchErrs)
 	}
 
 	if report.Fixed > 0 || len(report.Issues) > 0 {
@@ -418,13 +418,17 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 // shared inboundCache. Errors per panel are non-fatal: the user
 // loop's per-inbound loadInbound is left as a fallback if a
 // particular ListInbounds failed.
+// prefetchInbounds also RETURNS the per-panel failure (pool.Get miss OR
+// ListInbounds error) so checkNodes can surface the real cause in the
+// panel_unreachable Issue instead of a generic "could not list inbounds".
 func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 	panels map[int64]struct{},
 	cache map[inboundCacheKey]*inboundCacheEntry,
-	concurrency int) {
+	concurrency int) map[int64]error {
 
+	prefetchErrs := map[int64]error{}
 	if len(panels) == 0 {
-		return
+		return prefetchErrs
 	}
 	if concurrency <= 0 {
 		concurrency = 1
@@ -459,6 +463,7 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 	for r := range results {
 		if r.err != nil {
 			log.Warn("reconcile prefetch inbounds", "panel_id", r.panelID, "err", r.err)
+			prefetchErrs[r.panelID] = r.err
 			continue
 		}
 		for i := range r.inbounds {
@@ -477,6 +482,7 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 			}
 		}
 	}
+	return prefetchErrs
 }
 
 func (s *Service) loadInbound(ctx context.Context, cache map[inboundCacheKey]*inboundCacheEntry,
@@ -699,7 +705,7 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 // so it appears in the admin's reconcile report) or (b) the inbound
 // genuinely no longer exists on 3X-UI — both go through the "disabled
 // the node" branch.
-func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inboundCacheKey]*inboundCacheEntry) {
+func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inboundCacheKey]*inboundCacheEntry, prefetchErrs map[int64]error) {
 	nodes, err := s.nodes.List(ctx)
 	if err != nil {
 		return
@@ -724,11 +730,20 @@ func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inbo
 			}
 			reachable[n.PanelID] = ok
 			if !ok {
+				// Surface the REAL prefetch failure (DNS / auth / TLS / 404, or
+				// "panel id N not registered" when the node points at a panel the
+				// pool doesn't have) so an admin who just moved a node to a new
+				// server can tell the new server's config from a PSP issue. Falls
+				// back to the generic line only if no error was captured.
+				detail := "axis-A skipped: reconcile prefetch could not list inbounds"
+				if e := prefetchErrs[n.PanelID]; e != nil {
+					detail = "axis-A skipped: " + e.Error()
+				}
 				report.Issues = append(report.Issues, Issue{
 					PanelID:   n.PanelID,
 					PanelName: s.panelNameOf(n.PanelID),
 					Code:      "panel_unreachable",
-					Detail:    "axis-A skipped: reconcile prefetch could not list inbounds",
+					Detail:    detail,
 				})
 			}
 		}
