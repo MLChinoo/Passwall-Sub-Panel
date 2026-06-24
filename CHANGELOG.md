@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.20 — 2026-06-24
+
+### 内部清理
+
+- **删除 v3.8 per-node client 时代已经无生产调用的 3X-UI 写入口** —— v3.9 共享 client 切换后,新节点加入用户只需要 enqueue `user_resync`,不再直接批量创建每节点 client;旧的 `node.ClientSyncer` 依赖、`sync.BulkAddClientsToInbound` / `UpdateOwnedClient` / `DelOwnedClient`、以及 3X-UI adapter 的 `/clients/bulkCreate` 包装和 `ports.BulkAdd*` DTO 都已移除。保留 `OwnershipRepo`、`DropIfMigrated`、`BackfillPSPClients`、`DeleteLegacyForUser` 和 `MIGRATION(v3→v4)` 标记路径,它们仍是 v3.8→v3.9 安全迁移兜底。本次无用户可见行为变化。
+
 ## v3.9.0-beta.19 — 2026-06-24
 
 ### 优化
