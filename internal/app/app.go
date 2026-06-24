@@ -72,6 +72,10 @@ func (a sharedMigratorAdapter) ReconcileOrphans(ctx context.Context, userID int6
 	return a.s.ReconcileOrphans(ctx, userID)
 }
 
+func (a sharedMigratorAdapter) DeleteSharedForUser(ctx context.Context, userID int64) error {
+	return a.s.DeleteSharedForUser(ctx, userID)
+}
+
 func (a *asyncDispatcher) Context() context.Context { return a.ctx }
 
 func (a *asyncDispatcher) Go(name string, fn func(ctx context.Context)) {
@@ -265,6 +269,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	auditSvc := audit.New(repos.Audit)
 	groupSvc := group.New(repos.Group, repos.Node, repos.ScopeSettings)
 	syncSvc := syncsvc.New(pool, repos.Ownership)
+	// v3.9.0: let the inbound-deletable guard recognise shared clients as managed,
+	// so node deletion isn't blocked once users are migrated off the ownership table.
+	syncSvc.SetPSPClientRepo(repos.PSPClient)
 	userSvc := user.New(repos.User, repos.Group, repos.Ownership, repos.SyncTask, groupSvc, syncSvc, pool, repos.ScopedSettings)
 	nodeSvc := node.New(repos.Node, repos.Separator, pool, syncSvc, repos.SyncTask, repos.Group, repos.User, syncSvc, repos.Settings)
 	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, repos.Node, repos.NodeTraffic, pool, userSvc).WithSettings(repos.ScopedSettings)

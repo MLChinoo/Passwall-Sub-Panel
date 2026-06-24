@@ -12,6 +12,7 @@ type resyncMigrator struct {
 	provisioned   []int64
 	deletedLegacy []int64
 	reconciled    []int64
+	deletedShared []int64
 }
 
 func (m *resyncMigrator) ProvisionUser(_ context.Context, id int64) error {
@@ -24,6 +25,10 @@ func (m *resyncMigrator) DeleteLegacyForUser(_ context.Context, id int64) error 
 }
 func (m *resyncMigrator) ReconcileOrphans(_ context.Context, id int64) error {
 	m.reconciled = append(m.reconciled, id)
+	return nil
+}
+func (m *resyncMigrator) DeleteSharedForUser(_ context.Context, id int64) error {
+	m.deletedShared = append(m.deletedShared, id)
 	return nil
 }
 

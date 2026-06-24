@@ -16,6 +16,7 @@ type fakeClients struct {
 	attachments []domain.PSPClientInbound
 	provisioned map[int64]bool      // nodeID -> provisioned
 	byUser      []*domain.PSPClient // ListByUser result (cleanup tests)
+	deletedRows []string            // emails passed to DeleteByEmail
 }
 
 func (f *fakeClients) ListInbounds(context.Context, int64) ([]domain.PSPClientInbound, error) {
@@ -32,6 +33,10 @@ func (f *fakeClients) ListInbounds(context.Context, int64) ([]domain.PSPClientIn
 }
 func (f *fakeClients) ListByUser(context.Context, int64) ([]*domain.PSPClient, error) {
 	return f.byUser, nil
+}
+func (f *fakeClients) DeleteByEmail(_ context.Context, panelID int64, email string) error {
+	f.deletedRows = append(f.deletedRows, email)
+	return nil
 }
 func (f *fakeClients) MarkInboundProvisioned(_ context.Context, _ int64, nodeID int64, p bool) error {
 	if f.provisioned == nil {
@@ -222,6 +227,28 @@ func TestProvisionClient_SkipsRedundantReattach(t *testing.T) {
 	}
 	if res.Provisioned != 2 || !clients.provisioned[11] || !clients.provisioned[12] {
 		t.Fatalf("both nodes must still be marked provisioned: res=%+v marks=%v", res, clients.provisioned)
+	}
+}
+
+// DeleteSharedForUser must remove the user's shared clients from 3X-UI AND drop
+// their psp_client rows — the access-control fix for user deletion.
+func TestDeleteSharedForUser_RemovesClientsAndRows(t *testing.T) {
+	clients := &fakeClients{byUser: []*domain.PSPClient{
+		{ID: 1, UserID: 7, PanelID: 10, Email: "u7@psp.local"},
+		{ID: 2, UserID: 7, PanelID: 11, Email: "u7@psp.local"},
+	}}
+	xui := &fakeXUI{}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	if err := svc.DeleteSharedForUser(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	// 3X-UI client deleted on each panel (recorded via BulkDelByEmail → deleted).
+	if len(xui.deleted) != 2 {
+		t.Fatalf("want 2 3X-UI deletes (one per panel), got %v", xui.deleted)
+	}
+	// psp_client rows dropped for both.
+	if len(clients.deletedRows) != 2 {
+		t.Fatalf("want 2 psp_client row deletes, got %v", clients.deletedRows)
 	}
 }
 

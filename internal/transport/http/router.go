@@ -344,7 +344,7 @@ func NewRouter(d Deps) *gin.Engine {
 		// v3.9.0 cutover Stage 0: one-shot psp_client backfill (admin-only;
 		// DB-only, idempotent, nothing reads psp_client in production yet).
 
-		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.User, d.Repos.XUIPanel)
+		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.User, d.Repos.XUIPanel, d.Repos.PSPClient)
 		// Reads + toggle-enabled are operator-safe; create/update/delete and
 		// the import / claim flows touch 3X-UI panels directly, admin only.
 		staffGroup.GET("/nodes", nodes.List)

@@ -536,6 +536,50 @@ func (s *Service) ReconcileOrphans(ctx context.Context, userID int64) error {
 	return firstErr
 }
 
+// DeleteSharedForUser tears down ALL of a user's shared clients — used by the
+// user-delete path, which otherwise (post-migration, ownership empty) would leave
+// the shared 3X-UI client u{uid}@ live and ENABLED on every panel, so a deleted
+// user keeps authenticating with their UUID-derived creds. For each panel it
+// BulkDelByEmail's the user's client emails (one call → one Xray restart per panel),
+// then drops the psp_client rows (DeleteByEmail cascades psp_client_inbounds). It
+// returns the first error; on a 3X-UI failure for a panel it leaves that panel's DB
+// rows so the caller's durable retry re-lists and re-attempts. The caller MUST run
+// this BEFORE deleting the user row — there is no FK cascade from users to
+// psp_client, so once the user row is gone the rows are unreachable by userID.
+func (s *Service) DeleteSharedForUser(ctx context.Context, userID int64) error {
+	clients, err := s.clients.ListByUser(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("list clients: %w", err)
+	}
+	byPanel := map[int64][]string{}
+	for _, c := range clients {
+		byPanel[c.PanelID] = append(byPanel[c.PanelID], c.Email)
+	}
+	var firstErr error
+	for panelID, emails := range byPanel {
+		cli, err := s.pool.Get(panelID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if _, err := cli.BulkDelByEmail(ctx, emails); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("bulk delete shared clients on panel %d: %w", panelID, err)
+			}
+			continue // keep the DB rows for retry — don't orphan the 3X-UI clients
+		}
+		for _, email := range emails {
+			if err := s.clients.DeleteByEmail(ctx, panelID, email); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("drop psp_client row %s: %w", email, err)
+			}
+		}
+		log.Info("deleted shared clients for user", "user_id", userID, "panel_id", panelID, "count", len(emails))
+	}
+	return firstErr
+}
+
 func inboundsCovered(inbounds []int, covered map[int]struct{}) bool {
 	for _, ib := range inbounds {
 		if _, ok := covered[ib]; !ok {

@@ -27,11 +27,20 @@ import (
 type Service struct {
 	pool      ports.XUIPool
 	ownership ports.OwnershipRepo
+	// pspClients is the v3.9.0 shared-client repo, late-bound via SetPSPClientRepo
+	// (nil before wiring / in tests). The inbound-deletable guard consults it so a
+	// migrated user's shared client — which has no ownership row — is recognised as
+	// PSP-managed rather than an operator's hand-made client.
+	pspClients ports.PSPClientRepo
 }
 
 func New(pool ports.XUIPool, ownership ports.OwnershipRepo) *Service {
 	return &Service{pool: pool, ownership: ownership}
 }
+
+// SetPSPClientRepo late-binds the v3.9.0 shared-client repo. Until set, the
+// inbound-deletable guard falls back to ownership-only (pre-migration behaviour).
+func (s *Service) SetPSPClientRepo(r ports.PSPClientRepo) { s.pspClients = r }
 
 // ensureClientOwned returns nil only when (panelID, inboundID, email) is
 // recorded in the ownership table.
@@ -64,10 +73,22 @@ func (s *Service) ensureInboundDeletable(ctx context.Context, panelID int64, inb
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return fmt.Errorf("%w: panel_id=%d inbound=%d unmanaged_client=%s",
-				domain.ErrInboundHasUnmanagedClients, panelID, inboundID, cs.Email)
+		if ok {
+			continue
 		}
+		// v3.9.0: a migrated user's client is NOT in the ownership table — it's a
+		// shared client (email u{uid}@, panel-unique). Recognise it as PSP-managed
+		// via psp_client. Without this, post-migration (ownership empty/dropped)
+		// EVERY populated inbound looks "unmanaged" and node deletion is permanently
+		// blocked with a 409. PSPClientInbound is keyed by NodeID (not 3X-UI
+		// inboundID), so the by-email lookup is the right primitive here.
+		if s.pspClients != nil {
+			if c2, perr := s.pspClients.GetByEmail(ctx, panelID, cs.Email); perr == nil && c2 != nil {
+				continue
+			}
+		}
+		return fmt.Errorf("%w: panel_id=%d inbound=%d unmanaged_client=%s",
+			domain.ErrInboundHasUnmanagedClients, panelID, inboundID, cs.Email)
 	}
 	return nil
 }

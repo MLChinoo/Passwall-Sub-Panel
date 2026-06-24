@@ -152,6 +152,11 @@ type SharedMigrator interface {
 	// pruned but whose 3X-UI clients survived a skipped delete). Per-panel
 	// coverage-gated and idempotent; a no-orphan user is a few reads.
 	ReconcileOrphans(ctx context.Context, userID int64) error
+	// DeleteSharedForUser removes ALL of a user's shared 3X-UI clients + their
+	// psp_client rows. The user-delete path MUST call this before deleting the user
+	// row, else (post-migration) the shared client stays live + enabled and the
+	// deleted user keeps proxy access.
+	DeleteSharedForUser(ctx context.Context, userID int64) error
 }
 
 // lockUser acquires the per-user resync mutex and returns its unlock func. The
@@ -954,7 +959,15 @@ func (s *Service) ResetCredentialsAndSync(ctx context.Context, userID int64) (*R
 			needsRetry = true
 		}
 	}
-	if needsRetry {
+	// Enqueue a resync after the rotation. On the error path it retries the failed
+	// per-node pushes; on the happy path it STILL runs whenever the shared model is
+	// wired, so the v3.9.0 dual-write advances the psp_client's UUID/Password and
+	// syncSharedLifecycle pushes the rotated creds onto the shared client. Without
+	// this, post-migration (the per-node loop above is a no-op, so needsRetry stays
+	// false) a successful rotation would NOT reach the shared client until the next
+	// periodic reconcile — /sub serves the new UUID while 3X-UI still holds the old,
+	// breaking auth for up to a full reconcile interval. Mirrors ResetUUIDAndSync.
+	if needsRetry || s.sharedLife != nil {
 		if err := s.enqueueUserTask(ctx, domain.SyncTaskUserResync, userID, fmt.Sprintf("sync credentials for user %s", u.UPN)); err != nil {
 			log.Warn("enqueue user credential resync failed", "user_id", userID, "err", err)
 		}
@@ -1180,10 +1193,17 @@ func (s *Service) DeleteAndSync(ctx context.Context, userID int64) error {
 
 	// Synchronous fast path: when 3X-UI is reachable, delete every owned
 	// client and the panel row right here. This is the SetEnabledAndSync
-	// pattern applied to deletion.
+	// pattern applied to deletion. BOTH the legacy per-node clients AND the
+	// v3.9.0 shared clients must go before the user row — otherwise (post-
+	// migration, where DelAllOwnedForUser is a no-op against the empty ownership
+	// table) the shared client u{uid}@ stays live + enabled and the deleted user
+	// keeps proxy access. The shared teardown runs BEFORE users.Delete because
+	// there is no FK cascade from users to psp_client.
 	if err := s.syncer.DelAllOwnedForUser(ctx, u.ID); err == nil {
-		if err := s.users.Delete(ctx, u.ID); err == nil {
-			return nil
+		if err := s.deleteSharedForUser(ctx, u.ID); err == nil {
+			if err := s.users.Delete(ctx, u.ID); err == nil {
+				return nil
+			}
 		}
 	}
 
@@ -2208,7 +2228,21 @@ func (s *Service) runUserDeleteTask(ctx context.Context, task *domain.SyncTask) 
 	if err := s.syncer.DelAllOwnedForUser(ctx, u.ID); err != nil {
 		return fmt.Errorf("sync delete: %w", err)
 	}
+	if err := s.deleteSharedForUser(ctx, u.ID); err != nil {
+		return fmt.Errorf("shared delete: %w", err)
+	}
 	return s.users.Delete(ctx, u.ID)
+}
+
+// deleteSharedForUser tears down the user's v3.9.0 shared clients (3X-UI + their
+// psp_client rows) via the migrator. Nil-tolerant: a no-op when the shared model
+// isn't wired (matches the late-binding convention). MUST be called before the
+// user row is deleted — psp_client rows are keyed by userID with no FK cascade.
+func (s *Service) deleteSharedForUser(ctx context.Context, userID int64) error {
+	if s.migrator == nil {
+		return nil
+	}
+	return s.migrator.DeleteSharedForUser(ctx, userID)
 }
 
 // deleteTaskBackoff returns a flat 1-minute retry interval. The sync-first

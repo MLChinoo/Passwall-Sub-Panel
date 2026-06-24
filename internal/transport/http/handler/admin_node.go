@@ -22,15 +22,16 @@ import (
 // AdminNodeHandler exposes node CRUD, the import-existing flow, and the
 // claim-existing-client flow under /api/admin/nodes.
 type AdminNodeHandler struct {
-	node      *node.Service
-	sync      *syncsvc.Service
-	ownership ports.OwnershipRepo
-	users     ports.UserRepo
-	panels    ports.XUIPanelRepo
+	node       *node.Service
+	sync       *syncsvc.Service
+	ownership  ports.OwnershipRepo
+	users      ports.UserRepo
+	panels     ports.XUIPanelRepo
+	pspClients ports.PSPClientRepo
 }
 
-func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo) *AdminNodeHandler {
-	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels}
+func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo, pspClients ports.PSPClientRepo) *AdminNodeHandler {
+	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels, pspClients: pspClients}
 }
 
 // ---- DTOs ----
@@ -690,6 +691,17 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
+	// v3.9.0: a migrated user owns SHARED clients, not ownership rows — so an
+	// ownership-only count is 0 post-migration and the "already owns clients →
+	// don't overwrite the UUID" guard in alignClaimedUserUUID would never fire,
+	// silently clobbering the user's UUID and re-keying all their nodes. Count the
+	// user's shared clients too.
+	preExistingOwned := len(preExisting)
+	if h.pspClients != nil {
+		if shared, perr := h.pspClients.ListByUser(c.Request.Context(), req.UserID); perr == nil {
+			preExistingOwned += len(shared)
+		}
+	}
 	claimedUUID, err := h.sync.ClaimClient(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, req.ClientUUID)
 	if err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
@@ -700,7 +712,7 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		return
 	}
 	if claimedUUID != "" {
-		if err := h.alignClaimedUserUUID(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, claimedUUID, len(preExisting)); err != nil {
+		if err := h.alignClaimedUserUUID(c.Request.Context(), req.UserID, req.PanelID, req.InboundID, req.ClientEmail, claimedUUID, preExistingOwned); err != nil {
 			if errors.Is(err, domain.ErrValidation) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
