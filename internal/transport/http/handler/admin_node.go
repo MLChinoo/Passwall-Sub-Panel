@@ -691,6 +691,8 @@ func (h *AdminNodeHandler) ClaimClient(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
+	// MIGRATION(v3→v4): ownership+psp combined count. When the legacy path goes,
+	// count psp_client only (drop the preExisting/ownership term).
 	// v3.9.0: a migrated user owns SHARED clients, not ownership rows — so an
 	// ownership-only count is 0 post-migration and the "already owns clients →
 	// don't overwrite the UUID" guard in alignClaimedUserUUID would never fire,

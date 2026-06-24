@@ -361,6 +361,8 @@ func (s *Service) PollOnce(ctx context.Context) error {
 		byPanel[k.panelID][k.inboundID] = refs
 	}
 
+	// MIGRATION(v3→v4): the byPanel half of this union is the legacy ownership path.
+	// When it goes, build panelsToFetch from the shared-client panels only.
 	// v3.9.0: the panels to poll come from BOTH the legacy ownership table AND the
 	// shared-client table. A MIGRATED user's traffic accrues under u{uid}@ with no
 	// ownership row, so post-migration byPanel is EMPTY — without unioning in the
@@ -1533,6 +1535,9 @@ type ServerUsageRow struct {
 // friendly name joined from the live pool. Rows are ordered by first appearance
 // (stable). Empty when the user is on no nodes.
 func (s *Service) UserServerUsage(ctx context.Context, userID int64) ([]ServerUsageRow, error) {
+	// MIGRATION(v3→v4): prefer-psp-else-ownership. When the legacy path goes, keep
+	// only the serverUsageFromShared branch and delete the ownership fallback below
+	// (and UserNodeUsage with it).
 	// v3.9.0: prefer the shared-client source. A migrated user's usage lives in
 	// psp_client (one row per (user, panel, credClass)) and they hold NO ownership
 	// rows, so the legacy per-node aggregation below returns empty. Build per-server

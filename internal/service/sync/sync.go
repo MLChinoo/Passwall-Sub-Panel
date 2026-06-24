@@ -76,6 +76,9 @@ func (s *Service) ensureInboundDeletable(ctx context.Context, panelID int64, inb
 		if ok {
 			continue
 		}
+		// MIGRATION(v3→v4): ownership-OR-psp fallback. When the legacy ownership path
+		// is removed, drop the s.ownership.Exists branch above and keep only this
+		// psp_client check.
 		// v3.9.0: a migrated user's client is NOT in the ownership table — it's a
 		// shared client (email u{uid}@, panel-unique). Recognise it as PSP-managed
 		// via psp_client. Without this, post-migration (ownership empty/dropped)

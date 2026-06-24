@@ -233,6 +233,8 @@ func (s *Service) SharedMigrationComplete(ctx context.Context) (bool, error) {
 	return len(pending) == 0, nil
 }
 
+// MIGRATION(v3→v4): one-time v3.8→v3.9 migration entry point — delete with the
+// legacy ownership path (and its boot call in app.go).
 func (s *Service) EnqueueSharedMigration(ctx context.Context) (int, error) {
 	if s.ownership == nil || s.tasks == nil {
 		return 0, nil

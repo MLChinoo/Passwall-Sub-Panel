@@ -342,6 +342,8 @@ func (s *Service) MigrateUser(ctx context.Context, userID int64) (MigrateResult,
 // plus its ownership row. Nodes not yet provisioned under a shared client are
 // KEPT (render still falls back to them), so a partial migration never strands a
 // user. Idempotent.
+// MIGRATION(v3→v4): one-time teardown of a user's legacy per-node clients after
+// the shared client is provisioned — delete with the legacy ownership path.
 func (s *Service) DeleteLegacyForUser(ctx context.Context, userID int64) (CleanupResult, error) {
 	var res CleanupResult
 	if s.ownership == nil {

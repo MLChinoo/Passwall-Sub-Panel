@@ -1154,6 +1154,8 @@ func (s *Service) ListClientsOfInbound(ctx context.Context, nodeID int64, owners
 			view.Managed = true
 			view.OwnerUserID = entry.UserID
 		} else if pspClients != nil {
+			// MIGRATION(v3→v4): ownership-OR-psp fallback. When the legacy path goes,
+			// resolve managed/owner from psp_client only (drop the ownedByEmail branch).
 			// v3.9.0: a migrated user's client has no ownership row — it's a shared
 			// client. Resolve managed/owner from psp_client so the node-detail list
 			// doesn't mislabel every PSP client as an operator's unmanaged client.
