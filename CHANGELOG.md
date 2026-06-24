@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.9 — 2026-06-24
+
+### 诊断改进
+
+- **3X-UI 报错现在会标明是哪个面板** —— 3X-UI 的 API path 是相对的,所以多面板部署下 `POST /panel/api/clients/update/<email>: ... client_inbounds` 这种报错**看不出是哪台面板**失败,无法定位。现在每条 3X-UI 请求错误都会带上 `[面板名 @ host]` 前缀(`shared-client lifecycle push failed` 告警也随之带上)。升级后,失败日志会直接告诉你是六台面板里的哪一台——把那一行发我即可精确定位。
+
 ## v3.9.0-beta.8 — 2026-06-23
 
 ### 修复
