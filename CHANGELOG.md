@@ -4,6 +4,20 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.28 — 2026-06-25
+
+### 新功能
+
+- **账号状态与服务状态拆分(用户多状态)** —— 把用户状态拆成两条独立的轴:**账号状态**(能否登录面板:正常 / 禁用 / 待删除 / 待审批 / 待邮箱验证)和**服务状态**(代理 / 订阅 / 3X-UI enable:正常 / 账号禁用 / 已到期 / 流量超限 / 客户端封禁 / 手动暂停 / 紧急访问)。**关键变化:服务级停用(客户端封禁、手动暂停、流量超限、到期)不再把用户锁在面板外** —— 只停代理,用户仍能登录后台看原因 / 自助处理;只有账号级禁用才拦登录。新增 `ServiceDisabledReason` / `ServiceDisableDetail` / `ServiceDisabledAt` 列与 `AccountStatus()` / `ServiceStatus()` / `ProxyAccessEnabled()` 等;`EffectiveEnabled` 改由服务状态推导。后台用户管理、自助页、订阅输出、流量执行全链路接入(含 SPA)。不自动搬迁历史禁用账号(见 `v3-to-v4-cleanup.md`)。
+- **CI 增加前端 typecheck + build 关卡** —— Test 工作流新增 web job,前端构建坏了也会红(此前 SPA 不在测试门禁内)。
+
+### 改进(与 3X-UI 交互优化)
+
+- **节点新增 / 重建 / 故障恢复的下发改为批量** —— 给一个节点下发 N 个成员,以前是逐用户一次 `clients/add`(**N 次 Xray 重载**),现在先用一次 `clients/bulkCreate`(新建)+ 一次 `bulkAttach`(已存在)把成员一把灌上去(**1 次 Xray 重载**),随后逐用户 resync 仍作为权威兜底(确认 + 标记 + lifecycle + orphan)。warm-up 复用 `buildSharedClientSpec`,凭据与逐用户路径逐字节一致,失败仅记日志、由 resync 补齐 —— 纯优化、不改变正确性。尤其能缓解像坏面板上「反复重载把面板搞挂」的情况。新增适配方法 `BulkCreateClients`(已在 3.4.0 面板实测)。
+- **孤儿清理少打 N 次请求** —— `ReconcileOrphans` 的覆盖判定改为直接用那一次 `ListClientInbounds` 的全量结果,去掉了每个 desired email 一次 `GetClient` 的循环。
+- **最低 3X-UI 版本不变(3.3.0)** —— 上述用到的 `bulkCreate` / `bulkAttach` / `list` 在 v3.3.0 已存在(对照 v3.3.0 源码核实),全部落在现有 floor 内。
+- 评估后**未做**:`bulkResetTraffic` 不适用(PSP 用内部 period baseline 计量,从不重置 3X-UI 计数);floor/lifecycle 推送去重风险高收益低,暂不动。
+
 ## v3.9.0-beta.27 — 2026-06-25
 
 ### 修复
