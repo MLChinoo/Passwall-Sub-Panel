@@ -1489,9 +1489,16 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64, trafficL
 		if err := s.users.Update(ctx, u); err != nil {
 			return err
 		}
-		// The broad Update above omits the emergency columns (pollOwnedColumns)
-		// so a concurrent admin edit can't revert this grant; write them through
-		// the targeted writer under the same lock.
+		// The broad Update above omits the emergency columns AND the
+		// service-suspension columns (pollOwnedColumns) so a concurrent admin edit
+		// can't revert this grant; write both through their targeted writers under
+		// the same lock. The service-state write mirrors the emergency-window
+		// branches above (traffic-exceeded keeps a service-suspended marker;
+		// expired clears it) — without it, granting emergency access would no
+		// longer persist the service_disabled_* transition.
+		if err := s.users.UpdateServiceState(ctx, u.ID, u.ServiceDisabledReason, u.ServiceDisableDetail, u.ServiceDisabledAt); err != nil {
+			return err
+		}
 		if err := s.users.GrantEmergencyAccess(ctx, u.ID, until, u.EmergencyUsedCount, u.EmergencyBaselineBytes); err != nil {
 			return err
 		}

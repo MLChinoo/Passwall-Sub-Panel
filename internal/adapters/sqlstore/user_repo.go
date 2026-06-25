@@ -56,6 +56,15 @@ var pollOwnedColumns = []string{
 	// 2FA — written ONLY via SetTOTP / SetRecoveryCodes / ClearTOTP so a stale
 	// edit-dialog Save can't re-enable a just-disabled factor (or wipe a secret).
 	"totp_secret", "totp_enabled", "recovery_codes",
+	// Service-suspension state — written ONLY via UpdateServiceState (from
+	// blocked-client / quota auto-suspend, admin "pause service", and the
+	// resume paths). Omitted so an admin profile-Save (UpdateProfile's
+	// read-modify-Save) that brackets a concurrent auto-suspend can't revert
+	// service_disabled_reason from its stale snapshot. That matters most for
+	// blocked_client / service_manual, whose ServiceStatus derives ONLY from
+	// this column (no live re-derivation) — a clobber there silently
+	// un-suspends the user and the next push re-enables their 3X-UI client.
+	"service_disabled_reason", "service_disable_detail", "service_disabled_at",
 }
 
 func (r *userRepo) Update(ctx context.Context, u *domain.User) error {
