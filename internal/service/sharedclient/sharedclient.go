@@ -448,6 +448,77 @@ func (s *Service) ProvisionUser(ctx context.Context, userID int64) (ProvisionRes
 	return total, firstErr
 }
 
+// BulkProvisionNodeInbound front-loads the shared-client creates for many users
+// onto ONE node's inbound in a single bulkCreate + single bulkAttach (one Xray
+// restart total), instead of one AddClientToInbounds per user. It is a best-effort
+// WARM-UP for node provisioning / outage heal: the caller's per-user resync still
+// runs as the authoritative pass (confirm + mark provisioned + lifecycle + orphan),
+// so anything this misses is corrected there. It partitions members against ONE
+// panel-wide client list — emails already present are attached, the rest created —
+// and reuses buildSharedClientSpec so a created client is byte-for-byte what
+// ProvisionClient would have made (no credential drift, hence safe to overlap the
+// resync). Only psp_clients on n's panel that actually attach to n are touched.
+func (s *Service) BulkProvisionNodeInbound(ctx context.Context, n *domain.Node, userIDs []int64) error {
+	if n == nil || n.InboundID == 0 || len(userIDs) == 0 {
+		return nil
+	}
+	cli, err := s.pool.Get(n.PanelID)
+	if err != nil {
+		return err
+	}
+	live, err := cli.ListClientInbounds(ctx)
+	if err != nil {
+		return err
+	}
+	var createItems []ports.BulkCreateClientItem
+	var attachEmails []string
+	for _, uid := range userIDs {
+		clients, err := s.clients.ListByUser(ctx, uid)
+		if err != nil {
+			return err
+		}
+		for _, c := range clients {
+			if c.PanelID != n.PanelID {
+				continue
+			}
+			atts, err := s.clients.ListInbounds(ctx, c.ID)
+			if err != nil {
+				return err
+			}
+			attachesN := false
+			for _, a := range atts {
+				if a.NodeID == n.ID {
+					attachesN = true
+					break
+				}
+			}
+			if !attachesN {
+				continue // this partition doesn't serve n (tag filter / different flow class)
+			}
+			if _, present := live[c.Email]; present {
+				attachEmails = append(attachEmails, c.Email)
+			} else {
+				createItems = append(createItems, ports.BulkCreateClientItem{
+					Spec:       buildSharedClientSpec(c, atts[0].FlowOverride), // partition flow is uniform
+					InboundIDs: []int{n.InboundID},
+				})
+			}
+		}
+	}
+	if len(createItems) > 0 {
+		if _, err := cli.BulkCreateClients(ctx, createItems); err != nil {
+			return fmt.Errorf("bulk create node members: %w", err)
+		}
+	}
+	if len(attachEmails) > 0 {
+		if _, err := cli.BulkAttach(ctx, attachEmails, []int{n.InboundID}); err != nil {
+			return fmt.Errorf("bulk attach node members: %w", err)
+		}
+	}
+	log.Info("bulk-provisioned node members", "node_id", n.ID, "panel_id", n.PanelID, "created", len(createItems), "attached", len(attachEmails))
+	return nil
+}
+
 // ReconcileOrphans deletes a user's STALE shared clients: 3X-UI clients that match
 // PSP's shared-client email scheme for the user but are NOT in the user's current
 // desired psp_client set. They arise when the v3.9.0 merge re-keys a user (collapsing

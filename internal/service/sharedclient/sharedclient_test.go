@@ -31,8 +31,14 @@ func (f *fakeClients) ListInbounds(context.Context, int64) ([]domain.PSPClientIn
 	}
 	return out, nil
 }
-func (f *fakeClients) ListByUser(context.Context, int64) ([]*domain.PSPClient, error) {
-	return f.byUser, nil
+func (f *fakeClients) ListByUser(_ context.Context, userID int64) ([]*domain.PSPClient, error) {
+	out := make([]*domain.PSPClient, 0, len(f.byUser))
+	for _, c := range f.byUser {
+		if c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 func (f *fakeClients) DeleteByEmail(_ context.Context, panelID int64, email string) error {
 	f.deletedRows = append(f.deletedRows, email)
@@ -73,6 +79,8 @@ type fakeXUI struct {
 	deleted        []deletedClient
 	detached       []int
 	failAdd        bool
+	bulkCreated    []string // emails passed to BulkCreateClients
+	bulkAttached   []string // emails passed to BulkAttach
 }
 
 var errFakeAdd = errors.New("fake add failure")
@@ -137,6 +145,18 @@ type deletedClient struct {
 func (c *fakeXUI) DelClientByEmail(_ context.Context, inboundID int, email string) error {
 	c.deleted = append(c.deleted, deletedClient{inboundID, email})
 	return nil
+}
+
+func (c *fakeXUI) BulkCreateClients(_ context.Context, items []ports.BulkCreateClientItem) (ports.BulkCreateResult, error) {
+	for _, it := range items {
+		c.bulkCreated = append(c.bulkCreated, it.Spec.Email)
+	}
+	return ports.BulkCreateResult{Created: len(items)}, nil
+}
+
+func (c *fakeXUI) BulkAttach(_ context.Context, emails []string, _ []int) (ports.BulkAttachResult, error) {
+	c.bulkAttached = append(c.bulkAttached, emails...)
+	return ports.BulkAttachResult{Done: emails}, nil
 }
 
 // BulkDelByEmail is the panel-wide batch delete the legacy cleanup now uses (one
@@ -551,5 +571,58 @@ func TestProvisionClient_SkipsUnresolvableNode(t *testing.T) {
 	}
 	if len(xui.addedInbounds) != 1 || xui.addedInbounds[0] != 101 {
 		t.Fatalf("only the resolvable inbound should be added: %v", xui.addedInbounds)
+	}
+}
+
+// BulkProvisionNodeInbound front-loads a node's member creates into ONE bulkCreate +
+// ONE bulkAttach (one Xray restart): users with no client on the panel yet are created;
+// users whose client already lives there (from another node) are attached. No per-user
+// AddClientToInbounds.
+func TestBulkProvisionNodeInbound_PartitionsCreateVsAttach(t *testing.T) {
+	clients := &fakeClients{
+		byUser: []*domain.PSPClient{
+			{ID: 1, UserID: 1, PanelID: 10, Email: "u1@psp.local", UUID: "uuid-1", Password: "pw1"},
+			{ID: 2, UserID: 2, PanelID: 10, Email: "u2@psp.local", UUID: "uuid-2", Password: "pw2"},
+		},
+		attachments: []domain.PSPClientInbound{
+			{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision"},
+		},
+	}
+	xui := &fakeXUI{liveClients: map[string][]int{"u2@psp.local": {999}}} // u2 already on the panel
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	n := &domain.Node{ID: 11, PanelID: 10, InboundID: 101}
+
+	if err := svc.BulkProvisionNodeInbound(context.Background(), n, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(xui.bulkCreated) != 1 || xui.bulkCreated[0] != "u1@psp.local" {
+		t.Fatalf("bulkCreated = %v, want [u1@psp.local]", xui.bulkCreated)
+	}
+	if len(xui.bulkAttached) != 1 || xui.bulkAttached[0] != "u2@psp.local" {
+		t.Fatalf("bulkAttached = %v, want [u2@psp.local]", xui.bulkAttached)
+	}
+	if xui.added {
+		t.Fatal("must not fall back to per-client AddClientToInbounds")
+	}
+}
+
+// A user whose partition does NOT attach to n (different tag class) is left untouched.
+func TestBulkProvisionNodeInbound_SkipsNonMembers(t *testing.T) {
+	clients := &fakeClients{
+		byUser: []*domain.PSPClient{
+			{ID: 1, UserID: 1, PanelID: 10, Email: "u1@psp.local", UUID: "uuid-1"},
+		},
+		attachments: []domain.PSPClientInbound{
+			{ClientID: 1, NodeID: 77, FlowOverride: ""}, // attaches a DIFFERENT node, not n(=11)
+		},
+	}
+	xui := &fakeXUI{liveClients: map[string][]int{}}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	n := &domain.Node{ID: 11, PanelID: 10, InboundID: 101}
+	if err := svc.BulkProvisionNodeInbound(context.Background(), n, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(xui.bulkCreated) != 0 || len(xui.bulkAttached) != 0 {
+		t.Fatalf("a non-member of n must not be provisioned: created=%v attached=%v", xui.bulkCreated, xui.bulkAttached)
 	}
 }
