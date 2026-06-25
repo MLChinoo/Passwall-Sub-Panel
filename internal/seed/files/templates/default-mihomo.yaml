@@ -42,6 +42,7 @@ content: |
     - +.claude.com
     - +.anthropic.com
     - +.claudeusercontent.com
+    - +.deepseek.com
 
   dns:
     enable: true

@@ -1939,6 +1939,7 @@ content: |
   - IP-CIDR6,2001:b28:f23f::/48,📲 电报消息,no-resolve
   - DOMAIN-KEYWORD,anthropic,💬 Ai平台
   - DOMAIN-KEYWORD,claude,💬 Ai平台
+  - DOMAIN-KEYWORD,deepseek,💬 Ai平台
   - DOMAIN-KEYWORD,openai,💬 Ai平台
   - DOMAIN,ai.google.dev,💬 Ai平台
   - DOMAIN,aistudio.google.com,💬 Ai平台
@@ -2226,6 +2227,7 @@ content: |
   - DOMAIN-SUFFIX,go.com,🌍 国外媒体
   - DOMAIN-KEYWORD,anthropic,🌍 国外媒体
   - DOMAIN-KEYWORD,claude,🌍 国外媒体
+  - DOMAIN-KEYWORD,deepseek,🌍 国外媒体
   - DOMAIN-KEYWORD,openai,🌍 国外媒体
   - DOMAIN,ai.google.dev,🌍 国外媒体
   - DOMAIN,aistudio.google.com,🌍 国外媒体
