@@ -4,6 +4,23 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.29 — 2026-06-25
+
+> 本版是 v3.8 → v3.9 共享 client 迁移的一次**完整复查 + 审计跟进**。结论:迁移本身幂等、崩溃安全,删表 gate 正确,无 proxy 断流窗口,schema 三方言安全,流量单计与配额执行正确 —— 未发现 CRITICAL/HIGH 级确认缺陷。下列为复查中定位并修复的项。
+
+### 修复
+
+- **服务暂停状态不再被后台「改资料」覆盖(enforcement bypass)** —— `service_disabled_reason` / `service_disable_detail` / `service_disabled_at` 三列由专用写入器 `UpdateServiceState` 维护,但之前没列进 `pollOwnedColumns`,于是通用的全行 `userRepo.Update`(后台改资料是 read-modify-Save)会用**改资料前的过期快照**把这三列写回。对 `blocked_client`(客户端封禁)/ `service_manual`(手动暂停)尤其要命 —— 它们的 `ServiceStatus` **只看这一列、没有实时重算**,被覆盖成「正常」后用户即被静默解除暂停,下一次 push 重新启用其 3X-UI client = 限制被绕过。(`traffic_exceeded` / `expired` 会实时从用量 / 到期重算,自愈、不受影响。)修复:三列纳入 `pollOwnedColumns`;唯一依赖全行 Update 持久化它们的 emergency 授权路径补了 targeted `UpdateServiceState`(与相邻的 `GrantEmergencyAccess` 同锁同模式)。
+- **operator 查看流量的权限判定改为 fail-closed** —— `operatorMayView` 在「查目标用户角色」的 DB 调用出错时之前会**放行**,意味着一次数据库抖动就能让 operator 看到 admin/operator 账号的流量聚合。改为出错即拒绝(返回真实错误,不服务数据),与写侧 `ensureOperatorAllowed` 的 fail-closed 一致。
+- **手动改流量用量后,迁移用户的「按服务器用量」不再漂移** —— `SetPeriodUsage` 之前只重置 legacy ownership 行的 period baseline;迁移用户(无 ownership 行)的 `psp_client` baseline 没动,导致「按服务器用量」= lifetime − 过期 baseline,和上方用户级数字对不上。现在两套客户端模型都重置(纯显示一致性;配额执行本就走用户行、不受影响)。
+
+### 改进
+
+- **规则:DeepSeek 归入 `💬 Ai平台` 分类** —— 与 `anthropic` / `claude` / `openai` 同写法加 `DOMAIN-KEYWORD,deepseek`(覆盖 chat./api./platform.deepseek.com),mihomo sniffer 的 `force-domain` 也补 `+.deepseek.com`。已核实 1940 行前无前置规则会抢先匹配,落在 `💬 Ai平台` 组生效。
+- **删掉已被取代的死代码 `sharedclient.MigrateUser`** —— 迁移早已改由 `user.ResyncMembership`(provision → lifecycle push → 删 legacy 的安全顺序)驱动;`MigrateUser` 是被取代的旧 helper(provision 后直接删 legacy、中间无 lifecycle 校正),无任何生产调用方却保留着「一旦被接线就重开 audit-#1 绕过(禁用/到期用户拿到全开 client)」的隐患,现移除;仍在生产使用的 `DeleteLegacyForUser` 保留并改写了直接测试。
+- **补齐 Phase 2b(共享 client 流量计量)的端到端测试** —— 这是配额关键路径,此前只有 `recordSharedClientStats` 单元级覆盖。新增 PollOnce 级测试:① 一个 client 跨 N 个 inbound 时计量**单计**(取 max、绝不求和)、② 迁移用户(无 legacy 命中)超配额能**自动暂停服务**、③ legacy + shared 迁移窗口**不双计**。
+- **`BulkProvisionNodeInbound` 的 DB 端 N+1 标注为有意取舍** —— 一次性预热路径,贵的一半(3X-UI 写 / Xray 重载)已收敛成 1 次 `bulkCreate` + 1 次 `bulkAttach`,且有逐成员 resync 兜底;为冷路径加两个批量 repo 方法不划算,加注释固化(将来若单节点扩到上千成员再议)。
+
 ## v3.9.0-beta.28 — 2026-06-25
 
 ### 新功能
