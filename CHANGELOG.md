@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.30 — 2026-06-25
+
+### 新功能
+
+- **服务暂停 / 恢复邮件通知(带原因)** —— 现在「暂停服务」会给用户发邮件并写明原因(使用了被禁止的客户端 / 管理员手动暂停 / 本期流量已用完 / 订阅已到期),恢复服务时也发一封。通知统一从 `SetServiceSuspendedAndSync` / `ResumeServiceAndSync` 这个唯一入口异步发出,所以**所有**暂停路径(配额轮询、被禁客户端、管理员手动暂停、手动改流量用量)都会通知 —— 此前只有配额轮询和被禁客户端会发,**管理员手动暂停 / 手动改流量用量完全不发**。
+  - **措辞修正(两轴拆分遗留)**:服务级暂停不再误用「账号已被停用」措辞 —— 服务暂停时用户**仍能登录面板**查看原因 / 自助处理,邮件改为「代理服务已暂停(账号未被禁用,可登录查看原因)」。新增 `service_suspended` / `service_restored` 两个邮件模板(后台可编辑,中英标签齐全)。
+  - **集中去重**:把原本散落在 traffic 轮询(`notifyDisabled` / `notifyEnabled`)和 sub 被禁客户端处理里的发信,集中到 user 服务的单一入口,避免同一事件双发;配额超限仍优先用信息更全的 `traffic_exhausted` 模板(显示已用 / 上限 GB)。异步(走后台 runner)发送,不阻塞流量轮询。
+
+### 修复
+
+- **CI:MySQL 严格模式下的测试修复** —— beta.29 新增的 `TestUpdateOmitsServiceState` 用手搓的 `User` 结构体(`created_at` 为零值)触发 MySQL `Incorrect datetime value: '0000-00-00'`(SQLite / Postgres 宽松,所以本地 + PG job 没暴露)。改为用 `GetByID` 加载真实行,既补全 `created_at`,又更贴近真实的 `UpdateProfile` 读-改-存流程。
+
 ## v3.9.0-beta.29 — 2026-06-25
 
 > 本版是 v3.8 → v3.9 共享 client 迁移的一次**完整复查 + 审计跟进**。结论:迁移本身幂等、崩溃安全,删表 gate 正确,无 proxy 断流窗口,schema 三方言安全,流量单计与配额执行正确 —— 未发现 CRITICAL/HIGH 级确认缺陷。下列为复查中定位并修复的项。
