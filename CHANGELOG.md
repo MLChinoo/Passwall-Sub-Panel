@@ -4,6 +4,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.26 — 2026-06-25
+
+### 改进
+
+- **「在服务器上重建 inbound」改为幂等,可当「立即补推 client」用** —— 之前该操作在 inbound 已存在时直接报错拒绝,于是当 inbound 已经在、但 client 因面板临时损坏没推上去时,没有可靠的手动补推入口(Reconcile 按钮是轻量的、不下发 client)。现在:inbound **缺失**才用快照重建 + 重新指向;inbound **已存在**则跳过重建、**只重新下发成员 client**。所以面板修好后,在该节点上**再点一次「重建 inbound」即可把 client 补推上去**。确认弹窗文案同步更新(中英)。
+
 ## v3.9.0-beta.25 — 2026-06-25
 
 ### 改进

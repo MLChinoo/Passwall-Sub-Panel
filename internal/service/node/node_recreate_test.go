@@ -153,26 +153,30 @@ func TestRecreateInboundOnServer(t *testing.T) {
 	}
 }
 
-// Recreate refuses when the node's inbound already EXISTS on the panel (the action
-// is only for a missing inbound) and when there's no captured config to push.
+// Recreate is IDEMPOTENT: when the inbound already EXISTS it does NOT create a
+// duplicate and does NOT error — it just re-provisions clients (so re-clicking pushes
+// clients). It only rejects when the inbound is MISSING and there's no captured config.
 func TestRecreateInboundOnServer_Guards(t *testing.T) {
 	now := time.Now()
 	base := func() *domain.Node {
 		return &domain.Node{ID: 1, PanelID: 10, InboundID: 5, Protocol: "vless", Port: 443,
 			InboundSettings: "{}", ConfigSyncedAt: &now, ConfigSyncState: "synced"}
 	}
-	// Inbound already present → reject.
+	// Inbound already present → idempotent: no error, and NO new inbound created.
 	cli := &recreateClient{inbounds: map[int]*ports.Inbound{5: {ID: 5}}, nextID: 12}
 	svc := &Service{nodes: &recreateNodeRepo{node: base()}, pool: recreatePool{c: cli}, groups: recreateGroups{}}
-	if err := svc.RecreateInboundOnServer(context.Background(), 1); err == nil {
-		t.Fatal("must reject when the inbound already exists on the panel")
+	if err := svc.RecreateInboundOnServer(context.Background(), 1); err != nil {
+		t.Fatalf("inbound already present must be a no-op re-provision, got err %v", err)
 	}
-	// No captured config → reject.
+	if cli.addedSpec.Protocol != "" {
+		t.Fatalf("must NOT create an inbound when one already exists, got AddInbound spec %+v", cli.addedSpec)
+	}
+	// Missing inbound + no captured config → reject (nothing to recreate from).
 	n := base()
 	n.ConfigSyncedAt = nil
 	cli2 := &recreateClient{inbounds: map[int]*ports.Inbound{}, nextID: 12}
 	svc2 := &Service{nodes: &recreateNodeRepo{node: n}, pool: recreatePool{c: cli2}, groups: recreateGroups{}}
 	if err := svc2.RecreateInboundOnServer(context.Background(), 1); err == nil {
-		t.Fatal("must reject when the node has no captured inbound config")
+		t.Fatal("must reject when the inbound is missing and there's no captured config")
 	}
 }

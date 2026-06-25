@@ -2287,7 +2287,7 @@ export default function NodesView() {
       title: t('admin:nodes.confirm.recreate_inbound_title', { defaultValue: '在服务器上重建 inbound?' }),
       message: t('admin:nodes.confirm.recreate_inbound_message', {
         name: n.display_name,
-        defaultValue: '用 PSP 保存的配置在「{{name}}」所在服务器上重建 inbound,并把节点指向新 inbound。适用于把节点迁到全新/空的 3X-UI 后。',
+        defaultValue: '用 PSP 保存的配置在「{{name}}」所在服务器上重建 inbound,并把节点指向新 inbound,随后下发 client。适用于把节点迁到全新/空的 3X-UI 后。可重复点击:inbound 已存在则只重新下发 client。',
       }),
       confirmText: t('admin:nodes.action.recreate_inbound', { defaultValue: '重建 inbound' }),
     })

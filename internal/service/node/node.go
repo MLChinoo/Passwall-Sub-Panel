@@ -330,11 +330,11 @@ func (s *Service) CreateInbound(ctx context.Context, n *domain.Node, spec ports.
 // syncExistingUsersToNode enqueues a resync per eligible member, re-provisioning each
 // member's shared client onto the new inbound.
 //
-// Guards: the node must carry a captured config (HasLocalConfig — otherwise there's
-// nothing to push), and its inbound must be MISSING on the panel (the action recreates
-// a missing inbound, never duplicates a live one). A persist failure rolls back the
-// just-created inbound so a half-applied recreate leaves no stray. A full-row Update is
-// fine here: the node was unreachable (no live traffic/health writes to clobber).
+// Idempotent: it re-creates the inbound only when it is MISSING (otherwise it leaves
+// the live one and just re-provisions clients), so it never duplicates an inbound and
+// doubles as a manual "push clients now". Recreating needs a captured config
+// (HasLocalConfig); a persist failure rolls back the just-created inbound. A full-row
+// Update is fine here: the node was unreachable (no live traffic/health writes to clobber).
 func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) error {
 	n, err := s.nodes.GetByID(ctx, nodeID)
 	if err != nil {
@@ -343,37 +343,41 @@ func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) err
 	if n.IsSeparator() {
 		return fmt.Errorf("%w: node %d is a separator", domain.ErrValidation, nodeID)
 	}
-	if !inboundcfg.HasLocalConfig(n) {
-		return fmt.Errorf("%w: node %d has no captured inbound config to recreate", domain.ErrValidation, nodeID)
-	}
 	c, err := s.pool.Get(n.PanelID)
 	if err != nil {
 		return err
 	}
-	if inb, gerr := c.GetInbound(ctx, n.InboundID); gerr == nil && inb != nil {
-		return fmt.Errorf("%w: inbound %d already exists on panel %d — recreate is only for a missing inbound",
-			domain.ErrValidation, n.InboundID, n.PanelID)
+	// IDEMPOTENT: if the inbound is MISSING on the panel, recreate it from the captured
+	// snapshot + relink the node; if it's already there, skip creation. EITHER way the
+	// members' clients are (re-)provisioned below — so re-clicking this on a node whose
+	// inbound already exists but whose clients didn't push (e.g. the panel was briefly
+	// broken so the provision queue gave up) is a safe "push clients now".
+	if inb, gerr := c.GetInbound(ctx, n.InboundID); gerr != nil || inb == nil {
+		if !inboundcfg.HasLocalConfig(n) {
+			return fmt.Errorf("%w: node %d has no captured inbound config to recreate", domain.ErrValidation, nodeID)
+		}
+		spec := inboundcfg.SpecFromNode(n)
+		spec.Enable = true
+		newID, aerr := c.AddInbound(ctx, spec)
+		if aerr != nil {
+			return fmt.Errorf("recreate inbound on panel %d: %w", n.PanelID, aerr)
+		}
+		n.InboundID = newID
+		n.Enabled = true
+		inboundcfg.ApplySpec(n, spec) // re-stamp synced: we just pushed the snapshot live
+		if uerr := s.nodes.Update(ctx, n); uerr != nil {
+			_ = c.DelInbound(context.Background(), newID) // roll back the orphan inbound
+			return fmt.Errorf("relink node %d to new inbound %d: %w", nodeID, newID, uerr)
+		}
+		log.Info("recreated node inbound on its server", "node_id", nodeID, "panel_id", n.PanelID, "new_inbound_id", newID)
+	} else {
+		log.Info("recreate: inbound already present — re-provisioning clients", "node_id", nodeID, "panel_id", n.PanelID, "inbound_id", n.InboundID)
 	}
-	spec := inboundcfg.SpecFromNode(n)
-	spec.Enable = true
-	newID, err := c.AddInbound(ctx, spec)
-	if err != nil {
-		return fmt.Errorf("recreate inbound on panel %d: %w", n.PanelID, err)
-	}
-	n.InboundID = newID
-	n.Enabled = true
-	inboundcfg.ApplySpec(n, spec) // re-stamp synced: we just pushed the snapshot live
-	if err := s.nodes.Update(ctx, n); err != nil {
-		_ = c.DelInbound(context.Background(), newID) // roll back the orphan inbound
-		return fmt.Errorf("relink node %d to new inbound %d: %w", nodeID, newID, err)
-	}
-	log.Info("recreated node inbound on its server", "node_id", nodeID, "panel_id", n.PanelID, "new_inbound_id", newID)
-	// Provision the members' clients onto the new inbound RIGHT AWAY, off the request
-	// thread — so the button returns fast (no 30s HTTP timeout on a populous node) and
-	// the clients appear within seconds rather than on the next 30s sync-task tick. Per
-	// member, ResyncMembershipOrEnqueue provisions live and, IF that fails, drops the
-	// member into the sync-task queue for retry (so a flaky 3X-UI call never loses the
-	// client). This is what makes recreate a single self-contained action.
+	// (Re-)provision the members' clients onto the node's inbound, off the request thread —
+	// button returns fast (no 30s HTTP timeout on a populous node); clients appear within
+	// seconds, not on the next sync-task tick. Per member, ResyncMembershipOrEnqueue
+	// provisions live and, IF that fails, drops the member into the sync-task queue for
+	// retry (so a flaky 3X-UI call never loses the client).
 	s.provisionNodeMembersInBackground(n)
 	return nil
 }
