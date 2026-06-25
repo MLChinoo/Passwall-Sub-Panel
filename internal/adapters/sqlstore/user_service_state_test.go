@@ -47,25 +47,27 @@ func TestUpdateOmitsServiceState(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// A blocked-client auto-suspend lands via the column-scoped writer.
+	// The admin opens the edit dialog while the user is still active: capture
+	// their snapshot. Loading via GetByID (not a hand-built struct) mirrors
+	// UpdateProfile's real GetByID -> mutate -> Save read-modify-write and keeps
+	// created_at populated — a zero time.Time fails MySQL strict mode as
+	// '0000-00-00'. At this point ServiceDisabledReason is None (active).
+	adminSnapshot, err := repo.GetByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("GetByID (admin snapshot): %v", err)
+	}
+
+	// Meanwhile a blocked-client auto-suspend lands via the column-scoped writer.
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	if err := repo.UpdateServiceState(ctx, u.ID, domain.DisabledBlockedClient, "too many clients", &now); err != nil {
 		t.Fatalf("UpdateServiceState: %v", err)
 	}
 
-	// Simulate an admin profile-Save carrying a STALE (pre-suspend) snapshot:
-	// service columns still read "active". This is what UpdateProfile does when
-	// the suspend lands between its GetByID and its Save.
-	stale := &domain.User{
-		ID: u.ID, UPN: u.UPN, Role: u.Role, SubToken: u.SubToken,
-		UUID: u.UUID, GroupID: u.GroupID, TrafficResetPeriod: u.TrafficResetPeriod,
-		Enabled: true, Remark: "admin edited the remark",
-		// stale: no service suspension captured
-		ServiceDisabledReason: domain.DisabledNone,
-		ServiceDisableDetail:  "",
-		ServiceDisabledAt:     nil,
-	}
-	if err := repo.Update(ctx, stale); err != nil {
+	// The admin clicks Save, carrying the STALE (pre-suspend) snapshot whose
+	// service columns still read "active" — the clobber window UpdateProfile hits
+	// when a suspend lands between its GetByID and its Save.
+	adminSnapshot.Remark = "admin edited the remark"
+	if err := repo.Update(ctx, adminSnapshot); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
