@@ -93,10 +93,17 @@ func (u recreateUsers) ListByGroup(_ context.Context, gid int64) ([]*domain.User
 	return u.byGroup[gid], nil
 }
 
-type recreateResyncer struct{ ids []int64 }
+type recreateResyncer struct {
+	ids        []int64
+	bulkWarmed []int64
+}
 
 func (r *recreateResyncer) ResyncMembershipOrEnqueue(_ context.Context, id int64, _ string) error {
 	r.ids = append(r.ids, id)
+	return nil
+}
+func (r *recreateResyncer) BulkProvisionNodeMembers(_ context.Context, _ *domain.Node, userIDs []int64) error {
+	r.bulkWarmed = append(r.bulkWarmed, userIDs...)
 	return nil
 }
 
@@ -117,6 +124,10 @@ func TestProvisionNodeMembers(t *testing.T) {
 	// Only the enabled member (100) is resynced, exactly once; disabled (101) skipped.
 	if len(resync.ids) != 1 || resync.ids[0] != 100 {
 		t.Fatalf("want a single resync for enabled member 100, got %v", resync.ids)
+	}
+	// The bulk warm-up runs first over the same enabled member set (1 Xray restart).
+	if len(resync.bulkWarmed) != 1 || resync.bulkWarmed[0] != 100 {
+		t.Fatalf("want bulk warm over [100], got %v", resync.bulkWarmed)
 	}
 }
 

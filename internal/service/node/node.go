@@ -45,6 +45,11 @@ type InboundCleaner interface {
 // node package never imports user. nil before wiring / in tests.
 type MemberResyncer interface {
 	ResyncMembershipOrEnqueue(ctx context.Context, userID int64, summary string) error
+	// BulkProvisionNodeMembers front-loads many members' shared-client creates onto
+	// this node's inbound in ONE bulkCreate + bulkAttach (one Xray restart) before
+	// the per-member resyncs run. Best-effort warm-up; a failure is logged and the
+	// per-member ResyncMembershipOrEnqueue pass still provisions authoritatively.
+	BulkProvisionNodeMembers(ctx context.Context, n *domain.Node, userIDs []int64) error
 }
 
 type Service struct {
@@ -414,8 +419,9 @@ func (s *Service) provisionNodeMembers(ctx context.Context, n *domain.Node) {
 		log.Warn("recreate: list groups for member provision", "node_id", n.ID, "err", err)
 		return
 	}
+	// Collect every ENABLED member of a matching group, deduped, order-preserving.
 	seen := make(map[int64]bool)
-	provisioned := 0
+	var memberIDs []int64
 	for _, g := range groups {
 		if !group.Matches(n, g.TagFilter) {
 			continue
@@ -430,14 +436,30 @@ func (s *Service) provisionNodeMembers(ctx context.Context, n *domain.Node) {
 				continue
 			}
 			seen[u.ID] = true
-			if err := s.resyncer.ResyncMembershipOrEnqueue(ctx, u.ID, "provision client on recreated node "+n.DisplayName); err != nil {
-				log.Warn("recreate: provision member", "node_id", n.ID, "user_id", u.ID, "err", err)
-				continue
-			}
-			provisioned++
+			memberIDs = append(memberIDs, u.ID)
 		}
 	}
-	log.Info("recreate: provisioned clients for node members", "node_id", n.ID, "members", provisioned)
+	if len(memberIDs) == 0 {
+		return
+	}
+	// Warm-up: front-load every member's create onto n's inbound in ONE bulkCreate +
+	// bulkAttach (one Xray restart) before the per-member resyncs. Best-effort — on
+	// failure the authoritative per-member pass below still provisions each one.
+	if err := s.resyncer.BulkProvisionNodeMembers(ctx, n, memberIDs); err != nil {
+		log.Warn("recreate: bulk warm node members", "node_id", n.ID, "members", len(memberIDs), "err", err)
+	}
+	// Authoritative per-member pass: confirm + mark provisioned + push lifecycle +
+	// reconcile orphans. After the warm-up the create is a no-op (client already
+	// present), so this no longer costs a per-member Xray restart for the create.
+	provisioned := 0
+	for _, uid := range memberIDs {
+		if err := s.resyncer.ResyncMembershipOrEnqueue(ctx, uid, "provision client on recreated node "+n.DisplayName); err != nil {
+			log.Warn("recreate: provision member", "node_id", n.ID, "user_id", uid, "err", err)
+			continue
+		}
+		provisioned++
+	}
+	log.Info("recreate: provisioned clients for node members", "node_id", n.ID, "members", provisioned, "warmed", len(memberIDs))
 }
 
 // ---- Update flows ----

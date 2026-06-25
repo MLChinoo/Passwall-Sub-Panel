@@ -40,6 +40,9 @@ func (r *fakeUserRepo) Update(ctx context.Context, u *domain.User) error {
 		cp.BlockViolationCount = prev.BlockViolationCount
 		cp.LastBlockViolationAt = prev.LastBlockViolationAt
 		cp.DisableDetail = prev.DisableDetail
+		cp.ServiceDisabledReason = prev.ServiceDisabledReason
+		cp.ServiceDisableDetail = prev.ServiceDisableDetail
+		cp.ServiceDisabledAt = prev.ServiceDisabledAt
 	}
 	r.users[u.ID] = &cp
 	return nil
@@ -59,7 +62,6 @@ func (r *fakeUserRepo) AdvanceBlockViolation(ctx context.Context, userID int64, 
 	cur.BlockViolationCount++
 	la := at
 	cur.LastBlockViolationAt = &la
-	cur.DisableDetail = detail
 	return cur.BlockViolationCount, true, nil
 }
 
@@ -67,7 +69,15 @@ func (r *fakeUserRepo) ClearBlockViolation(ctx context.Context, userID int64) er
 	if cur, ok := r.users[userID]; ok {
 		cur.BlockViolationCount = 0
 		cur.LastBlockViolationAt = nil
-		cur.DisableDetail = ""
+	}
+	return nil
+}
+
+func (r *fakeUserRepo) UpdateServiceState(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string, disabledAt *time.Time) error {
+	if cur, ok := r.users[userID]; ok {
+		cur.ServiceDisabledReason = reason
+		cur.ServiceDisableDetail = detail
+		cur.ServiceDisabledAt = disabledAt
 	}
 	return nil
 }
@@ -219,6 +229,16 @@ type fakeDisabler struct {
 
 func (d *fakeDisabler) SetEnabledAndSync(ctx context.Context, userID int64, enabled bool, _ domain.AutoDisabledReason, _ string) error {
 	d.calls = append(d.calls, enabled)
+	return nil
+}
+
+func (d *fakeDisabler) SetServiceSuspendedAndSync(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string) error {
+	d.calls = append(d.calls, false)
+	return nil
+}
+
+func (d *fakeDisabler) ResumeServiceAndSync(ctx context.Context, userID int64) error {
+	d.calls = append(d.calls, true)
 	return nil
 }
 
@@ -882,11 +902,11 @@ func TestRecordAndEnforcePersistsRolloverBeforeDisablerCall(t *testing.T) {
 	oldStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
 	users := &fakeUserRepo{users: map[int64]*domain.User{
 		1: {
-			ID:                 1,
-			Enabled:            false,
-			AutoDisabledReason: domain.DisabledTrafficExceeded,
-			TrafficResetPeriod: domain.ResetMonthly,
-			TrafficPeriodStart: &oldStart,
+			ID:                    1,
+			Enabled:               true,
+			ServiceDisabledReason: domain.DisabledTrafficExceeded,
+			TrafficResetPeriod:    domain.ResetMonthly,
+			TrafficPeriodStart:    &oldStart,
 		},
 	}}
 	repo := &fakeTrafficRepo{}
@@ -1317,6 +1337,9 @@ func (c *fakeXUIClient) BulkAttach(ctx context.Context, emails []string, inbound
 func (c *fakeXUIClient) BulkDetach(ctx context.Context, emails []string, inboundIDs []int) (ports.BulkAttachResult, error) {
 	return ports.BulkAttachResult{}, nil
 }
+func (c *fakeXUIClient) BulkCreateClients(ctx context.Context, items []ports.BulkCreateClientItem) (ports.BulkCreateResult, error) {
+	return ports.BulkCreateResult{}, nil
+}
 func (c *fakeXUIClient) GetServerStatus(ctx context.Context) (*ports.ServerStatus, error) {
 	return &ports.ServerStatus{PanelVersion: "3.1.0", XrayVersion: "26.5.9", XrayState: "running"}, nil
 }
@@ -1513,16 +1536,16 @@ func TestPollOnceRolloverWritesSynchronouslyForDisablerReread(t *testing.T) {
 
 	users := &fakeUserRepo{users: map[int64]*domain.User{
 		1: {
-			ID:                  1,
-			Enabled:             false, // was auto-disabled
-			AutoDisabledReason:  domain.DisabledTrafficExceeded,
-			TrafficLimitBytes:   limit,
-			TrafficResetPeriod:  domain.ResetMonthly,
-			TrafficPeriodStart:  &oldStart,
-			LifetimeUpBytes:     limit, // fully used last period
-			LifetimeDownBytes:   0,
-			LifetimeTotalBytes:  limit,
-			PeriodBaselineBytes: 0, // → PeriodUsed() == limit before rollover
+			ID:                    1,
+			Enabled:               true,
+			ServiceDisabledReason: domain.DisabledTrafficExceeded,
+			TrafficLimitBytes:     limit,
+			TrafficResetPeriod:    domain.ResetMonthly,
+			TrafficPeriodStart:    &oldStart,
+			LifetimeUpBytes:       limit, // fully used last period
+			LifetimeDownBytes:     0,
+			LifetimeTotalBytes:    limit,
+			PeriodBaselineBytes:   0, // → PeriodUsed() == limit before rollover
 		},
 	}}
 
@@ -1587,6 +1610,20 @@ type capturingDisabler struct {
 func (d *capturingDisabler) SetEnabledAndSync(ctx context.Context, userID int64, enabled bool, _ domain.AutoDisabledReason, _ string) error {
 	if d.onCall != nil {
 		d.onCall(enabled)
+	}
+	return nil
+}
+
+func (d *capturingDisabler) SetServiceSuspendedAndSync(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string) error {
+	if d.onCall != nil {
+		d.onCall(false)
+	}
+	return nil
+}
+
+func (d *capturingDisabler) ResumeServiceAndSync(ctx context.Context, userID int64) error {
+	if d.onCall != nil {
+		d.onCall(true)
 	}
 	return nil
 }
@@ -1862,12 +1899,12 @@ func TestRecordAndEnforceRechecksLimitAfterRolloverReenable(t *testing.T) {
 	oldStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, -1, 0)
 	users := &fakeUserRepo{users: map[int64]*domain.User{
 		1: {
-			ID:                 1,
-			Enabled:            false,
-			AutoDisabledReason: domain.DisabledTrafficExceeded,
-			TrafficLimitBytes:  1,
-			TrafficResetPeriod: domain.ResetMonthly,
-			TrafficPeriodStart: &oldStart,
+			ID:                    1,
+			Enabled:               true,
+			ServiceDisabledReason: domain.DisabledTrafficExceeded,
+			TrafficLimitBytes:     1,
+			TrafficResetPeriod:    domain.ResetMonthly,
+			TrafficPeriodStart:    &oldStart,
 		},
 	}}
 	repo := &fakeTrafficRepo{}

@@ -76,6 +76,10 @@ func (a sharedMigratorAdapter) DeleteSharedForUser(ctx context.Context, userID i
 	return a.s.DeleteSharedForUser(ctx, userID)
 }
 
+func (a sharedMigratorAdapter) BulkProvisionNodeInbound(ctx context.Context, n *domain.Node, userIDs []int64) error {
+	return a.s.BulkProvisionNodeInbound(ctx, n, userIDs)
+}
+
 func (a *asyncDispatcher) Context() context.Context { return a.ctx }
 
 func (a *asyncDispatcher) Go(name string, fn func(ctx context.Context)) {

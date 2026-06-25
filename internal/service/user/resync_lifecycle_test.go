@@ -31,6 +31,9 @@ func (m *resyncMigrator) DeleteSharedForUser(_ context.Context, id int64) error 
 	m.deletedShared = append(m.deletedShared, id)
 	return nil
 }
+func (m *resyncMigrator) BulkProvisionNodeInbound(_ context.Context, _ *domain.Node, _ []int64) error {
+	return nil
+}
 
 type failingSharedLife struct {
 	fail  bool

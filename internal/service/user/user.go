@@ -138,6 +138,10 @@ type SharedMigrator interface {
 	// ProvisionUser creates/reconciles the shared client(s) in 3X-UI + marks the
 	// confirmed attachments provisioned. Does NOT touch lifecycle or legacy clients.
 	ProvisionUser(ctx context.Context, userID int64) error
+	// BulkProvisionNodeInbound front-loads many users' shared-client creates onto
+	// ONE node's inbound in a single bulkCreate + bulkAttach (one Xray restart). A
+	// best-effort warm-up; the per-user ProvisionUser pass remains authoritative.
+	BulkProvisionNodeInbound(ctx context.Context, n *domain.Node, userIDs []int64) error
 	// DeleteLegacyForUser removes the user's legacy per-node clients (only those a
 	// provisioned shared client now serves) + their ownership rows.
 	DeleteLegacyForUser(ctx context.Context, userID int64) error
@@ -1301,6 +1305,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 	}
 	groupChanged := false
 	expireChanged := false
+	trafficLimitChanged := false
 	if in.GroupID != nil && *in.GroupID != u.GroupID {
 		if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
 			return fmt.Errorf("group: %w", err)
@@ -1342,6 +1347,9 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 		expireChanged = true
 	}
 	if in.TrafficLimitBytes != nil {
+		if *in.TrafficLimitBytes != u.TrafficLimitBytes {
+			trafficLimitChanged = true
+		}
 		u.TrafficLimitBytes = *in.TrafficLimitBytes
 	}
 	if in.TrafficResetPeriod != nil {
@@ -1359,13 +1367,33 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
+	now := time.Now()
+	serviceStateChanged := false
+	if u.ServiceDisabledReason == domain.DisabledExpired && !u.IsExpired(now) {
+		u.ServiceDisabledReason = domain.DisabledNone
+		u.ServiceDisableDetail = ""
+		u.ServiceDisabledAt = nil
+		if err := s.users.UpdateServiceState(ctx, u.ID, domain.DisabledNone, "", nil); err != nil {
+			return err
+		}
+		serviceStateChanged = true
+	}
+	if u.ServiceDisabledReason == domain.DisabledTrafficExceeded && (!u.TrafficExceeded() || u.EmergencyActive(now)) {
+		u.ServiceDisabledReason = domain.DisabledNone
+		u.ServiceDisableDetail = ""
+		u.ServiceDisabledAt = nil
+		if err := s.users.UpdateServiceState(ctx, u.ID, domain.DisabledNone, "", nil); err != nil {
+			return err
+		}
+		serviceStateChanged = true
+	}
 	if groupChanged {
 		if err := s.ResyncMembershipOrEnqueue(ctx, userID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
 			log.Warn("enqueue user membership resync failed", "user_id", userID, "err", err)
 		}
 		return nil
 	}
-	if expireChanged {
+	if expireChanged || trafficLimitChanged || serviceStateChanged {
 		if err := s.pushClientConfigToAll(ctx, u); err != nil {
 			if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 				log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
@@ -1435,16 +1463,20 @@ func (s *Service) UseEmergencyAccess(ctx context.Context, userID int64, trafficL
 		if !u.Enabled && (u.AutoDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledExpired) {
 			u.Enabled = true
 			if u.AutoDisabledReason == domain.DisabledTrafficExceeded {
-				u.AutoDisabledReason = domain.DisabledTrafficExceeded
-				u.DisableDetail = "emergency access active"
+				u.ServiceDisabledReason = domain.DisabledTrafficExceeded
+				u.ServiceDisableDetail = "emergency access active"
 			} else {
-				u.AutoDisabledReason = domain.DisabledNone
-				u.DisableDetail = ""
+				u.ServiceDisabledReason = domain.DisabledNone
+				u.ServiceDisableDetail = ""
 			}
+			u.AutoDisabledReason = domain.DisabledNone
+			u.DisableDetail = ""
 		}
 		if trafficLimitExceeded && u.Enabled {
-			u.AutoDisabledReason = domain.DisabledTrafficExceeded
-			u.DisableDetail = "emergency access active"
+			u.ServiceDisabledReason = domain.DisabledTrafficExceeded
+			u.ServiceDisableDetail = "emergency access active"
+			nowCopy := now
+			u.ServiceDisabledAt = &nowCopy
 		}
 		u.EmergencyUntil = &until
 		u.EmergencyUsedCount++
@@ -1545,8 +1577,9 @@ func EmergencyAccessStatusForUserWithTrafficLimit(u *domain.User, settings ports
 		return st
 	}
 	expired := u.ExpireAt != nil && !u.ExpireAt.After(now)
-	expiredEligible := expired && (u.Enabled || u.AutoDisabledReason == domain.DisabledExpired)
-	trafficExceeded := (u.AutoDisabledReason == domain.DisabledTrafficExceeded && (!u.Enabled || u.EmergencyUntil != nil)) ||
+	expiredEligible := expired && u.Enabled
+	trafficExceeded := (u.ServiceDisabledReason == domain.DisabledTrafficExceeded && u.Enabled) ||
+		(u.AutoDisabledReason == domain.DisabledTrafficExceeded && (!u.Enabled || u.EmergencyUntil != nil)) ||
 		(trafficLimitExceeded && u.Enabled)
 	if !expiredEligible && !trafficExceeded {
 		st.Status = "not_eligible"
@@ -1651,6 +1684,54 @@ func (s *Service) ResyncGroupMembersInBackground(groupID int64) {
 // only then removes the legacy per-node fallback rows. Errors during individual
 // phases are returned as a single wrapped error after partial progress is
 // preserved. Drift left behind is healed by the next reconciliation pass.
+// syncUserDesired runs ONLY the DB build phase of a resync: recompute the user's
+// desired psp_client set from their group's nodes and write it (psp.SyncUser). It's
+// the prerequisite for the bulk node warm-up — the freshly-added node must be in the
+// user's attachment set before BulkProvisionNodeInbound can create/attach onto it.
+// Mirrors ResyncMembership's build preamble; the full resync remains authoritative.
+func (s *Service) syncUserDesired(ctx context.Context, userID int64) error {
+	if s.psp == nil {
+		return nil
+	}
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u.AutoDisabledReason == domain.DisabledPendingDelete {
+		return nil
+	}
+	g, err := s.groups.GetByID(ctx, u.GroupID)
+	if err != nil {
+		return err
+	}
+	desiredNodes, err := s.selector.NodesFor(ctx, g)
+	if err != nil {
+		return err
+	}
+	desiredNodes = s.resolveShadowsocksMethods(ctx, desiredNodes)
+	_, err = s.psp.SyncUser(ctx, u.ID, u.UUID, s.emailRules(ctx), desiredNodes)
+	return err
+}
+
+// BulkProvisionNodeMembers builds every member's desired psp_client set (so the new
+// node is in their attachments) and then provisions them onto the node's inbound in
+// ONE bulkCreate + ONE bulkAttach via the migrator — collapsing a node-add / outage-
+// heal create fan-out from N Xray restarts to 1. Best-effort warm-up: the caller's
+// per-member ResyncMembershipOrEnqueue still runs as the authoritative pass, so a
+// miss or partial failure here is healed (this never marks provisioned or pushes
+// lifecycle — that stays with the resync).
+func (s *Service) BulkProvisionNodeMembers(ctx context.Context, n *domain.Node, userIDs []int64) error {
+	if s.migrator == nil || n == nil || len(userIDs) == 0 {
+		return nil
+	}
+	for _, uid := range userIDs {
+		if err := s.syncUserDesired(ctx, uid); err != nil {
+			return err
+		}
+	}
+	return s.migrator.BulkProvisionNodeInbound(ctx, n, userIDs)
+}
+
 func (s *Service) ResyncMembership(ctx context.Context, userID int64) error {
 	// Serialize concurrent resyncs of the SAME user (heal sweep + sync-task drain +
 	// request threads) so a re-key in one pass can't race the orphan reconcile in
@@ -1893,21 +1974,6 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 	if err := s.users.Update(ctx, u); err != nil {
 		return err
 	}
-	// On re-enable, clear the blocked-client tracking columns. Without
-	// this, a user who was auto-disabled at SubBlockAutoDisableCount
-	// (say, 5 violations) keeps block_violation_count=5 across the
-	// admin's manual re-enable, and the very next /sub fetch with a
-	// blocked client increments past the threshold and re-disables
-	// instantly — admin has no way to break the loop without an SQL
-	// edit. Column-scoped write because pollOwnedColumns omits these
-	// columns from the regular Update path above. Best-effort: log
-	// instead of failing the whole re-enable.
-	if enabled {
-		if err := s.users.ClearBlockViolation(ctx, userID); err != nil {
-			log.Warn("SetEnabledAndSync: ClearBlockViolation failed; user re-enabled but violation counter not reset",
-				"user_id", userID, "err", err)
-		}
-	}
 	// pushClientConfigToAll mirrors the enable/expiry flip onto the shared client
 	// (HOLE #1) before its per-node work — this is THE path admin disable +
 	// quota/expiry auto-disable funnel through, so it's what cuts a disabled user's
@@ -1917,6 +1983,63 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 	if pushErr != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
+		}
+		return nil
+	}
+	return nil
+}
+
+// SetServiceSuspendedAndSync pauses proxy/subscription service while preserving
+// panel login. Used by blocked-client enforcement, quota enforcement, and the
+// admin "pause service" action.
+func (s *Service) SetServiceSuspendedAndSync(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string) error {
+	if reason == domain.DisabledNone {
+		return fmt.Errorf("%w: service suspension reason is required", domain.ErrValidation)
+	}
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := s.users.UpdateServiceState(ctx, userID, reason, detail, &now); err != nil {
+		return err
+	}
+	u.ServiceDisabledReason = reason
+	u.ServiceDisableDetail = detail
+	u.ServiceDisabledAt = &now
+	if err := s.pushClientConfigToAll(ctx, u); err != nil {
+		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync service status for user %s", u.UPN)); taskErr != nil {
+			log.Warn("enqueue user service-status push failed", "user_id", userID, "err", taskErr)
+		}
+		return nil
+	}
+	return nil
+}
+
+// ResumeServiceAndSync clears a service-level suspension. If the suspension was
+// caused by blocked-client violations, the violation counter is reset as part of
+// the same operation so the next allowed restore does not instantly re-suspend.
+func (s *Service) ResumeServiceAndSync(ctx context.Context, userID int64) error {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	wasBlocked := u.ServiceDisabledReason == domain.DisabledBlockedClient
+	if err := s.users.UpdateServiceState(ctx, userID, domain.DisabledNone, "", nil); err != nil {
+		return err
+	}
+	u.ServiceDisabledReason = domain.DisabledNone
+	u.ServiceDisableDetail = ""
+	u.ServiceDisabledAt = nil
+	if wasBlocked {
+		if err := s.users.ClearBlockViolation(ctx, userID); err != nil {
+			log.Warn("ResumeServiceAndSync: ClearBlockViolation failed; service restored but violation counter not reset",
+				"user_id", userID, "err", err)
+		}
+	}
+	if err := s.pushClientConfigToAll(ctx, u); err != nil {
+		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync service resume for user %s", u.UPN)); taskErr != nil {
+			log.Warn("enqueue user service-resume push failed", "user_id", userID, "err", taskErr)
 		}
 		return nil
 	}
