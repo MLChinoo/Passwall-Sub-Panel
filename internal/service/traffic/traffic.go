@@ -2364,10 +2364,33 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 // user's clients so Σ(per-client period usage) stays equal to the override.
 // Each client's baseline becomes the same fraction f = (Σlifetime - used)/Σlifetime
 // of its own lifetime, so its period usage = lifetime·(1-f) is its lifetime
-// share of `used`. float64 keeps the proportion overflow-safe (the byte-level
-// rounding is invisible in a display). No-op when the user owns nothing or has
-// zero lifetime. Best-effort: errors are logged, not surfaced.
+// share of `used`. Reseeds BOTH client models: legacy ownership rows (pre-/mid-
+// migration users) AND psp_client rows (migrated users have ownership empty, so
+// the shared model is the only one carrying their per-server breakdown). Without
+// the psp_client reseed, UserServerUsage keeps computing period = lifetime −
+// stale-baseline for a migrated user and visibly contradicts the user-level
+// override. Best-effort: errors are logged, not surfaced.
 func (s *Service) reseedClientBaselines(ctx context.Context, userID, usedBytes int64) {
+	s.reseedOwnershipBaselines(ctx, userID, usedBytes)
+	s.reseedSharedBaselines(ctx, userID, usedBytes)
+}
+
+// reseedFraction returns f = (Σlifetime - used)/Σlifetime, clamped so a user
+// can't have used more this period than their total lifetime. 0 when lifetime
+// is 0 (everything below scales to a zero baseline). float64 keeps the
+// proportion overflow-safe; the byte-level rounding is invisible in a display.
+func reseedFraction(clientLifetime, usedBytes int64) float64 {
+	if clientLifetime <= 0 {
+		return 0
+	}
+	used := usedBytes
+	if used > clientLifetime {
+		used = clientLifetime
+	}
+	return float64(clientLifetime-used) / float64(clientLifetime)
+}
+
+func (s *Service) reseedOwnershipBaselines(ctx context.Context, userID, usedBytes int64) {
 	if s.ownership == nil {
 		return
 	}
@@ -2379,14 +2402,7 @@ func (s *Service) reseedClientBaselines(ctx context.Context, userID, usedBytes i
 	for _, e := range entries {
 		clientLifetime += e.LifetimeTotalBytes
 	}
-	f := 0.0
-	if clientLifetime > 0 {
-		used := usedBytes
-		if used > clientLifetime {
-			used = clientLifetime // can't have used more this period than total
-		}
-		f = float64(clientLifetime-used) / float64(clientLifetime)
-	}
+	f := reseedFraction(clientLifetime, usedBytes)
 	for _, e := range entries {
 		e.PeriodBaselineUpBytes = int64(float64(e.LifetimeUpBytes) * f)
 		e.PeriodBaselineDownBytes = int64(float64(e.LifetimeDownBytes) * f)
@@ -2394,5 +2410,28 @@ func (s *Service) reseedClientBaselines(ctx context.Context, userID, usedBytes i
 	}
 	if err := s.ownership.BatchUpdateCounters(ctx, entries); err != nil {
 		log.Warn("set period usage: per-client baseline reseed", "user_id", userID, "err", err)
+	}
+}
+
+func (s *Service) reseedSharedBaselines(ctx context.Context, userID, usedBytes int64) {
+	if s.pspClient == nil {
+		return
+	}
+	clients, err := s.pspClient.ListByUser(ctx, userID)
+	if err != nil || len(clients) == 0 {
+		return
+	}
+	var clientLifetime int64
+	for _, c := range clients {
+		clientLifetime += c.LifetimeTotalBytes
+	}
+	f := reseedFraction(clientLifetime, usedBytes)
+	for _, c := range clients {
+		c.PeriodBaselineUpBytes = int64(float64(c.LifetimeUpBytes) * f)
+		c.PeriodBaselineDownBytes = int64(float64(c.LifetimeDownBytes) * f)
+		c.PeriodBaselineTotalBytes = int64(float64(c.LifetimeTotalBytes) * f)
+	}
+	if err := s.pspClient.BatchUpdateCounters(ctx, clients); err != nil {
+		log.Warn("set period usage: shared-client baseline reseed", "user_id", userID, "err", err)
 	}
 }

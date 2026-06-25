@@ -10,8 +10,9 @@ import (
 
 type fakePSPClientRepo struct {
 	ports.PSPClientRepo
-	byUser   map[int64][]*domain.PSPClient
-	inbounds map[int64][]domain.PSPClientInbound // clientID -> attachments
+	byUser       map[int64][]*domain.PSPClient
+	inbounds     map[int64][]domain.PSPClientInbound // clientID -> attachments
+	batchUpdated []*domain.PSPClient                 // last BatchUpdateCounters payload
 }
 
 func (f *fakePSPClientRepo) ListByUser(_ context.Context, uid int64) ([]*domain.PSPClient, error) {
@@ -19,6 +20,51 @@ func (f *fakePSPClientRepo) ListByUser(_ context.Context, uid int64) ([]*domain.
 }
 func (f *fakePSPClientRepo) ListInbounds(_ context.Context, clientID int64) ([]domain.PSPClientInbound, error) {
 	return f.inbounds[clientID], nil
+}
+func (f *fakePSPClientRepo) BatchUpdateCounters(_ context.Context, items []*domain.PSPClient) error {
+	f.batchUpdated = items
+	return nil
+}
+func (f *fakePSPClientRepo) ListAll(_ context.Context) ([]*domain.PSPClient, error) {
+	var all []*domain.PSPClient
+	for _, cs := range f.byUser {
+		all = append(all, cs...)
+	}
+	return all, nil
+}
+
+// SetPeriodUsage's per-client reseed must ALSO rebaseline psp_client rows for a
+// MIGRATED user (one with NO ownership rows). Without it, UserServerUsage keeps
+// computing per-server period = lifetime − stale-baseline and visibly
+// contradicts the user-level override shown right above it.
+func TestReseedClientBaselines_SharedClientsForMigratedUser(t *testing.T) {
+	psp := &fakePSPClientRepo{
+		byUser: map[int64][]*domain.PSPClient{1: {
+			{ID: 1, UserID: 1, PanelID: 10, LifetimeUpBytes: 600, LifetimeDownBytes: 400, LifetimeTotalBytes: 1000},
+			{ID: 2, UserID: 1, PanelID: 11, LifetimeUpBytes: 60, LifetimeDownBytes: 40, LifetimeTotalBytes: 100},
+		}},
+	}
+	svc := &Service{} // no ownership repo wired → a fully-migrated user
+	svc.SetPSPClientRepo(psp)
+
+	// Σlifetime = 1100, admin override used = 550 → f = (1100-550)/1100 = 0.5, so
+	// each client's period baseline becomes half its lifetime and Σ(period) =
+	// Σ(lifetime·(1-f)) = 550, matching the override.
+	svc.reseedClientBaselines(context.Background(), 1, 550)
+
+	if psp.batchUpdated == nil {
+		t.Fatal("psp_client baselines were not reseeded for a migrated user")
+	}
+	got := map[int64]*domain.PSPClient{}
+	for _, c := range psp.batchUpdated {
+		got[c.ID] = c
+	}
+	if c := got[1]; c == nil || c.PeriodBaselineTotalBytes != 500 {
+		t.Fatalf("client 1 period baseline = %+v, want total 500", c)
+	}
+	if c := got[2]; c == nil || c.PeriodBaselineTotalBytes != 50 {
+		t.Fatalf("client 2 period baseline = %+v, want total 50", c)
+	}
 }
 
 // UserServerUsage must reconstruct the per-server breakdown from psp_client for a
