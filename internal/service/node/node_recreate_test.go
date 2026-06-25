@@ -32,10 +32,18 @@ func (r *recreateNodeRepo) Update(_ context.Context, n *domain.Node) error {
 
 type recreateClient struct {
 	ports.XUIClient
-	inbounds  map[int]*ports.Inbound
-	addedSpec ports.InboundSpec
-	nextID    int
-	deleted   []int
+	inbounds    map[int]*ports.Inbound
+	addedSpec   ports.InboundSpec
+	nextID      int
+	deleted     []int
+	updatedID   int
+	updatedSpec ports.InboundSpec
+}
+
+func (c *recreateClient) UpdateInbound(_ context.Context, id int, spec ports.InboundSpec) error {
+	c.updatedID = id
+	c.updatedSpec = spec
+	return nil
 }
 
 func (c *recreateClient) GetInbound(_ context.Context, id int) (*ports.Inbound, error) {
@@ -162,7 +170,9 @@ func TestRecreateInboundOnServer_Guards(t *testing.T) {
 		return &domain.Node{ID: 1, PanelID: 10, InboundID: 5, Protocol: "vless", Port: 443,
 			InboundSettings: "{}", ConfigSyncedAt: &now, ConfigSyncState: "synced"}
 	}
-	// Inbound already present → idempotent: no error, and NO new inbound created.
+	// Inbound already present (with a captured snapshot) → idempotent: no error,
+	// NO new inbound created, but the snapshot is RE-PUSHED via UpdateInbound to
+	// heal an inbound created before the clients[] fix (clients-less SS → un-addable).
 	cli := &recreateClient{inbounds: map[int]*ports.Inbound{5: {ID: 5}}, nextID: 12}
 	svc := &Service{nodes: &recreateNodeRepo{node: base()}, pool: recreatePool{c: cli}, groups: recreateGroups{}}
 	if err := svc.RecreateInboundOnServer(context.Background(), 1); err != nil {
@@ -170,6 +180,9 @@ func TestRecreateInboundOnServer_Guards(t *testing.T) {
 	}
 	if cli.addedSpec.Protocol != "" {
 		t.Fatalf("must NOT create an inbound when one already exists, got AddInbound spec %+v", cli.addedSpec)
+	}
+	if cli.updatedID != 5 {
+		t.Fatalf("an existing inbound must be healed via UpdateInbound, got updatedID=%d", cli.updatedID)
 	}
 	// Missing inbound + no captured config → reject (nothing to recreate from).
 	n := base()

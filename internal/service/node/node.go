@@ -370,8 +370,19 @@ func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) err
 			return fmt.Errorf("relink node %d to new inbound %d: %w", nodeID, newID, uerr)
 		}
 		log.Info("recreated node inbound on its server", "node_id", nodeID, "panel_id", n.PanelID, "new_inbound_id", newID)
+	} else if inboundcfg.HasLocalConfig(n) {
+		// Inbound already there → re-push the captured snapshot to HEAL it in place.
+		// An inbound created before the clients[] fix carries clients-less settings,
+		// which makes 3X-UI blank-200 every /clients/add (notably shadowsocks); the
+		// UpdateInbound RMW re-applies the snapshot (ensureClientsArray guarantees the
+		// clients[] array) while preserving whatever clients are live. So re-clicking
+		// recreate fixes an existing un-addable inbound without delete+recreate.
+		if uerr := c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n)); uerr != nil {
+			return fmt.Errorf("heal existing inbound %d on panel %d: %w", n.InboundID, n.PanelID, uerr)
+		}
+		log.Info("recreate: re-pushed snapshot to heal existing inbound", "node_id", nodeID, "panel_id", n.PanelID, "inbound_id", n.InboundID)
 	} else {
-		log.Info("recreate: inbound already present — re-provisioning clients", "node_id", nodeID, "panel_id", n.PanelID, "inbound_id", n.InboundID)
+		log.Info("recreate: inbound present, no captured snapshot to re-push — provisioning clients only", "node_id", nodeID, "panel_id", n.PanelID, "inbound_id", n.InboundID)
 	}
 	// (Re-)provision the members' clients onto the node's inbound, off the request thread —
 	// button returns fast (no 30s HTTP timeout on a populous node); clients appear within

@@ -4,6 +4,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.27 — 2026-06-25
+
+### 修复
+
+- **根因修复:PSP 创建/重建的 shadowsocks inbound 无法添加 client(`clients/add` 返回空 200)** —— PSP 的 inbound 快照是「无 client」存储的(`StripClients` 直接 `delete` 掉 `clients` 字段),`AddInbound` 把这个无 `clients` 字段的 settings 推给 3X-UI。VLESS 侥幸没事(3X-UI 建 inbound 时会自己补 `clients:[]`),但 **shadowsocks 不会** —— 于是 3X-UI 在 `clients/add` 里对 nil 的 `clients` 数组做 append 时直接崩,返回 **HTTP 200 空响应、不建 client、不打日志**。实测在 3X-UI 3.4.0 上复现并定位:SS inbound 去掉 `clients[]` → 每次 `clients/add` 都空 200;补上 `clients:[]` → 正常。
+  - **修复**:适配层 `AddInbound` / `UpdateInbound` 现在统一保证 settings 带 `clients:[]` 数组(新增 `ensureClientsArray`)。**添加节点(`CreateInbound`)和重建 inbound 走的是同一条路,一并修复。**
+  - **自愈**:「在服务器上重建 inbound」对**已存在**的 inbound 现在会用 `UpdateInbound` 重推一遍快照(RMW 保留现有 client),把旧版本建出来的「无 `clients[]`、加不进 client」的 inbound **原地修好** —— 无需先删再建。
+
 ## v3.9.0-beta.26 — 2026-06-25
 
 ### 改进

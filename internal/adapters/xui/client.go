@@ -538,6 +538,16 @@ func (c *Client) GetInbound(ctx context.Context, id int) (*ports.Inbound, error)
 }
 
 func (c *Client) AddInbound(ctx context.Context, spec ports.InboundSpec) (int, error) {
+	// PSP stores its inbound snapshot client-less (inboundcfg.StripClients), so
+	// the settings reaching here usually carry no clients[] field. 3X-UI's
+	// POST /clients/add appends to settings.clients IN PLACE; if that field is
+	// absent the append blanks out — HTTP 200, empty body, no client created,
+	// no log — so a freshly created/recreated inbound becomes permanently
+	// un-addable. VLESS only escaped because 3X-UI re-adds clients:[] itself on
+	// inbound creation; SHADOWSOCKS does not. Guarantee the array at creation
+	// time. (Verified live on 3X-UI 3.4.0: SS inbound minus clients[] → blank
+	// 200 on every /clients/add; with clients:[] → succeeds.)
+	spec.Settings = ensureClientsArray(spec.Settings)
 	body := specToRaw(&spec, 0)
 	var out rawInbound
 	if err := c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/add", body, &out); err != nil {
@@ -553,7 +563,10 @@ func (c *Client) UpdateInbound(ctx context.Context, id int, spec ports.InboundSp
 	if err != nil {
 		return err
 	}
-	mergedSpec.Settings = settings
+	// Guarantee clients[] even when the RMW found zero live clients (it returns the
+	// snapshot verbatim, which PSP stores client-less) — otherwise updating to a
+	// clients-less SS inbound leaves /clients/add blank-200ing. See AddInbound.
+	mergedSpec.Settings = ensureClientsArray(settings)
 	body := specToRaw(&mergedSpec, id)
 	return c.doJSON(ctx, http.MethodPost, "/panel/api/inbounds/update/"+strconv.Itoa(id), body, nil)
 }
@@ -1003,6 +1016,30 @@ func specToRaw(s *ports.InboundSpec, id int) map[string]any {
 		"allocate":       s.Allocate,
 		"expiryTime":     s.ExpiryTime,
 	}
+}
+
+// ensureClientsArray guarantees the inbound settings JSON carries a clients[]
+// array, injecting an empty one when absent. See AddInbound for why this is
+// load-bearing (3X-UI panics appending to a missing clients field, yielding a
+// blank-200 on every subsequent /clients/add). Non-object / malformed input is
+// returned verbatim — better to push what we have than to lose the snapshot.
+func ensureClientsArray(settings string) string {
+	if strings.TrimSpace(settings) == "" {
+		return `{"clients":[]}`
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settings), &m); err != nil {
+		return settings
+	}
+	if _, ok := m["clients"]; ok {
+		return settings
+	}
+	m["clients"] = json.RawMessage("[]")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return settings
+	}
+	return string(out)
 }
 
 func rawTrafficsToPorts(raws []rawClientTraffic) []ports.ClientTraffic {
