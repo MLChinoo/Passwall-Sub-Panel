@@ -27,6 +27,8 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import { dashboardSummary, type DashboardSummary } from '@/api/dashboard'
 import { topTraffic, trafficHistory, type TrafficHistoryItem, type TrafficRow } from '@/api/traffic'
 import PageHeader from '@/components/PageHeader'
+import { useSiteStore } from '@/stores/site'
+import { panelDayStr } from '@/utils/datetime'
 import type { M3Tokens } from '@/theme'
 
 const TrafficChart = lazy(() => import('@/components/TrafficChart'))
@@ -109,6 +111,11 @@ export default function DashboardView() {
   const [topUsers, setTopUsers] = useState<TrafficRow[]>([])
   const [trend, setTrend] = useState<TrafficHistoryItem[]>([])
   const [trendLoading, setTrendLoading] = useState(true)
+  // Panel-configured display timezone (from the site store). The 7-day trend is
+  // windowed + bucketed on PANEL-tz day boundaries — consistent with traffic
+  // resets / expiry and the Traffic page (all panel-tz) — not the viewer's
+  // browser tz. Empty → panelDayStr + the api's withTz both fall back to browser.
+  const panelTz = useSiteStore(s => s.timezone)
 
   useEffect(() => {
     let cancelled = false
@@ -138,23 +145,29 @@ export default function DashboardView() {
         if (!cancelled) setLoading(false)
       }
     }
+    void load()
+    return () => { cancelled = true }
+  }, [])
+
+  // Separate effect: the trend depends on panelTz (loaded async from the site
+  // store), so it re-fetches once that lands — without re-fetching the summary.
+  useEffect(() => {
+    let cancelled = false
     async function loadTrend() {
+      setTrendLoading(true)
       try {
-        const since = new Date()
-        since.setHours(0, 0, 0, 0)
-        since.setDate(since.getDate() - 6)
-        const sStr = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`
-        const today = new Date()
-        const tStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-        const res = await trafficHistory({ period: 'day', since: sStr, until: tStr })
+        // Last 7 PANEL-tz days [today-6, today]; pass tz so the backend parses
+        // these dates AND buckets snapshots in the same zone.
+        const sStr = panelDayStr(panelTz, -6)
+        const tStr = panelDayStr(panelTz, 0)
+        const res = await trafficHistory({ period: 'day', since: sStr, until: tStr, tz: panelTz || undefined })
         if (!cancelled) setTrend(res.items)
       } catch { /* ignore */ }
       finally { if (!cancelled) setTrendLoading(false) }
     }
-    void load()
     void loadTrend()
     return () => { cancelled = true }
-  }, [])
+  }, [panelTz])
 
   // Aggregates now come pre-computed from /admin/dashboard/summary,
   // so the page no longer downloads + walks the full user / node lists

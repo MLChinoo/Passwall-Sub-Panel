@@ -18,3 +18,35 @@ export function formatDualTz(s: string | undefined | null, panelTz: string): str
   const browserStr = d.toLocaleString()
   return `${panelStr} (${browserStr})`
 }
+
+// panelDayStr returns YYYY-MM-DD for "panel-local today + offsetDays" in the
+// panel's configured IANA timezone, falling back to the browser-local calendar
+// day when tz is empty/invalid. UTC carries the day arithmetic so adding days
+// never drifts across a tz boundary. Used to window the traffic-trend charts on
+// the SAME day boundaries as the rest of the panel (traffic resets, expiry — all
+// panel-tz) instead of the viewing user's browser tz. Pass the same tz to the
+// history API so the backend parses these dates AND buckets snapshots in it.
+//
+// `now` is injectable for tests; defaults to the current instant.
+export function panelDayStr(tz: string | undefined, offsetDays: number, now: Date = new Date()): string {
+  let y: number, m: number, d: number
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz || undefined,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now)
+    y = Number(parts.find(p => p.type === 'year')!.value)
+    m = Number(parts.find(p => p.type === 'month')!.value)
+    d = Number(parts.find(p => p.type === 'day')!.value)
+  } catch {
+    // Invalid tz string — degrade to the browser-local calendar day.
+    y = now.getFullYear()
+    m = now.getMonth() + 1
+    d = now.getDate()
+  }
+  const base = new Date(Date.UTC(y, m - 1, d))
+  base.setUTCDate(base.getUTCDate() + offsetDays)
+  return base.toISOString().slice(0, 10)
+}

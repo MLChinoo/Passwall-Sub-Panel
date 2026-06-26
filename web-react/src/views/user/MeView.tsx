@@ -75,6 +75,7 @@ const TrafficChart = lazy(() => import('@/components/TrafficChart'))
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import { copyToClipboard } from '@/utils/clipboard'
+import { panelDayStr } from '@/utils/datetime'
 import TwoFactorDialog from './TwoFactorDialog'
 import PasskeyDialog from './PasskeyDialog'
 import RecoveryCodesDialog from './RecoveryCodesDialog'
@@ -308,11 +309,14 @@ export default function MeView() {
   // action doesn't accidentally re-expose the old URL.
   const [subUrlRevealed, setSubUrlRevealed] = useState(false)
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
+  // Panel-configured display timezone. Declared up here (not just where the
+  // expire-date row reads it) because the trend effect's dep array references it.
+  const panelTz = useSiteStore(s => s.timezone)
 
   useEffect(() => { void load() }, [])
   useEffect(() => { void loadTrend()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trendPeriod, trendDays])
+  }, [trendPeriod, trendDays, panelTz])
 
   // Decide whether to fire the announcement popup after the profile is
   // fetched. We compare the visitor's stored dismissal key against the
@@ -352,13 +356,13 @@ export default function MeView() {
     const seq = ++trendSeq.current
     setTrendBusy(true)
     try {
-      const since = new Date()
-      since.setHours(0, 0, 0, 0)
-      since.setDate(since.getDate() - (trendDays - 1))
-      const sinceStr = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`
-      const today = new Date()
-      const untilStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-      const res = await getMyTrafficHistory({ period: trendPeriod, since: sinceStr, until: untilStr })
+      // Window the trend on PANEL-tz day boundaries (consistent with the period /
+      // reset / expiry shown elsewhere on this page, all panel-tz) instead of the
+      // browser's; pass tz so the backend buckets in the same zone. Empty tz →
+      // panelDayStr + the api's withTz both fall back to browser.
+      const sinceStr = panelDayStr(panelTz, -(trendDays - 1))
+      const untilStr = panelDayStr(panelTz, 0)
+      const res = await getMyTrafficHistory({ period: trendPeriod, since: sinceStr, until: untilStr, tz: panelTz || undefined })
       if (seq === trendSeq.current) setTrendItems(res.items)
     } catch { /* ignore */ }
     finally { if (seq === trendSeq.current) setTrendBusy(false) }
