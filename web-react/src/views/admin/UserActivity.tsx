@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next'
 
 import { listAuthEvents, type AuthEvent } from '@/api/authEvents'
 import { formatRegion } from '@/utils/geo'
+import { formatDualTz } from '@/utils/datetime'
+import { useSiteStore } from '@/stores/site'
 
 /** UserActivity shows a user's recent sign-in events (a per-user slice of the
  *  authentication log) inside the admin user-edit dialog. Read-only; fetches
@@ -11,6 +13,7 @@ import { formatRegion } from '@/utils/geo'
 export function UserActivity({ userId }: { userId: number }) {
   const { t } = useTranslation('admin')
   const md = useTheme().palette.md
+  const panelTz = useSiteStore(s => s.timezone)
   const [items, setItems] = useState<AuthEvent[] | null>(null)
 
   useEffect(() => {
@@ -47,7 +50,7 @@ export function UserActivity({ userId }: { userId: number }) {
                   <Box component="span" sx={{ textTransform: 'uppercase', color: md.onSurfaceVariant, fontSize: 11 }}>{r.method}</Box>
                 </Box>
                 <Box component="span" sx={{ color: md.onSurfaceVariant, whiteSpace: 'nowrap', fontSize: 11 }}>
-                  {new Date(r.at).toLocaleString()}
+                  {formatDualTz(r.at, panelTz)}
                 </Box>
               </Box>
               <Box component="span" sx={{ color: md.onSurfaceVariant, wordBreak: 'break-all' }}>

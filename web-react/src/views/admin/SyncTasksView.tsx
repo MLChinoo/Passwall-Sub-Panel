@@ -30,6 +30,8 @@ import ReplayIcon from '@mui/icons-material/Replay'
 import CleaningIcon from '@mui/icons-material/CleaningServices'
 import { useTranslation } from 'react-i18next'
 import { useCan } from '@/utils/permissions'
+import { formatDualTz } from '@/utils/datetime'
+import { useSiteStore } from '@/stores/site'
 
 import {
   cancelSyncTask,
@@ -71,17 +73,13 @@ function attemptsOf(r: SyncTask) { return r.attempts ?? r.Attempts ?? 0 }
 function nextRunOf(r: SyncTask) { return r.next_run_at ?? r.NextRunAt }
 function lastErrorOf(r: SyncTask) { return r.last_error ?? r.LastError ?? '' }
 
-function formatDate(s?: string | null) {
-  if (!s) return '-'
-  const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString()
-}
-
 export default function SyncTasksView() {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
   const canConfig = useCan('config.write')
+  // Admin view: times in panel tz (+ browser tz disclosed when they differ).
+  const panelTz = useSiteStore(s => s.timezone)
 
   const [items, setItems] = useState<SyncTask[]>([])
   const [total, setTotal] = useState(0)
@@ -284,7 +282,7 @@ export default function SyncTasksView() {
                     <TableCell sx={{ fontSize: 13 }}>{targetOf(r)}</TableCell>
                     <TableCell sx={{ fontSize: 13, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{summaryOf(r)}</TableCell>
                     <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{attemptsOf(r)}</TableCell>
-                    <TableCell sx={{ fontSize: 13 }}>{formatDate(nextRunOf(r))}</TableCell>
+                    <TableCell sx={{ fontSize: 13 }}>{formatDualTz(nextRunOf(r), panelTz)}</TableCell>
                     <TableCell sx={{ fontSize: 12, color: md.error, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       <Tooltip title={err}><span>{err}</span></Tooltip>
                     </TableCell>

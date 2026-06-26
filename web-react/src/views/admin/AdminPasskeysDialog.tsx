@@ -23,6 +23,8 @@ import type { PasskeyCredential, User } from '@/api/types'
 import type { M3Tokens } from '@/theme'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
+import { formatDualDate } from '@/utils/datetime'
+import { useSiteStore } from '@/stores/site'
 
 interface Props {
   open: boolean
@@ -37,6 +39,7 @@ interface Props {
 // only. The list is fetched lazily when the dialog opens.
 export default function AdminPasskeysDialog({ open, user, md, onClose }: Props) {
   const { t } = useTranslation('admin')
+  const panelTz = useSiteStore(s => s.timezone)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [creds, setCreds] = useState<PasskeyCredential[]>([])
@@ -137,9 +140,9 @@ export default function AdminPasskeysDialog({ open, user, md, onClose }: Props) 
                 <ListItemText
                   primary={c.name}
                   secondary={
-                    t('users.passkeys.added_at', { date: new Date(c.created_at).toLocaleDateString(), defaultValue: '添加于 {{date}}' })
+                    t('users.passkeys.added_at', { date: formatDualDate(c.created_at, panelTz), defaultValue: '添加于 {{date}}' })
                     + (c.last_used_at
-                      ? ' · ' + t('users.passkeys.last_used', { date: new Date(c.last_used_at).toLocaleDateString(), defaultValue: '最近使用 {{date}}' })
+                      ? ' · ' + t('users.passkeys.last_used', { date: formatDualDate(c.last_used_at, panelTz), defaultValue: '最近使用 {{date}}' })
                       : '')
                   }
                   primaryTypographyProps={{ fontSize: 14 }}

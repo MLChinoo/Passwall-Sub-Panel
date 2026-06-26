@@ -19,6 +19,27 @@ export function formatDualTz(s: string | undefined | null, panelTz: string): str
   return `${panelStr} (${browserStr})`
 }
 
+// formatDualDate is formatDualTz's DATE-ONLY sibling: panel-tz calendar day
+// first, the browser-local day in parens, only when they differ. For fields
+// shown as a date without a time (expiry, build date, cert expiry) — using
+// formatDualTz there would wrongly tack on a "00:00" time. Takes an RFC3339
+// instant (or any Date-parseable string); '-' for empty/invalid.
+export function formatDualDate(s: string | undefined | null, panelTz: string): string {
+  if (!s) return '-'
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return '-'
+  let bz = ''
+  try {
+    bz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    bz = ''
+  }
+  const panelStr = panelTz ? d.toLocaleDateString(undefined, { timeZone: panelTz }) : d.toLocaleDateString()
+  if (!panelTz || panelTz === bz) return panelStr
+  const browserStr = d.toLocaleDateString()
+  return `${panelStr} (${browserStr})`
+}
+
 // panelDayStr returns YYYY-MM-DD for "panel-local today + offsetDays" in the
 // panel's configured IANA timezone, falling back to the browser-local calendar
 // day when tz is empty/invalid. UTC carries the day arithmetic so adding days

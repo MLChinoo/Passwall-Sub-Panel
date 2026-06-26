@@ -36,6 +36,8 @@ import LinkOffIcon from '@mui/icons-material/LinkOff'
 import CloudSyncIcon from '@mui/icons-material/CloudSync'
 import { useTranslation } from 'react-i18next'
 import { useCan } from '@/utils/permissions'
+import { formatDualTz } from '@/utils/datetime'
+import { useSiteStore } from '@/stores/site'
 
 import {
   claimClient,
@@ -1789,6 +1791,9 @@ export default function NodesView() {
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
   const canConfig = useCan('config.write')
+  // Admin view: render times in the panel timezone (with the viewer's browser
+  // tz disclosed when they differ), consistent with the other admin pages.
+  const panelTz = useSiteStore(s => s.timezone)
 
   const [tab, setTab] = useTabParam<'managed' | 'unmanaged'>('tab', 'managed', ['managed', 'unmanaged'])
   const [managed, setManaged] = useState<Node[]>([])
@@ -2449,7 +2454,7 @@ export default function NodesView() {
       '':                   { bg: md.outlineVariant, label: t('admin:nodes.health.unknown',      { defaultValue: '尚未探测' }) },
     }
     const p = palette[state] ?? palette['']
-    const checkedAt = n.health_checked_at ? new Date(n.health_checked_at).toLocaleString() : t('admin:nodes.health.never', { defaultValue: '尚未运行' })
+    const checkedAt = n.health_checked_at ? formatDualTz(n.health_checked_at, panelTz) : t('admin:nodes.health.never', { defaultValue: '尚未运行' })
     const tooltip = (
       <Box sx={{ fontSize: 12, lineHeight: 1.5 }}>
         <Box sx={{ fontWeight: 600, mb: 0.25 }}>{p.label}</Box>

@@ -29,7 +29,7 @@ import { topTraffic, trafficHistory, type TrafficHistoryItem, type TrafficRow } 
 import PageHeader from '@/components/PageHeader'
 import TzHint from '@/components/TzHint'
 import { useSiteStore } from '@/stores/site'
-import { panelDayStr } from '@/utils/datetime'
+import { formatDualDate, panelDayStr } from '@/utils/datetime'
 import type { M3Tokens } from '@/theme'
 
 const TrafficChart = lazy(() => import('@/components/TrafficChart'))
@@ -294,7 +294,7 @@ export default function DashboardView() {
                     {u.display_name || u.upn}
                   </Typography>
                   <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                    {new Date(u.expire_at).toLocaleDateString()}
+                    {formatDualDate(u.expire_at, panelTz)}
                   </Typography>
                 </Box>
                 <Chip

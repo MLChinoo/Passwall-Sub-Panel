@@ -79,6 +79,7 @@ import AccountSecurityDrawer from './AccountSecurityDrawer'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { useCan } from '@/utils/permissions'
+import { formatDualTz } from '@/utils/datetime'
 import { useSiteStore } from '@/stores/site'
 import { confirm } from '@/components/ConfirmHost'
 import PageHeader from '@/components/PageHeader'
@@ -916,7 +917,7 @@ export default function UsersView() {
     const diffMs = Date.now() - ts.getTime()
     const rel = formatRelativeTimeShort(diffMs, t)
     return (
-      <Tooltip title={ts.toLocaleString()} placement="top">
+      <Tooltip title={formatDualTz(u.last_online_at, panelTz)} placement="top">
         <Typography sx={{ fontSize: 13, color: md.onSurface, whiteSpace: 'nowrap' }}>{rel}</Typography>
       </Tooltip>
     )
@@ -1524,7 +1525,7 @@ export default function UsersView() {
                 </Button>
               )}
               <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
-                {t('admin:users.detail.created_at', { defaultValue: '创建于' })} {editing?.created_at ? new Date(editing.created_at).toLocaleString() : '—'}
+                {t('admin:users.detail.created_at', { defaultValue: '创建于' })} {editing?.created_at ? formatDualTz(editing.created_at, panelTz) : '—'}
               </Typography>
               <Button size="small" variant="outlined" startIcon={<ContentCopyIcon fontSize="small" />}
                 onClick={() => editing && copy(editing.sub_url)}>
@@ -1732,9 +1733,9 @@ export default function UsersView() {
                     <Box sx={{ pl: 4.25, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                       <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant }}>
                         {t('admin:users.field.emergency_window_until', {
-                          time: until!.toLocaleString(),
+                          time: formatDualTz(until!.toISOString(), panelTz),
                           hours: remainingHours,
-                          defaultValue: `生效至 ${until!.toLocaleString()}（剩余 ${remainingHours} 小时）`,
+                          defaultValue: `生效至 ${formatDualTz(until!.toISOString(), panelTz)}（剩余 ${remainingHours} 小时）`,
                         })}
                       </Typography>
                       <Typography sx={{ fontSize: 12, color: md.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
