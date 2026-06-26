@@ -4,6 +4,18 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.31 — 2026-06-26
+
+### 兼容
+
+- **3X-UI 已测上限抬到 3.4.1** —— 按完整 `v3.4.0...v3.4.1` commit 列表**源码核**:delta 没碰任何 PSP 调用的端点 / 响应形状 / 数据模型 struct / DB schema / 认证路径。client 改动是附加(批量启停 + 批量设 XTLS flow —— commit 明说「no new endpoint, DB column, or migration」)或利好(#5543「删多 inbound client 时无视 shared email 从运行时移除」**正好契合 PSP 一个 client 跨多 inbound 的模型**,改善 `DelClientByEmail`/`BulkDelByEmail` 的运行时清理);其余全在 PSP 不碰的子系统(3X-UI 自家订阅引擎 / tgbot / 原生多节点 / tunnel / outbound / 日志查看器 / dev 更新通道)。`docs/compat/v3.json` 两条 entry 同步抬到 3.4.1 —— **零发版、PSP 按需拉取**,各实例下次刷新就把 3.4.1 面板从「未测试」改判为「已支持」。`min_xui` / `MinXUI` const 不变。源码核(非实机),3.4.0 是两天前实机验证过的、3.4.1 是其 patch。
+
+### 改进
+
+- **`ownership` 写方法补 `gone` 守卫(去掉脆弱的隐式耦合)** —— 读方法在 legacy 表删除后都会优雅短路,但写方法(`Add` / `Remove` / `RemoveByMatch` / `UpdateUUID`)没有,只靠「每个调用方恰好都被 gate 挡住(迁移后用户已无 ownership 行)」才不报 `no such table`。改为四个写方法都认 `gone` 标志 + 出错 `confirmGone` 兜底,与读对称,repo 自洽安全,不再隐式依赖外部 gating 永远正确。
+- **流量超限邮件改用服务级措辞** —— 两轴拆分后流量超限只暂停**服务**(用户仍能登录),`traffic_exhausted` 模板却仍写「账号已被自动停用」,与新加的 `service_suspended` 模板自相矛盾且误导。改为「代理服务已暂停(账号未被禁用,仍可登录)」,行标签 `停用时间` → `暂停时间`。
+- **`node.Service` 后台 goroutine 改走 tracked dispatcher** —— 重建 inbound 后的成员下发 + sync-existing-users 之前用**未跟踪**的 `safego.Go`,`App.Shutdown` 无法 drain(违反项目「后台 goroutine 必须 `GoTracked`」铁律;对照的 `user.ResyncGroupMembersInBackground` 早已升级)。给 `node.Service` 加 `SetBackgroundRunner` + `runBackground`(镜像 `user.Service`),composition root 接上 `dispatcher.Go`,两个 goroutine 改走它;测试 fallback 仍走 `safego.Go`。
+
 ## v3.9.0-beta.30 — 2026-06-25
 
 ### 新功能
