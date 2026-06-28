@@ -549,7 +549,30 @@ func (a *App) runHealthLoop(ctx context.Context) {
 		return
 	}
 	log.Info("node health check loop started", "interval", a.healthInterval.String())
-	a.health.Loop(ctx, a.healthInterval)
+	// Run once immediately so the first health dots appear without waiting a full
+	// interval (mirrors the old health.Service.Loop initial run).
+	if err := a.health.CheckOnce(ctx); err != nil && ctx.Err() == nil {
+		log.Warn("health checker initial run", "err", err)
+	}
+	t := time.NewTicker(a.healthInterval)
+	defer t.Stop()
+	for {
+		// Re-read the interval each cycle so an admin's change takes effect WITHOUT
+		// a restart — consistent with the geo/cert loops. Health shares the traffic
+		// pull cadence (CronTrafficPullMinutes); on a settings-load failure the
+		// ticker just keeps its current interval.
+		if set, err := a.settings.Load(ctx, ports.UISettings{}); err == nil && set.CronTrafficPullMinutes > 0 {
+			t.Reset(time.Duration(set.CronTrafficPullMinutes) * time.Minute)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.health.CheckOnce(ctx); err != nil && ctx.Err() == nil {
+				log.Warn("health checker tick", "err", err)
+			}
+		}
+	}
 }
 
 // probePanelVersionsOnce hits /panel/api/server/status on every configured
@@ -1191,6 +1214,12 @@ func (a *App) runReconcileLoop(ctx context.Context) {
 	tick := 0
 	migrationComplete := false // monotonic: once the shared migration is done it stays done
 	for {
+		// Re-read the interval each cycle so an admin's change takes effect WITHOUT
+		// a restart — consistent with the geo/cert loops. On a settings-load failure
+		// the ticker keeps its current interval.
+		if set, err := a.settings.Load(ctx, ports.UISettings{}); err == nil && set.CronReconcileMinutes > 0 {
+			t.Reset(time.Duration(set.CronReconcileMinutes) * time.Minute)
+		}
 		select {
 		case <-ctx.Done():
 			return
