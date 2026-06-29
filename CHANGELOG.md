@@ -4,6 +4,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0-beta.33 — 2026-06-28
+
+### 修复
+
+- **禁用态的开关(Switch)圆点不再显得像启用** —— 自定义 `MuiSwitch` 主题硬编码了不透明颜色(thumb = `outline`、track `opacity:1`),且没处理禁用态,导致禁用开关里的圆点跟启用态一样深。新增 `Mui-disabled` 样式:thumb 改用更浅的 `outlineVariant`、track 淡化(`opacity .6`)+ 更浅边框,禁用开关现在一眼就是「灰掉」的。
+- **英文时区备注首字母大写** —— `tz_hint` 的 `your local:` 改为 `Your Local:`。
+
 ## v3.9.0-beta.32 — 2026-06-28
 
 ### 修复
