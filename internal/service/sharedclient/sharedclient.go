@@ -82,14 +82,19 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 	if len(atts) == 0 {
 		return res, nil
 	}
-	flow := atts[0].FlowOverride // uniform across a partition (the key's flow)
+	flow := "" // uniform across a partition (the key's flow); set by the first usable attachment
 
 	inboundIDs := make([]int, 0, len(atts))
 	nodeByInbound := make(map[int]int64, len(atts))
+	flowSet := false
 	for _, a := range atts {
 		n, err := s.nodes.GetByID(ctx, a.NodeID)
 		if err != nil || n == nil {
 			log.Warn("sharedclient: resolve node", "client_id", c.ID, "node_id", a.NodeID, "err", err)
+			res.Skipped++
+			continue
+		}
+		if n.IsSeparator() || !n.Enabled {
 			res.Skipped++
 			continue
 		}
@@ -103,6 +108,10 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 		// and passing a duplicate inbound id to AddClientToInbounds is malformed.
 		if _, dup := nodeByInbound[n.InboundID]; dup {
 			continue
+		}
+		if !flowSet {
+			flow = a.FlowOverride
+			flowSet = true
 		}
 		inboundIDs = append(inboundIDs, n.InboundID)
 		nodeByInbound[n.InboundID] = a.NodeID
@@ -435,7 +444,7 @@ func (s *Service) ProvisionUser(ctx context.Context, userID int64) (ProvisionRes
 // ProvisionClient would have made (no credential drift, hence safe to overlap the
 // resync). Only psp_clients on n's panel that actually attach to n are touched.
 func (s *Service) BulkProvisionNodeInbound(ctx context.Context, n *domain.Node, userIDs []int64) error {
-	if n == nil || n.InboundID == 0 || len(userIDs) == 0 {
+	if n == nil || n.InboundID == 0 || len(userIDs) == 0 || n.IsSeparator() || !n.Enabled {
 		return nil
 	}
 	cli, err := s.pool.Get(n.PanelID)

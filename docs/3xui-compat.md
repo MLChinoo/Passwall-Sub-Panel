@@ -9,8 +9,8 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 
 | PSP 版本 | 最低 3X-UI | 已实测通过 | 备注 |
 |---|---|---|---|
-| **v3.9.0+** | **3.3.0** | 3.4.1 | 共享 client 模型(一个 client 跨多 inbound);floor 抬到 3.3.0(client_inbounds upsert 修复);已测上限 3.4.0 实机 + 3.4.1 源码核(2026-06-26),见下文 |
-| **v3.6.2 – v3.8.x** | **3.2.0** | 3.4.1 | 每节点 client(一级 `/clients/*` API),**硬切 ≥ 3.2.0**;已测上限同步抬到 3.4.1(per-node 路径是 shared 路径子集) |
+| **v3.9.0+** | **3.3.0** | 3.4.2 | 共享 client 模型(一个 client 跨多 inbound);floor 抬到 3.3.0(client_inbounds upsert 修复);已测上限 3.4.2 实机复核(2026-07-01),见下文 |
+| **v3.6.2 – v3.8.x** | **3.2.0** | 3.4.2 | 每节点 client(一级 `/clients/*` API),**硬切 ≥ 3.2.0**;已测上限同步抬到 3.4.2(per-node 路径是 shared 路径子集) |
 | v3.6.0 – v3.6.1 | 3.1.0 | 3.1.0 | 仍走 inbound-scoped 端点;别跑在 3.2.0 上,先升 PSP 到 v3.6.2 |
 | v3.5.1 – v3.5.x | 3.1.0 | 3.1.0 | `/inbounds/list` 把 settings 等改成 nested object,见下文 |
 | v3.5.0 | 3.0.x | 3.0.x | 跨 3.1.0 升级会破坏 traffic poll |
@@ -25,6 +25,21 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 - 任何高于"已实测通过"的 3X-UI 版本都属于**未知风险**——升级前先在一台 panel 上小流量验证
 
 ## 历史兼容性事件
+
+### 2026-07-01 / 3X-UI 3.4.2 实机复核 → 已测上限 3.4.1 抬到 3.4.2
+
+**背景**: 上游发 3.4.2。拿一台真实 3.4.2 面板(`panelVersion 3.4.2`, xray `26.6.27`)用 API token 做实机复核。
+
+**复核结论(LIVE-VERIFIED)**: PSP 触及的接口仍在,形状稳定;3.4.2 可以直接兼容 PSP 当前 v3 线。OpenAPI 中 PSP 调用的 `/inbounds/*`、`/clients/*`、`/server/*` 路由全部存在;`updatePanel` / `installXray` 仅确认路由存在,未执行。
+
+实机 smoke 覆盖:
+- server/status、getPanelUpdateInfo、getXrayVersion、getWebCertFiles
+- inbounds list/listSlim/get/add/update/del/setEnable(临时禁用 inbound,测完清理)
+- clients add(多 inbound)/get/update-by-email/del-by-email、attach/detach、bulkAttach/bulkDetach、bulkCreate/bulkDel
+
+**响应形状**: `/inbounds/list` 和 `/list/slim` 仍返回 nested object,PSP `flexJSON` 可解析;`/clients/get` 返回 `{client, externalLinks, inboundIds, usedTraffic}`,其中 `externalLinks` / `usedTraffic` 对 PSP 是附加字段,Go 会忽略。`min_xui` 不变:v3.9.0+ 仍为 3.3.0,v3.6.2-v3.8.x 仍为 3.2.0。
+
+**结论**: `max_tested_xui` 3.4.1 → 3.4.2(`v3.json` 两条 active entry 同步);无需 PSP 代码改动。
 
 ### 2026-06-26 / 3X-UI 3.4.1 源码核 → 已测上限 3.4.0 抬到 3.4.1
 

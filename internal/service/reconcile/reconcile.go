@@ -145,10 +145,13 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 	nodeByInbound := make(map[inboundCacheKey]*domain.Node, len(allNodes))
 	uniquePanels := make(map[int64]struct{})
 	for _, n := range allNodes {
-		if n.IsSeparator() {
+		if n == nil || n.IsSeparator() {
 			continue
 		}
 		nodeByInbound[inboundCacheKey{panelID: n.PanelID, inboundID: n.InboundID}] = n
+		if !n.Enabled {
+			continue
+		}
 		uniquePanels[n.PanelID] = struct{}{}
 	}
 
@@ -236,6 +239,11 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 					groupByID[u.GroupID], entries, batchOK)
 			}
 			for _, e := range entries {
+				key := inboundCacheKey{panelID: e.PanelID, inboundID: e.InboundID}
+				node := nodeByInbound[key]
+				if node != nil && !node.Enabled {
+					continue
+				}
 				report.Scanned++
 				ce, err := s.loadInbound(ctx, cache, e.PanelID, e.InboundID)
 				if err != nil {
@@ -246,7 +254,7 @@ func (s *Service) RunOnce(ctx context.Context, level Level) (*Report, error) {
 					continue
 				}
 				if issue, fixed := s.checkOne(ctx, u, e, ce,
-					nodeByInbound[inboundCacheKey{panelID: e.PanelID, inboundID: e.InboundID}], level); issue != nil {
+					node, level); issue != nil {
 					issue.Fixed = fixed
 					if fixed {
 						report.Fixed++
@@ -352,7 +360,7 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 	}
 
 	for _, n := range nodes {
-		if !n.Enabled {
+		if n == nil || n.IsSeparator() || !n.Enabled {
 			continue
 		}
 		if !group.Matches(n, g.TagFilter) {
@@ -563,6 +571,10 @@ func resolveFlow(protocol domain.Protocol, n *domain.Node, ce *inboundCacheEntry
 func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUIClientEntry,
 	ce *inboundCacheEntry, n *domain.Node, level Level) (*Issue, bool) {
 
+	if n != nil && (n.IsSeparator() || !n.Enabled) {
+		return nil, false
+	}
+
 	protocol := crypto.DetectProtocol(ce.inbound.Protocol, ce.method)
 	found := xrayspec.FindClient(ce.clients, e.ClientEmail)
 	desiredFlow := resolveFlow(protocol, n, ce)
@@ -727,7 +739,7 @@ func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inbo
 	// produces exactly one Issue regardless of how many nodes it owns.
 	reachable := map[int64]bool{}
 	for _, n := range nodes {
-		if n.IsSeparator() {
+		if n == nil || n.IsSeparator() || !n.Enabled {
 			continue
 		}
 		if _, seen := reachable[n.PanelID]; !seen {
@@ -818,6 +830,9 @@ func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, li
 		return
 	}
 	if !sameSyncStamp(n.ConfigSyncedAt, fresh.ConfigSyncedAt) {
+		return
+	}
+	if fresh.IsSeparator() || !fresh.Enabled {
 		return
 	}
 	n = fresh

@@ -64,6 +64,10 @@ func (f fakeNodes) GetByID(_ context.Context, id int64) (*domain.Node, error) {
 	return nil, domain.ErrNotFound
 }
 
+func enabledNode(id, panelID int64, inboundID int) *domain.Node {
+	return &domain.Node{ID: id, PanelID: panelID, InboundID: inboundID, Enabled: true}
+}
+
 type fakeXUI struct {
 	ports.XUIClient
 	addedInbounds  []int
@@ -195,8 +199,8 @@ func TestProvisionClient_CreatesAndMarksConfirmed(t *testing.T) {
 		{ClientID: 1, NodeID: 12, FlowOverride: "xtls-rprx-vision"},
 	}}
 	nodes := fakeNodes{byID: map[int64]*domain.Node{
-		11: {ID: 11, PanelID: 10, InboundID: 101},
-		12: {ID: 12, PanelID: 10, InboundID: 102},
+		11: enabledNode(11, 10, 101),
+		12: enabledNode(12, 10, 102),
 	}}
 	xui := &fakeXUI{confirm: []int{101, 102}} // 3X-UI confirms both
 	svc := New(clients, fakePool{c: xui}, nodes)
@@ -233,8 +237,8 @@ func TestProvisionClient_SkipsRedundantReattach(t *testing.T) {
 		{ClientID: 1, NodeID: 12, FlowOverride: "xtls-rprx-vision"},
 	}}
 	nodes := fakeNodes{byID: map[int64]*domain.Node{
-		11: {ID: 11, PanelID: 10, InboundID: 101},
-		12: {ID: 12, PanelID: 10, InboundID: 102},
+		11: enabledNode(11, 10, 101),
+		12: enabledNode(12, 10, 102),
 	}}
 	// Client already present on EXACTLY the desired inbounds (101,102) before provision.
 	xui := &fakeXUI{preExist: []int{101, 102}}
@@ -369,8 +373,8 @@ func TestProvisionClient_AttachesWhenEmailAlreadyExists(t *testing.T) {
 		{ClientID: 1, NodeID: 12, FlowOverride: "xtls-rprx-vision"},
 	}}
 	nodes := fakeNodes{byID: map[int64]*domain.Node{
-		11: {ID: 11, PanelID: 10, InboundID: 101},
-		12: {ID: 12, PanelID: 10, InboundID: 102},
+		11: enabledNode(11, 10, 101),
+		12: enabledNode(12, 10, 102),
 	}}
 	// Client already exists on 101 (a per-class client being merged); desired is
 	// 101+102. 3X-UI confirms both after the idempotent attach.
@@ -400,7 +404,7 @@ func TestProvisionClient_DetachesStaleInbound(t *testing.T) {
 	clients := &fakeClients{attachments: []domain.PSPClientInbound{
 		{ClientID: 1, NodeID: 11}, // desired → inbound 101
 	}}
-	nodes := fakeNodes{byID: map[int64]*domain.Node{11: {ID: 11, PanelID: 10, InboundID: 101}}}
+	nodes := fakeNodes{byID: map[int64]*domain.Node{11: enabledNode(11, 10, 101)}}
 	// 3X-UI says the client is on 101 (desired) AND 102 (stale — node removed).
 	xui := &fakeXUI{confirm: []int{101, 102}}
 	svc := New(clients, fakePool{c: xui}, nodes)
@@ -419,8 +423,8 @@ func TestProvisionClient_MarksOnlyConfirmed(t *testing.T) {
 		{ClientID: 1, NodeID: 12},
 	}}
 	nodes := fakeNodes{byID: map[int64]*domain.Node{
-		11: {ID: 11, PanelID: 10, InboundID: 101},
-		12: {ID: 12, PanelID: 10, InboundID: 102},
+		11: enabledNode(11, 10, 101),
+		12: enabledNode(12, 10, 102),
 	}}
 	// 3X-UI confirms only inbound 101 (102's attach silently failed).
 	xui := &fakeXUI{confirm: []int{101}}
@@ -506,8 +510,8 @@ func TestDeleteLegacyForUser_DeletesProvisionedCovered(t *testing.T) {
 		},
 	}
 	nodes := fakeNodes{byID: map[int64]*domain.Node{
-		11: {ID: 11, PanelID: 10, InboundID: 101},
-		12: {ID: 12, PanelID: 10, InboundID: 102},
+		11: enabledNode(11, 10, 101),
+		12: enabledNode(12, 10, 102),
 	}}
 	own := &fakeOwnership{entries: []*domain.XUIClientEntry{
 		{ID: 501, PanelID: 10, InboundID: 101, ClientEmail: "u7-n11@psp.local"},
@@ -548,7 +552,7 @@ func TestProvisionClient_SkipsUnresolvableNode(t *testing.T) {
 		{ClientID: 1, NodeID: 11},
 		{ClientID: 1, NodeID: 99}, // not in nodes repo
 	}}
-	nodes := fakeNodes{byID: map[int64]*domain.Node{11: {ID: 11, PanelID: 10, InboundID: 101}}}
+	nodes := fakeNodes{byID: map[int64]*domain.Node{11: enabledNode(11, 10, 101)}}
 	xui := &fakeXUI{confirm: []int{101}}
 	svc := New(clients, fakePool{c: xui}, nodes)
 
@@ -561,6 +565,36 @@ func TestProvisionClient_SkipsUnresolvableNode(t *testing.T) {
 	}
 	if len(xui.addedInbounds) != 1 || xui.addedInbounds[0] != 101 {
 		t.Fatalf("only the resolvable inbound should be added: %v", xui.addedInbounds)
+	}
+}
+
+func TestProvisionClient_SkipsDisabledNodeAttachment(t *testing.T) {
+	clients := &fakeClients{attachments: []domain.PSPClientInbound{
+		{ClientID: 1, NodeID: 12, FlowOverride: "disabled-flow"},
+		{ClientID: 1, NodeID: 11, FlowOverride: "xtls-rprx-vision"},
+	}}
+	nodes := fakeNodes{byID: map[int64]*domain.Node{
+		11: enabledNode(11, 10, 101),
+		12: {ID: 12, PanelID: 10, InboundID: 102, Enabled: false},
+	}}
+	xui := &fakeXUI{confirm: []int{101}}
+	svc := New(clients, fakePool{c: xui}, nodes)
+
+	res, err := svc.ProvisionClient(context.Background(), &domain.PSPClient{ID: 1, PanelID: 10, Email: "u1@psp.local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped != 1 || res.Provisioned != 1 {
+		t.Fatalf("result = %+v, want 1 disabled skipped + 1 provisioned", res)
+	}
+	if len(xui.addedInbounds) != 1 || xui.addedInbounds[0] != 101 {
+		t.Fatalf("disabled attachment must not be added: %v", xui.addedInbounds)
+	}
+	if xui.addedSpec.Flow != "xtls-rprx-vision" {
+		t.Fatalf("shared client flow must come from the enabled attachment, got %q", xui.addedSpec.Flow)
+	}
+	if clients.provisioned[12] {
+		t.Fatalf("disabled node attachment must not be marked provisioned: %v", clients.provisioned)
 	}
 }
 
@@ -580,7 +614,7 @@ func TestBulkProvisionNodeInbound_PartitionsCreateVsAttach(t *testing.T) {
 	}
 	xui := &fakeXUI{liveClients: map[string][]int{"u2@psp.local": {999}}} // u2 already on the panel
 	svc := New(clients, fakePool{c: xui}, fakeNodes{})
-	n := &domain.Node{ID: 11, PanelID: 10, InboundID: 101}
+	n := enabledNode(11, 10, 101)
 
 	if err := svc.BulkProvisionNodeInbound(context.Background(), n, []int64{1, 2}); err != nil {
 		t.Fatal(err)
@@ -608,11 +642,31 @@ func TestBulkProvisionNodeInbound_SkipsNonMembers(t *testing.T) {
 	}
 	xui := &fakeXUI{liveClients: map[string][]int{}}
 	svc := New(clients, fakePool{c: xui}, fakeNodes{})
-	n := &domain.Node{ID: 11, PanelID: 10, InboundID: 101}
+	n := enabledNode(11, 10, 101)
 	if err := svc.BulkProvisionNodeInbound(context.Background(), n, []int64{1}); err != nil {
 		t.Fatal(err)
 	}
 	if len(xui.bulkCreated) != 0 || len(xui.bulkAttached) != 0 {
 		t.Fatalf("a non-member of n must not be provisioned: created=%v attached=%v", xui.bulkCreated, xui.bulkAttached)
+	}
+}
+
+func TestBulkProvisionNodeInbound_SkipsDisabledNode(t *testing.T) {
+	clients := &fakeClients{
+		byUser: []*domain.PSPClient{
+			{ID: 1, UserID: 1, PanelID: 10, Email: "u1@psp.local", UUID: "uuid-1"},
+		},
+		attachments: []domain.PSPClientInbound{
+			{ClientID: 1, NodeID: 11, FlowOverride: ""},
+		},
+	}
+	xui := &fakeXUI{liveClients: map[string][]int{}}
+	svc := New(clients, fakePool{c: xui}, fakeNodes{})
+	n := &domain.Node{ID: 11, PanelID: 10, InboundID: 101, Enabled: false}
+	if err := svc.BulkProvisionNodeInbound(context.Background(), n, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(xui.bulkCreated) != 0 || len(xui.bulkAttached) != 0 {
+		t.Fatalf("disabled node must not be bulk provisioned: created=%v attached=%v", xui.bulkCreated, xui.bulkAttached)
 	}
 }

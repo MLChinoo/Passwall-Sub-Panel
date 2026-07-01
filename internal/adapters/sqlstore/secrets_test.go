@@ -215,6 +215,7 @@ func TestCountPlaintextEncryptedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	t.Cleanup(func() { closeGormDB(db) })
 	if err := EnsureSchema(db); err != nil {
 		t.Fatalf("schema: %v", err)
 	}

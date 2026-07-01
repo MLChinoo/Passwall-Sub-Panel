@@ -76,11 +76,15 @@ type recClient struct {
 	inbounds  []ports.Inbound
 	getResp   *ports.Inbound
 	updated   []ports.InboundSpec
+	listCalls int
 	updateErr error // when set, UpdateInbound returns it (drift-push fail)
 	getErr    error // when set, GetInbound returns it (recapture fail)
 }
 
-func (c *recClient) ListInbounds(context.Context) ([]ports.Inbound, error) { return c.inbounds, nil }
+func (c *recClient) ListInbounds(context.Context) ([]ports.Inbound, error) {
+	c.listCalls++
+	return c.inbounds, nil
+}
 func (c *recClient) GetInbound(_ context.Context, id int) (*ports.Inbound, error) {
 	if c.getErr != nil {
 		return nil, c.getErr
@@ -125,6 +129,76 @@ func (a *recAudit) findAuditByAction(action string) *domain.AuditEntry {
 	return nil
 }
 
+type recUserRepo struct {
+	ports.UserRepo
+	users []*domain.User
+}
+
+func (r *recUserRepo) List(context.Context, ports.UserFilter) ([]*domain.User, int64, error) {
+	return r.users, int64(len(r.users)), nil
+}
+
+type recOwnershipRepo struct {
+	ports.OwnershipRepo
+	byUser map[int64][]*domain.XUIClientEntry
+}
+
+func (r *recOwnershipRepo) ListByUsers(_ context.Context, userIDs []int64) (map[int64][]*domain.XUIClientEntry, error) {
+	out := map[int64][]*domain.XUIClientEntry{}
+	for _, id := range userIDs {
+		if entries, ok := r.byUser[id]; ok {
+			out[id] = entries
+		}
+	}
+	return out, nil
+}
+
+func (r *recOwnershipRepo) ListByUser(_ context.Context, userID int64) ([]*domain.XUIClientEntry, error) {
+	return r.byUser[userID], nil
+}
+
+type recGroupRepo struct {
+	ports.GroupRepo
+	groups []*domain.Group
+}
+
+func (r *recGroupRepo) List(context.Context) ([]*domain.Group, error) { return r.groups, nil }
+func (r *recGroupRepo) GetByID(_ context.Context, id int64) (*domain.Group, error) {
+	for _, g := range r.groups {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+type recSettings struct{ ports.SettingsRepo }
+
+func (recSettings) Load(_ context.Context, defaults ports.UISettings) (ports.UISettings, error) {
+	return defaults, nil
+}
+
+type recSyncer struct {
+	addCalls    int
+	enableCalls int
+	rotateCalls int
+}
+
+func (s *recSyncer) AddClientToInbound(context.Context, int64, int64, int, domain.Protocol, string, string, string, string, int64, int64) error {
+	s.addCalls++
+	return nil
+}
+
+func (s *recSyncer) SetOwnedClientEnable(context.Context, int64, int, string, domain.Protocol, string, string, string, bool, int64, int64) error {
+	s.enableCalls++
+	return nil
+}
+
+func (s *recSyncer) RotateClientUUID(context.Context, int64, int, string, domain.Protocol, string, string, string, string, bool, int64, int64) error {
+	s.rotateCalls++
+	return nil
+}
+
 // cacheFromInbounds builds an inboundCacheKey→entry map identical to what
 // prefetchInbounds would have populated at the top of RunOnce. Each test
 // supplies its own live inbounds; this helper does the same shape conversion
@@ -141,6 +215,47 @@ func cacheFromInbounds(panelID int64, inbs []ports.Inbound) map[inboundCacheKey]
 
 // Node with no captured config + a live inbound → reconcile should pull the
 // config into the node (backfill) and NOT push anything.
+func TestRunOnce_IgnoresDisabledOwnershipRows(t *testing.T) {
+	node := &domain.Node{ID: 1, PanelID: 1, InboundID: 3, Enabled: false}
+	user := &domain.User{ID: 7, UUID: "uuid-7", GroupID: 9, Enabled: true}
+	owner := &domain.XUIClientEntry{
+		ID: 21, UserID: user.ID, PanelID: node.PanelID, InboundID: node.InboundID,
+		ClientEmail: "u7-n1@psp.local", ClientUUID: user.UUID,
+	}
+	live := ports.Inbound{
+		ID: node.InboundID, Protocol: "vless", Port: 443,
+		Settings: `{"decryption":"none","clients":[]}`,
+	}
+	client := &recClient{inbounds: []ports.Inbound{live}}
+	syncer := &recSyncer{}
+	svc := &Service{
+		users:            &recUserRepo{users: []*domain.User{user}},
+		ownership:        &recOwnershipRepo{byUser: map[int64][]*domain.XUIClientEntry{user.ID: {owner}}},
+		nodes:            &recNodeRepo{nodes: []*domain.Node{node}},
+		groups:           &recGroupRepo{groups: []*domain.Group{{ID: user.GroupID, TagFilter: domain.TagFilter{All: true}}}},
+		settings:         recSettings{},
+		audit:            &recAudit{},
+		pool:             recPool{c: client},
+		syncer:           syncer,
+		axisAReversePush: true,
+	}
+
+	report, err := svc.RunOnce(context.Background(), LevelFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.listCalls != 0 {
+		t.Fatalf("disabled nodes must not be prefetched by reconcile, ListInbounds calls=%d", client.listCalls)
+	}
+	if syncer.addCalls != 0 || syncer.enableCalls != 0 || syncer.rotateCalls != 0 {
+		t.Fatalf("disabled ownership rows must not be healed: add=%d enable=%d rotate=%d",
+			syncer.addCalls, syncer.enableCalls, syncer.rotateCalls)
+	}
+	if report.Scanned != 0 || report.Fixed != 0 || len(report.Issues) != 0 {
+		t.Fatalf("disabled ownership rows should be invisible to reconcile, report=%+v", report)
+	}
+}
+
 func TestCheckNodes_BackfillsMissingConfig(t *testing.T) {
 	node := &domain.Node{ID: 1, PanelID: 1, InboundID: 3, Enabled: true} // ConfigSyncedAt nil
 	live := []ports.Inbound{{
@@ -235,6 +350,40 @@ func TestCheckNodes_DisappearedInboundDisablesViaColumnWriter(t *testing.T) {
 
 // Node with a captured snapshot that differs from the live inbound → reconcile
 // pushes PSP's config back, then re-captures the live config.
+func TestCheckNodes_DisabledNodeSkipsConfigDrift(t *testing.T) {
+	now := time.Now()
+	node := &domain.Node{
+		ID: 1, PanelID: 1, InboundID: 3, Enabled: false,
+		Protocol:        "vless",
+		Port:            443,
+		StreamSettings:  `{"network":"ws"}`,
+		InboundSettings: `{"decryption":"none"}`,
+		ConfigSyncedAt:  &now,
+	}
+	live := ports.Inbound{
+		ID: 3, Protocol: "vless", Port: 443,
+		StreamSettings: `{"network":"tcp"}`,
+		Settings:       `{"decryption":"none","clients":[]}`,
+	}
+	client := &recClient{inbounds: []ports.Inbound{live}, getResp: &live}
+	repo := &recNodeRepo{nodes: []*domain.Node{node}}
+	svc := &Service{nodes: repo, pool: recPool{c: client}, axisAReversePush: true}
+
+	report := &Report{}
+	svc.checkNodes(context.Background(), report, cacheFromInbounds(1, []ports.Inbound{live}), nil)
+
+	if len(client.updated) != 0 {
+		t.Fatalf("disabled nodes must not have config drift pushed, got %d UpdateInbound calls", len(client.updated))
+	}
+	if len(repo.updates)+len(repo.updatesCfg)+len(repo.enabledSets) != 0 {
+		t.Fatalf("disabled nodes must not be written by checkNodes: full=%d cfg=%d enabled=%v",
+			len(repo.updates), len(repo.updatesCfg), repo.enabledSets)
+	}
+	if report.Fixed != 0 || len(report.Issues) != 0 {
+		t.Fatalf("disabled nodes should not appear in node reconcile report: %+v", report)
+	}
+}
+
 func TestCheckNodes_DriftPushed(t *testing.T) {
 	now := time.Now()
 	node := &domain.Node{

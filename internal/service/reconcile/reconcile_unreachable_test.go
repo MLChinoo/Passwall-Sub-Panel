@@ -40,6 +40,21 @@ func TestCheckNodes_PanelUnreachableSurfacesRealError(t *testing.T) {
 // empty new server, or a token without access) leaves nothing in the cache and
 // yet has NO fetch error — prefetchInbounds must still record a reason so the
 // panel_unreachable Issue isn't a content-free generic string.
+func TestCheckNodes_DisabledNodeDoesNotReportPanelUnreachable(t *testing.T) {
+	node := &domain.Node{ID: 1, PanelID: 7, InboundID: 3, Enabled: false}
+	svc := &Service{nodes: &recNodeRepo{nodes: []*domain.Node{node}}, pool: recPool{c: &recClient{}}}
+	report := &Report{}
+
+	errs := map[int64]error{7: errors.New("dial tcp: lookup disabled-panel.example: no such host")}
+	svc.checkNodes(context.Background(), report, map[inboundCacheKey]*inboundCacheEntry{}, errs)
+
+	for _, issue := range report.Issues {
+		if issue.Code == "panel_unreachable" {
+			t.Fatalf("disabled-only panels must not produce panel_unreachable issues: %+v", issue)
+		}
+	}
+}
+
 func TestPrefetchInbounds_EmptyListIsCaptured(t *testing.T) {
 	cache := map[inboundCacheKey]*inboundCacheEntry{}
 	errs := prefetchInbounds(context.Background(),

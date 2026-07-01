@@ -4,6 +4,38 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.0 — 2026-07-01
+
+正式版。汇总 `v3.9.0-beta.1` → `v3.9.0-beta.33` 全部改动，并包含正式版收口时对 3X-UI 3.4.2 的实机兼容复核与 disabled Node 后台处理修复。本线主题是 **共享 client 模型正式落地**：同一用户在同一 3X-UI 面板上从「每节点一个 client」迁移为「一个共享 client 挂多个 inbound」，显著减少 client 数量、Xray 重载次数和同步压力。
+
+### 升级注意
+
+- **3X-UI 最低版本：3.3.0**。v3.9.0 的共享 client 模型依赖 3X-UI 3.3.x 已修复的 `client_inbounds` upsert 行为；3.2.x 面板会被判为过旧。升级 PSP 前请先把 3X-UI 升到 `>= 3.3.0`，已测上限为 `3.4.2`。
+- **升级前请备份数据库**。这是从 v3.8 per-node client 到 v3.9 shared-client 的单向迁移；正常路径自动、静默、不中断，回退到 v3.8 需要恢复升级前备份。
+- **建议确认只运行一个 PSP 实例**。迁移/重同步任务会写同一组 3X-UI client；本线已做同 email 串行化与冲突重试，但同数据库多实例长期并跑仍不是推荐部署形态。
+
+### 新功能
+
+- **共享 client 自动迁移**：启动后自动为旧用户建立 `psp_client` / `psp_client_inbounds`，创建共享 client、挂载目标 inbound、推送 lifecycle，再安全删除旧 per-node client。新用户直接走共享模型。
+- **账号状态与服务状态拆分**：用户可登录面板与代理服务可用性分离。流量超限、过期、blocked client、管理员手动暂停等只暂停代理服务，不再把用户锁出面板；用户仍可登录查看原因或自助处理。
+- **服务暂停/恢复邮件通知**：服务级暂停与恢复走统一通知入口，覆盖流量超限、blocked client、管理员手动暂停、手动改流量等路径，并修正措辞为“代理服务暂停”而非“账号停用”。
+- **节点在空服务器上重建 inbound**：当节点被迁到空 3X-UI 面板且原 inbound 不存在时，可用 PSP 保存的 inbound 快照在目标面板重建 inbound，并自动重新下发成员共享 client。
+- **节点新增/重建 warm-up 批量化**：对新节点成员使用 `bulkCreate` + `bulkAttach` 预热共享 client，减少从 N 次 Xray 重载到最多 2 次，后续逐用户 resync 仍作为权威确认路径。
+
+### 修复与可靠性
+
+- **disabled Node 不再被 Reconcile / shared-client provisioning 重新触碰**：停用节点不会被 Reconcile 预取、扫描 ownership、修复 client、回推 inbound 配置，也不会因为停用节点所在面板不可达而报 `panel_unreachable`；旧的 shared-client attachment 指向停用节点时会跳过，批量 warm-up 也会 no-op。
+- **共享 client 写入串行化与冲突自愈**：同一 3X-UI client 的增、改、挂载、卸载按 email 串行；遇到 `client_inbounds` 瞬时冲突时有限重试，降低迁移任务与流量轮询并发写导致的失败。
+- **迁移后流量、last online、配额与节点流量继续更新**：traffic poll 改为同时从 legacy ownership 与 shared-client 表推导要拉取的面板，节点流量改按 inbound 自身计数记录，避免迁移完成后查询 0 面板。
+- **配额与周期重置跨数据库稳定**：修复 MySQL/Postgres 下 period start 以 UTC 读回导致每轮误判跨月、配额永远不触发的问题；client/shared/node 三处流量 delta 改为 `deltaUp + deltaDown`，避免非对称计数器重置时过计。
+- **shadowsocks inbound 可正常添加 client**：PSP 创建/重建/更新 inbound 时保证 `settings.clients` 为数组，修复 SS inbound 因缺 `clients:[]` 使 3X-UI `/clients/add` 返回空 200 但不建 client 的问题。
+- **迁移后节点删除与托管 client 识别正确**：`psp_client` 中可识别的 shared client 视为 PSP 托管，避免迁移后删除节点被误判为“存在未托管 client”而永久 409。
+
+### 兼容性
+
+- **3X-UI 3.4.2 实机复核通过**：API-token 模式下验证 `server/status`、`getPanelUpdateInfo`、Xray 版本与 Web 证书路径读取、inbound 增查改删/启停、multi-inbound client 增查改/挂载/卸载/批量挂载/批量卸载/删除、`bulkCreate` / `bulkDel` 等 PSP 触及路径；响应形状变化为 additive-only。`docs/compat/v3.json` 已把 v3 active entry 的 `max_tested_xui` 抬到 `3.4.2`。
+- **旧 PSP v3.6.2–v3.8.x per-node 线兼容上限同步继承到 3.4.2**：这些版本使用的端点是 v3.9 shared-client 路径子集，compat JSON 已同步更新。
+
 ## v3.9.0-beta.33 — 2026-06-28
 
 ### 修复
