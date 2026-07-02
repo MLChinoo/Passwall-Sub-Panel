@@ -4,6 +4,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.1-beta.2 — 2026-07-03
+
+### 新功能
+
+- **可上传的自定义界面语言包（运行时，无需重新编译）** —— 管理员在「语言包」页上传一个 JSON 语言包，重载页面后即可在语言菜单里选用，无需改代码或重新构建。语言包按「一语言一文件」存于 `<ConfigDir>/locales/<code>.json`（mtime 缓存，与模板/规则库同一套文件后端），叠加在编译进 SPA 的两门内置语言（zh-CN / en-US）之上——内置语言不会被覆盖或删除，缺失的键自动回退到内置语言而非裸 key。
+  - **后端**：新增 `domain.LocalePack` / `LocaleMeta`、`ports.LocaleRepo` 与 `localefs` 文件后端；`service/locale` 校验（格式版本、code 正则与保留码、命名空间白名单、**递归「叶子必须是字符串」**，保证只有 `{string:string}` 进入 `t()`）；管理端 list/save/delete（仅管理员）+ 公开读端点 `GET /api/i18n/langs` 与 `/api/i18n/:lang`（带 ETag / 304）；单个语言包上限 512 KiB。
+  - **前端**：挂载前先拉取语言清单并扩展 i18next 的 `supportedLngs`，运行时经 `addResourceBundle` 注册自定义包并预加载 zh-CN 兜底；「语言包」管理页支持上传、删除、导出 en-US 基准模板、`base_version` 过期提醒；语言菜单用语言包自带的 endonym 显示名；`AppLanguage` 放宽为任意 code，MUI 组件语言按 base subtag 回退 enUS。
+  - **权限**：写（上传/删除）仅管理员（`adminGroup` + 前端 `config.write`，双重校验）；读为公开，以便登录页在鉴权前即可用自定义语言渲染。语言包内容经结构化校验并作为纯文本渲染，规避注入。
+- **一键生成繁体中文语言包（OpenCC）** —— 新增构建期脚本 `npm run gen:locale-hant`，用 `opencc-js` 把内置 zh-CN 文案机械转换为繁体语言包（`cn→twp`，台湾惯用词：软件→軟體、视频→影片、默认→預設）。只转字符串值、保留 key 与 `{{占位符}}`，产物落在 `scripts/generated/`（已 gitignore），可直接在「语言包」页上传。`opencc-js` 仅为 devDependency，不进浏览器产物。
+
 ## v3.9.1-beta.1 — 2026-07-02
 
 ### 文档
