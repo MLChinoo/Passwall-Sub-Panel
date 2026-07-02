@@ -119,6 +119,14 @@ export interface Node {
   health_checked_at?: string | null
   /** Error string for the most recent failed probe; empty when healthy. */
   health_detail?: string
+  /** Whether the local inbound-config snapshot (the render truth source since
+   *  v3.5) matches 3X-UI. '' / undefined = never captured (render live-fetches
+   *  this node); 'synced' = in sync; 'drift' = reconcile will push local config
+   *  over the panel; 'pending' = last push/recapture failed, retried next cycle. */
+  config_sync_state?: '' | 'synced' | 'drift' | 'pending'
+  /** RFC3339 timestamp of the last successful config capture/align; null before
+   *  the node was ever captured. */
+  config_synced_at?: string | null
   /** Managed-certificate binding. "" / undefined = unmanaged (manual /
    *  historical). 'psp_managed' means cert_id points to a PSP-managed cert
    *  that the renewal worker keeps deployed. Never carries any PEM. */

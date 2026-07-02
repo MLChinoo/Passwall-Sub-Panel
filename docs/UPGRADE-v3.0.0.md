@@ -8,7 +8,7 @@
 
 ## 跨大版本升级须知
 
-按本项目的版本升级政策（详见 [docs/ARCHITECTURE.md §16](ARCHITECTURE.md)）：**不支持跨大版本跳级**。
+按本项目的版本升级政策（详见 [docs/ARCHITECTURE.md §17](ARCHITECTURE.md)）：**不支持跨大版本跳级**。
 
 - 当前 ≤ v2.5.x → v3.0.0：本文档适用，一步完成
 - 当前 ≤ v2.5.x → v4.0.0：必须先按本文档升到 v3.0.0，再按 v4.0.0 文档升到 v4
@@ -25,7 +25,7 @@ minor / patch 升级不变 schema，按 [[feedback_semver]] 规则。
 
 2. **旧库零修改**。迁移程序只读旧库 → 写新库。旧库一行都不动，理论上随时可以切回旧版主程序。
 
-3. **迁移代码在主二进制里只保留到下一个 major 发版**。v3.x 二进制全程携带 `migrate` 子命令；v4.0.0 发版时该子命令被替换为 v3.x → v4 的迁移逻辑（不再支持 ≤ v2.5.x → v4 跳级，必须先升 v3）。详见 [docs/ARCHITECTURE.md §16](ARCHITECTURE.md)。
+3. **迁移代码在主二进制里只保留到下一个 major 发版**。v3.x 二进制全程携带 `migrate` 子命令；v4.0.0 发版时该子命令被替换为 v3.x → v4 的迁移逻辑（不再支持 ≤ v2.5.x → v4 跳级，必须先升 v3）。详见 [docs/ARCHITECTURE.md §17](ARCHITECTURE.md)。
 
 4. **新库名 admin 自己定**。下面示例用 `psp_v3`（或 SQLite `panel_v3.db`），你可以叫任何名字；迁移程序通过 `--src` / `--dst` 参数接收。
 

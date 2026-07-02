@@ -127,16 +127,63 @@ func (r *kvSettingsRepo) Save(ctx context.Context, s ports.UISettings) error {
 			UpdatedAt: now,
 		})
 	}
-	// One transaction, one batched upsert per (type, name) — every row's
-	// presence is independent so failure of any single one rolls the whole
-	// batch back, matching the old single-row upsert's atomicity guarantee.
+	// UPDATE-in-place write model (mirrors Cloudreve): rows that already exist
+	// are UPDATEd, never re-INSERTed, so a save no longer burns an auto-increment
+	// id per row. A plain batch `INSERT ... ON DUPLICATE KEY UPDATE` is a
+	// mixed-mode insert under InnoDB — it reserves (then discards) an autoinc
+	// value for every VALUES row that turns out to conflict, so each ~46-row save
+	// left a large id gap. Here we SELECT the present keys first, UPDATE those,
+	// and INSERT only genuinely-new keys. Still one transaction: all-or-nothing,
+	// matching the old single-batch upsert's atomicity. New keys stay lazily
+	// created (first save mints exactly one id each).
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{
-				{Name: "type"}, {Name: "name"},
-			},
-			DoUpdates: clause.AssignmentColumns([]string{"value", "encrypted", "updated_at"}),
-		}).Create(&rows).Error
+		// (1) Deterministically fetch the keys already present. We rely on this
+		// SELECT — NOT on UPDATE's RowsAffected — because MySQL reports 0 rows
+		// affected for an UPDATE whose values are unchanged, which would
+		// misclassify an existing row as missing and re-INSERT it (id burn again).
+		var existing []settingRow
+		if err := tx.Model(&settingRow{}).Select("type", "name").Find(&existing).Error; err != nil {
+			return err
+		}
+		have := make(map[string]bool, len(existing))
+		for _, e := range existing {
+			have[e.Type+"\x00"+e.Name] = true
+		}
+
+		// (2) Existing → pure UPDATE (never mints an id). Missing → collect.
+		var missing []settingRow
+		for i := range rows {
+			row := rows[i]
+			if have[row.Type+"\x00"+row.Name] {
+				// map[string]any, NOT a struct: GORM's struct Updates skips zero
+				// values, so value="" / encrypted=false would silently not be
+				// written. The map form writes them unconditionally.
+				if err := tx.Model(&settingRow{}).
+					Where("type = ? AND name = ?", row.Type, row.Name).
+					Updates(map[string]any{
+						"value":      row.Value,
+						"encrypted":  row.Encrypted,
+						"updated_at": now,
+					}).Error; err != nil {
+					return err
+				}
+			} else {
+				missing = append(missing, row)
+			}
+		}
+
+		// (3) Only genuinely-new keys are inserted (one id each). OnConflict
+		// guards the first-insert race between two concurrent Saves seeding the
+		// same new key.
+		if len(missing) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "type"}, {Name: "name"}},
+				DoUpdates: clause.AssignmentColumns([]string{"value", "encrypted", "updated_at"}),
+			}).Create(&missing).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -2472,6 +2472,38 @@ export default function NodesView() {
     )
   }
 
+  // configSyncDot renders a small SQUARE (distinct from the round health dot) for
+  // the node's inbound-config snapshot state — whether PSP's locally-stored config
+  // (the render truth source since v3.5) is in sync with 3X-UI. "drift"/"pending"
+  // are the states worth noticing (reconcile re-pushes); "synced" is the steady
+  // state; "" means never captured (render live-fetches this node). Only shown for
+  // enabled real nodes — disabled nodes aren't reconciled, so their state is moot.
+  function configSyncDot(n: Node) {
+    const state = n.config_sync_state || ''
+    const palette: Record<string, { bg: string; label: string }> = {
+      synced:  { bg: '#22c55e',           label: t('admin:nodes.config_sync.synced',     { defaultValue: '配置已同步' }) },
+      drift:   { bg: '#f97316',           label: t('admin:nodes.config_sync.drift',      { defaultValue: '配置漂移（reconcile 将下发对齐）' }) },
+      pending: { bg: md.error,            label: t('admin:nodes.config_sync.pending',    { defaultValue: '配置下发待重试' }) },
+      '':      { bg: md.outlineVariant,   label: t('admin:nodes.config_sync.uncaptured', { defaultValue: '未捕获本地配置（渲染时回源）' }) },
+    }
+    const p = palette[state] ?? palette['']
+    const syncedAt = n.config_synced_at ? formatDualTz(n.config_synced_at, panelTz) : t('admin:nodes.config_sync.never', { defaultValue: '尚未捕获' })
+    const tooltip = (
+      <Box sx={{ fontSize: 12, lineHeight: 1.5 }}>
+        <Box sx={{ fontWeight: 600, mb: 0.25 }}>{p.label}</Box>
+        <Box sx={{ opacity: 0.7 }}>{t('admin:nodes.config_sync.synced_at', { time: syncedAt, defaultValue: `上次捕获：${syncedAt}` })}</Box>
+      </Box>
+    )
+    return (
+      <Tooltip title={tooltip} arrow>
+        <Box sx={{
+          display: 'inline-block', width: 9, height: 9, borderRadius: '2px',
+          bgcolor: p.bg, cursor: 'help',
+        }} />
+      </Tooltip>
+    )
+  }
+
   function openCreate() {
     if (servers.length === 0) {
       pushSnack(t('admin:nodes.create_dialog.no_servers'), 'warning')
@@ -2897,7 +2929,7 @@ export default function NodesView() {
                   <TableCell>{t('admin:nodes.table.server_address')}</TableCell>
                   <TableCell>{t('admin:nodes.table.region')}</TableCell>
                   <TableCell>{t('admin:nodes.table.tags')}</TableCell>
-                  <TableCell align="center">{t('admin:nodes.table.health', { defaultValue: '健康' })}</TableCell>
+                  <TableCell align="center">{t('admin:nodes.table.health', { defaultValue: '状态' })}</TableCell>
                   <TableCell align="center">{t('admin:nodes.table.enabled')}</TableCell>
                   <TableCell align="right">{t('admin:nodes.table.actions')}</TableCell>
                 </TableRow>
@@ -2971,7 +3003,12 @@ export default function NodesView() {
                     <TableCell sx={{ fontSize: 13, color: md.onSurfaceVariant }}>{isSep ? '—' : n.server_address}</TableCell>
                     <TableCell sx={{ fontSize: 13 }}>{isSep && !n.region ? '—' : n.region}</TableCell>
                     <TableCell>{isSep && (!n.tags || n.tags.length === 0) ? '—' : tagsCell(n.tags)}</TableCell>
-                    <TableCell align="center">{isSep ? '—' : healthDot(n)}</TableCell>
+                    <TableCell align="center">{isSep ? '—' : (
+                      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                        {healthDot(n)}
+                        {n.enabled && configSyncDot(n)}
+                      </Box>
+                    )}</TableCell>
                     <TableCell align="center">
                       <Switch checked={n.enabled} onChange={() => toggleEnabled(n)} disabled={enabledBusy[n.id]} />
                     </TableCell>

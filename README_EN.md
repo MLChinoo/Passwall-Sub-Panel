@@ -367,7 +367,6 @@ Full route list lives in [`internal/transport/http/router.go`](internal/transpor
 ## Documents
 
 - [Architecture](docs/ARCHITECTURE.md) — core concepts, data model, module interactions (Chinese)
-- [Security review](docs/logic-security-review.md) — v2.0 hardening notes
 
 ## License
 

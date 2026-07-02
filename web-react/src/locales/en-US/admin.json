@@ -980,7 +980,7 @@
       "tags": "Tags",
       "inbound": "Inbound",
       "sort_order": "Sort",
-      "health": "Health",
+      "health": "Status",
       "enabled": "Enabled",
       "actions": "Actions"
     },
@@ -992,6 +992,14 @@
       "unknown": "Not probed yet",
       "never": "never",
       "checked_at": "Last check: {{time}}"
+    },
+    "config_sync": {
+      "synced": "Config in sync",
+      "drift": "Config drift (reconcile will re-push)",
+      "pending": "Config push pending retry",
+      "uncaptured": "Local config not captured (renders via live fetch)",
+      "never": "not captured yet",
+      "synced_at": "Last capture: {{time}}"
     },
     "field": {
       "display_name": "Display name",

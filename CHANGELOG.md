@@ -4,7 +4,22 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
-## v3.9.0 — 2026-07-01
+## v3.9.1-beta.1 — 2026-07-02
+
+### 文档
+
+- **`docs/ARCHITECTURE.md` 全篇校对更新（18 个月未系统更新，10-agent 逐节对代码核验后重写）** —— 版本头 3.0.0→3.9.1；email 约定从已淘汰的 `u{uid}-n{nodeID}@domain` 改为 v3.9.0 共享 client 模型的 `u{uid}{suffix}@domain`；§5 数据模型从「17 张表」补全到当前 31 张表（新增 psp_clients/psp_client_inbounds/scope_settings/webauthn_credentials/auth_tokens/auth_events/acme_accounts/dns_credentials/tls_certificates/cert_events/nodes_separator 等）；§7 数据流改写为共享 client 模型 + 账号/服务状态拆分；§8/§9 API 与 3X-UI 集成清单同步到 `/clients/*` 一等公民端点，删除已废弃的 `DelClient`/`CopyClients`/`GetClientTraffic`/`GetInboundTraffics`/`ResetClientTraffic`；修复「## 9」标题重复导致的章节错位（全文档 §9 起整体重排为 §1–§20）；补齐 v3.6–v3.9 账户安全/分组作用域/证书管理等页面与端点；M7 路线图已完成项从「待开发」改为已完成；Go 版本 1.22→1.26；决策记录/术语表补充共享 client、作用域设置、账号服务状态拆分等概念。同步更新了引用其旧章节号的 [inbound-ownership.md](../docs/inbound-ownership.md)、[UPGRADE-v3.0.0.md](../docs/UPGRADE-v3.0.0.md)、[migration/v3-to-v4-cleanup.md](../docs/migration/v3-to-v4-cleanup.md)、`internal/migrate/README.md`。
+- 删除三份已完全落地、无代码引用的计划文档（`poll-perf-optimization.md`、`logic-security-review.md`、`settings-update-in-place-plan.md`，最后一份对应的实现见上）；其余仍被代码注释引用或含未完成事项的设计文档保留并更新状态行。
+
+### 新功能
+
+- **节点列表展示「配置同步」状态** —— 节点表的「状态」列（原「健康」列）在健康圆点旁新增一个方形指示，反映 PSP 本地 inbound 配置快照（自 v3.5 起是订阅渲染的真相源）与 3X-UI 的同步状态：`synced`（已同步）/ `drift`（漂移，reconcile 将下发对齐）/ `pending`（下发待重试）/ 未捕获（渲染时回源）。鼠标悬停显示状态说明与上次捕获时间，仅对启用的真实节点显示。后端 node DTO 新增 `config_sync_state` / `config_synced_at` 字段（此前只存在于 DB 与 reconcile，前端不可见）。
+
+### 改进
+
+- **`settings` 保存改为按 `(type, name)` UPDATE-in-place，不再烧自增 id** —— 原先每次保存设置都执行一条批量 `INSERT ... ON DUPLICATE KEY UPDATE`，而 InnoDB 把它当 mixed-mode insert：命中唯一键走 UPDATE 的行仍会**预留并丢弃**一个自增值，于是每次保存约烧掉 46 个 id、`settings.id` 出现大段空洞。改为在同一事务内先 `SELECT` 现存 key，已存在的走纯 `UPDATE`（用 `map` 写值，避免 GORM 跳过零值 `value=""`/`encrypted=false`），仅缺失的新 key 才 `INSERT`（`OnConflict` 兜并发首插）。零数据迁移、读路径与 schema 不变、可直接 revert；新 key 仍懒插入（首存各 mint 1 个 id）。功能无影响，纯粹消除 id 跳号、对齐 Cloudreve 的写模型。
+
+
 
 正式版。汇总 `v3.9.0-beta.1` → `v3.9.0-beta.33` 全部改动，并包含正式版收口时对 3X-UI 3.4.2 的实机兼容复核与 disabled Node 后台处理修复。本线主题是 **共享 client 模型正式落地**：同一用户在同一 3X-UI 面板上从「每节点一个 client」迁移为「一个共享 client 挂多个 inbound」，显著减少 client 数量、Xray 重载次数和同步压力。
 

@@ -393,7 +393,6 @@ GET                 /api/admin/sync-tasks
 ## 文档
 
 - [架构设计](docs/ARCHITECTURE.md) — 核心概念、数据模型、模块交互
-- [安全审计](docs/logic-security-review.md) — v2.0 安全加固记录
 
 ## 许可证
 

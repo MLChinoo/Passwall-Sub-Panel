@@ -980,7 +980,7 @@
       "tags": "Tags",
       "inbound": "Inbound",
       "sort_order": "排序",
-      "health": "健康",
+      "health": "状态",
       "enabled": "启用",
       "actions": "操作"
     },
@@ -992,6 +992,14 @@
       "unknown": "尚未探测",
       "never": "尚未运行",
       "checked_at": "上次探测：{{time}}"
+    },
+    "config_sync": {
+      "synced": "配置已同步",
+      "drift": "配置漂移（reconcile 将下发对齐）",
+      "pending": "配置下发待重试",
+      "uncaptured": "未捕获本地配置（渲染时回源）",
+      "never": "尚未捕获",
+      "synced_at": "上次捕获：{{time}}"
     },
     "field": {
       "display_name": "显示名",

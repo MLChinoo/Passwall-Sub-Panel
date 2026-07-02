@@ -2,8 +2,12 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
@@ -299,6 +303,206 @@ func TestKVSettingsDefaultsOnEmpty(t *testing.T) {
 	}
 	if !hasApps {
 		t.Errorf("default registry should include families with import apps")
+	}
+}
+
+// settingsMaxID returns MAX(id) (0 if the table is empty) — the auto-increment
+// high-water mark the UPDATE-in-place write model must keep from growing on
+// re-saves. Works across sqlite/mysql/postgres.
+func settingsMaxID(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var max sql.NullInt64
+	if err := db.Raw(`SELECT MAX(id) FROM settings`).Scan(&max).Error; err != nil {
+		t.Fatalf("max(id): %v", err)
+	}
+	return max.Int64
+}
+
+func settingsRowCount(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Model(&settingRow{}).Count(&n).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	return n
+}
+
+// TestSave_DoesNotGrowAutoIncrement is the core guarantee of the UPDATE-in-place
+// write model: once the settings rows exist, repeated saves — whether they
+// change values or not — must never mint new auto-increment ids. The old batch
+// `INSERT ... ON DUPLICATE KEY UPDATE` burned ~46 ids per save under InnoDB
+// (mixed-mode insert reserves an autoinc value per conflicting VALUES row).
+func TestSave_DoesNotGrowAutoIncrement(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	repo := newKVSettingsRepo(db)
+	ctx := context.Background()
+
+	// First save materializes all rows.
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "v1"}); err != nil {
+		t.Fatalf("save 1: %v", err)
+	}
+	baseMax := settingsMaxID(t, db)
+	baseCount := settingsRowCount(t, db)
+	if baseMax == 0 || baseCount == 0 {
+		t.Fatalf("first save wrote nothing (max=%d count=%d)", baseMax, baseCount)
+	}
+
+	// Re-save several times: once with a changed value, once identical.
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "v2"}); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "v2"}); err != nil { // no-op values
+		t.Fatalf("save 3: %v", err)
+	}
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "v3"}); err != nil {
+		t.Fatalf("save 4: %v", err)
+	}
+
+	if got := settingsMaxID(t, db); got != baseMax {
+		t.Errorf("MAX(id) grew from %d to %d across re-saves; UPDATE-in-place must not mint ids", baseMax, got)
+	}
+	if got := settingsRowCount(t, db); got != baseCount {
+		t.Errorf("row count changed from %d to %d across re-saves", baseCount, got)
+	}
+	// And the last write actually landed (proves UPDATEs, not skips).
+	out, _ := repo.Load(ctx, ports.UISettings{})
+	if out.SiteTitle != "v3" {
+		t.Errorf("SiteTitle = %q, want v3 (UPDATE didn't take effect)", out.SiteTitle)
+	}
+}
+
+// TestSave_FreshEmptyTable_InsertsAll pins that a first save against an empty
+// table inserts every descriptor row and Load reads them back.
+func TestSave_FreshEmptyTable_InsertsAll(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	repo := newKVSettingsRepo(db)
+	ctx := context.Background()
+
+	if settingsRowCount(t, db) != 0 {
+		t.Fatalf("expected empty settings table at start")
+	}
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "Fresh", EmailDomain: "u.example.com"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// Every descriptor should have produced exactly one row.
+	wantRows := int64(len(settingDescriptors(&ports.UISettings{})))
+	if got := settingsRowCount(t, db); got != wantRows {
+		t.Errorf("row count = %d, want one per descriptor (%d)", got, wantRows)
+	}
+	out, _ := repo.Load(ctx, ports.UISettings{})
+	if out.SiteTitle != "Fresh" || out.EmailDomain != "u.example.com" {
+		t.Errorf("read back SiteTitle=%q EmailDomain=%q, want Fresh / u.example.com", out.SiteTitle, out.EmailDomain)
+	}
+}
+
+// TestSave_NewKeyGetsInserted simulates an upgrade that adds a new setting key:
+// one row is deleted to mimic "key not yet in DB", then Save must recreate it
+// while minting exactly one new id (existing rows still go through UPDATE).
+func TestSave_NewKeyGetsInserted(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	repo := newKVSettingsRepo(db)
+	ctx := context.Background()
+
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "seed", FooterText: "footer"}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	maxBefore := settingsMaxID(t, db)
+	countBefore := settingsRowCount(t, db)
+
+	// Drop one existing row to model a freshly-added descriptor.
+	if err := db.Exec(`DELETE FROM settings WHERE type = 'site' AND name = 'footer_text'`).Error; err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+	if settingsRowCount(t, db) != countBefore-1 {
+		t.Fatalf("expected one fewer row after delete")
+	}
+
+	if err := repo.Save(ctx, ports.UISettings{SiteTitle: "seed2", FooterText: "footer2"}); err != nil {
+		t.Fatalf("resave: %v", err)
+	}
+	// Row is back...
+	if got := settingsRowCount(t, db); got != countBefore {
+		t.Errorf("row count = %d, want %d (deleted key rebuilt)", got, countBefore)
+	}
+	// ...at the cost of exactly one new id (the reinserted key), not ~46.
+	if got := settingsMaxID(t, db); got != maxBefore+1 {
+		t.Errorf("MAX(id) = %d, want %d (only the one reinserted key mints an id)", got, maxBefore+1)
+	}
+	out, _ := repo.Load(ctx, ports.UISettings{})
+	if out.FooterText != "footer2" {
+		t.Errorf("FooterText = %q, want footer2 (reinserted value)", out.FooterText)
+	}
+}
+
+// TestSave_EncryptedRoundTrip pins that an encrypted-at-rest field
+// (geo_ip_update_token) survives Save→Load with the plaintext intact, and that
+// the value is genuinely stored ciphertext (enc:v1: prefix) — the UPDATE branch
+// must write the encrypted value, not the plaintext.
+func TestSave_EncryptedRoundTrip(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	// Install a process-wide key for the duration of this test, then restore.
+	prev := dbSecretKey
+	ConfigureSecretKey("test-encryption-key-material")
+	t.Cleanup(func() { dbSecretKey = prev })
+
+	repo := newKVSettingsRepo(db)
+	ctx := context.Background()
+
+	const token = "super-secret-geoip-token"
+	if err := repo.Save(ctx, ports.UISettings{GeoIPUpdateToken: token}); err != nil {
+		t.Fatalf("save 1: %v", err)
+	}
+	// Stored value must be ciphertext, not the plaintext.
+	var stored string
+	if err := db.Raw(`SELECT value FROM settings WHERE type='geo' AND name='geo_ip_update_token'`).Scan(&stored).Error; err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if stored == token || !strings.HasPrefix(stored, secretPrefix) {
+		t.Errorf("stored value %q is not encrypted (want %s… prefix)", stored, secretPrefix)
+	}
+	// Load decrypts back to the original.
+	out, err := repo.Load(ctx, ports.UISettings{})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if out.GeoIPUpdateToken != token {
+		t.Errorf("GeoIPUpdateToken round-trip = %q, want %q", out.GeoIPUpdateToken, token)
+	}
+	// Re-save via the UPDATE branch (row now exists) must keep ciphertext intact.
+	if err := repo.Save(ctx, ports.UISettings{GeoIPUpdateToken: token}); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	out2, _ := repo.Load(ctx, ports.UISettings{})
+	if out2.GeoIPUpdateToken != token {
+		t.Errorf("GeoIPUpdateToken after UPDATE = %q, want %q", out2.GeoIPUpdateToken, token)
 	}
 }
 

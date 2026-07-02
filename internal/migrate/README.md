@@ -20,7 +20,7 @@ This package's code is part of the v3.x binary and **stays there until the
 v4.0.0 release**. At that point the legacy struct definitions and migration
 logic here are replaced with the v3.x → v4 equivalents (and any user who
 hadn't yet reached v3.x must first upgrade to v3.x before reaching v4).
-Linear major upgrades only — see `docs/ARCHITECTURE.md §16`.
+Linear major upgrades only — see `docs/ARCHITECTURE.md §17`.
 
 ## What it does
 

@@ -121,7 +121,7 @@ v3.3.0 把旧的 `sub_client_rules` + `sub_import_clients` 合并为 `sub_client
 ### 6. `cleanupLegacyState` 移交
 
 `cleanupLegacyState` 里的块是 v3 同 major 内部演进留下的幂等清理,不是 AutoMigrate 能替代的东西。
-V4 发版时按 `docs/ARCHITECTURE.md §16.4` 的规则处理:
+V4 发版时按 `docs/ARCHITECTURE.md §17.4` 的规则处理:
 
 - 把仍需覆盖 v3→v4 升级的清理块搬进 v4 的 `psp migrate` 前序步骤。
 - 从 v4 运行时的 `cleanupLegacyState` 删除这些旧块,避免主程序长期携带上个 major 的清理逻辑。

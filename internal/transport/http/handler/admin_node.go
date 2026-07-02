@@ -63,6 +63,13 @@ type nodeDTO struct {
 	HealthState     string     `json:"health_state,omitempty"`
 	HealthCheckedAt *time.Time `json:"health_checked_at,omitempty"`
 	HealthDetail    string     `json:"health_detail,omitempty"`
+	// ConfigSyncState surfaces whether the local inbound-config snapshot (the
+	// render truth source since v3.5) matches 3X-UI: "" (never captured — render
+	// falls back to a live fetch for this node), "synced", "drift" (reconcile will
+	// push the local config over the panel), or "pending" (last push/recapture
+	// failed, retried next reconcile cycle). See docs/inbound-ownership.md.
+	ConfigSyncState string     `json:"config_sync_state,omitempty"`
+	ConfigSyncedAt  *time.Time `json:"config_synced_at,omitempty"`
 	// CertSource/CertID surface the managed-certificate binding so the
 	// node-edit form can pre-select the current source (psp_managed + which
 	// cert). "" = unmanaged. Never carries any PEM/secret — just the binding.
@@ -872,6 +879,8 @@ func (h *AdminNodeHandler) toNodeDTO(n *domain.Node, panelNames map[int64]string
 		HealthState:     string(n.HealthState),
 		HealthCheckedAt: n.HealthCheckedAt,
 		HealthDetail:    n.HealthDetail,
+		ConfigSyncState: n.ConfigSyncState,
+		ConfigSyncedAt:  n.ConfigSyncedAt,
 		Kind:            string(n.Kind),
 		CertSource:      string(n.CertSource),
 		CertID:          n.CertID,

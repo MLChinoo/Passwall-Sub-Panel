@@ -1,7 +1,7 @@
 # inbound 配置本地化与订阅渲染零回源（自 v3.5.0-beta.1 起实现）
 
 > 状态：**已实现（首个切片，v3.5.0-beta.1；客户端清零等安全修补在 v3.5.0-beta.2）**。后端写路径 / render / reconcile 轴 A 均已落地并有单测覆盖。
-> 关联：[ARCHITECTURE.md](ARCHITECTURE.md) §3.2 / §4 / §9 / §16；[internal/migrate/README.md](../internal/migrate/README.md)。
+> 关联：[ARCHITECTURE.md](ARCHITECTURE.md) §3.2 / §4 / §10 / §17；[internal/migrate/README.md](../internal/migrate/README.md)。
 > 实现位置：映射逻辑统一在 [internal/service/inboundcfg](../internal/service/inboundcfg/)（node / render / reconcile 共用）。
 > 历史：原计划走 v4.0.0 major 切版，最终决定非破坏性、增量发布在 v3.5.x（升级无需迁移工具）。
 
@@ -61,7 +61,7 @@ inbound 的状态分两层，归属与方向**不同**：
 
 ### 2.3 client 级混合与"绝不误伤"——不变量
 
-§4.1 / §9.5 的现实依然成立：**同一个 PSP 托管的 inbound 里，既有 PSP 发的 email，也会有手动在 3X-UI 里建的 client**（维护者私人 / 老朋友）。
+§4.1 / §10.5 的现实依然成立：**同一个 PSP 托管的 inbound 里，既有 PSP 发的 email，也会有手动在 3X-UI 里建的 client**（维护者私人 / 老朋友）。
 
 - PSP **只维护自己发的 email**（轴 B），手动创建的 client **绝不删、绝不改**。
 - ⚠️ **轴 A 的"下发覆盖配置"必须走 read-modify-write**：只覆盖连接配置部分，`settings.clients[]` 用 3X-UI 当前活着的列表合并保留——**PSP 的 email 和手动建的 client 全部不丢**。这正是现有 [`settingsWithCurrentClients`](../internal/adapters/xui/client.go) 的语义，延续使用。
@@ -77,28 +77,28 @@ inbound 的状态分两层，归属与方向**不同**：
 | 位置 | 原约定 | v3.5 改为 |
 |---|---|---|
 | §3.2 表「修改 inbound 协议参数」 | 本地只存展示元数据，协议参数以 3X-UI 为真相源 | PSP 托管 inbound 的连接配置存本地 DB，PSP 为真相源 |
-| §9.3 节点元数据存储表 | 协议/地址/端口/TLS/Reality 存 3X-UI | 上述参数对**托管 inbound** 存 `nodes` 表 |
-| §9.4.3 #7「inbound 启用状态」 | 不修复，只记录（3X-UI 是协议参数真相源） | 托管 inbound 的配置与启用状态由 PSP 持续强制 |
-| §9.4.5 🚫「修改 inbound 协议参数」 | 绝对不做 | 对托管 inbound：reconcile **会**下发覆盖配置漂移（仅连接配置层，RMW 保留 clients） |
-| §9.5.1「inbound 协议参数零变更」 | 导入完全不调 3X-UI 写 API | 导入 = 接管：吸配置进 DB；此后配置以 PSP 为准 |
+| §10.3 节点元数据存储表 | 协议/地址/端口/TLS/Reality 存 3X-UI | 上述参数对**托管 inbound** 存 `nodes` 表 |
+| §10.4.3 #7「inbound 启用状态」 | 不修复，只记录（3X-UI 是协议参数真相源） | 托管 inbound 的配置与启用状态由 PSP 持续强制 |
+| §10.4.5 🚫「修改 inbound 协议参数」 | 绝对不做 | 对托管 inbound：reconcile **会**下发覆盖配置漂移（仅连接配置层，RMW 保留 clients） |
+| §10.5.1「inbound 协议参数零变更」 | 导入完全不调 3X-UI 写 API | 导入 = 接管：吸配置进 DB；此后配置以 PSP 为准 |
 
 ### 3.2 完全保留的不变量（v3.5 不动）
 
 - §4.3 **client 写护栏** `ensureClientOwned`：所有写 client 入口必须命中归属表。
 - §4.4 **inbound 删除护栏** `ensureInboundDeletable`：删 inbound 必须内部全部 client 纳管。
-- §9.4.5 🚫 **绝不删除任何 3X-UI client**（含归属表外私人/朋友）。
-- §9.5.2 **addClient 追加语义**、§9.5.3 **归属表是最后防线**。
-- 轴 B 的全部 client 检查项（§9.4.2 #1–#5）。
+- §10.4.5 🚫 **绝不删除任何 3X-UI client**（含归属表外私人/朋友）。
+- §10.5.2 **addClient 追加语义**、§10.5.3 **归属表是最后防线**。
+- 轴 B 的全部 client 检查项（§10.4.2 #1–#5）。
 
 > 一句话：**安全模型只在 inbound 配置层做了"PSP 当家"的改动；client 层的"绝不误伤"丝毫未动。**
 
 ### 3.3 一个需要明确的张力
 
-§9.5 的复用哲学是"复用现有 inbound 而不动它"。v3.5 的"导入=接管"会让**被接管的既有 inbound 的连接配置改由 PSP 持续强制**。结论与约束：
+§10.5 的复用哲学是"复用现有 inbound 而不动它"。v3.5 的"导入=接管"会让**被接管的既有 inbound 的连接配置改由 PSP 持续强制**。结论与约束：
 
 - 接管**只影响连接配置层**（端口/TLS/stream），**不影响任何 client**（私人/朋友 client 全程保留）。
 - 接管后，该 inbound 的连接配置应**经 PSP UI 修改**；若维护者绕过 PSP 直接在 3X-UI 改，reconcile 会按 PSP 版本改回（这是"持续强制"的有意行为，用户已确认接受）。
-- §9.5.5 老朋友渐进迁移路径**不受影响**（那是 client 级认领，走轴 B）。
+- §10.5.4 老朋友渐进迁移路径**不受影响**（那是 client 级认领，走轴 B）。
 
 ---
 
@@ -177,15 +177,15 @@ render 生成 proxy 块（[protocols.go `emitProxy`](../internal/service/render/
 - [x] ConfigSyncState `"pending"` 状态（beta.7）：reconcile 推送 / 回采失败时落盘 `"pending"`，下一轮成功时由 `Capture` 复位为 `"synced"`；每条 `inbound_config_*` 事件单独写 `audit_log`，actor=`reconcile`、target 含 `node/panel/inbound` id。
 
 ### 阶段 5 · 顺带优化
-- [x] health 改读本地 Port/Protocol（beta.7）：不再 `ListInbounds`，控制面 / 数据面解耦（3X-UI 控制 API 挂掉时 health 仍能跑）。`panel_unreachable` / `inbound_missing` 两个旧状态在 health 不再写入（前者已无意义，后者由 reconcile §9.4.3 #6 兜底）；`health.Service.pool` 字段一并去除。
+- [x] health 改读本地 Port/Protocol（beta.7）：不再 `ListInbounds`，控制面 / 数据面解耦（3X-UI 控制 API 挂掉时 health 仍能跑）。`panel_unreachable` / `inbound_missing` 两个旧状态在 health 不再写入（前者已无意义，后者由 reconcile §10.4.3 #6 兜底）；`health.Service.pool` 字段一并去除。
 - traffic poll 仍拉流量计数（流量属 xray，搬不走）。
 
 ### 阶段 6 · 文档与版本
 - [x] CHANGELOG（中文，v3.5.0-beta.1）。
-- [x] ARCHITECTURE.md 正文回写：§3.2 / §9.3 / §9.4.3（#7 改写 + 新增 #8 轴 A 配置漂移）/ §9.4.5 / §9.5.1 已改为 v3.5 现实（PSP 为 inbound 配置真相源），并标注撤销旧表述。
+- [x] ARCHITECTURE.md 正文回写：§3.2 / §10.3 / §10.4.3（#7 改写 + 新增 #8 轴 A 配置漂移）/ §10.4.5 / §10.5.1 已改为 v3.5 现实（PSP 为 inbound 配置真相源），并标注撤销旧表述。
 - [ ] *TODO*：`internal/migrate/` 改写为 v3.x→v4.0.0 的迁移逻辑等到真正切下个 major 时再做（本特性非破坏性、增量发布）。
 - [x] 编辑对话框 `GetInboundConfig` 改读本地快照（beta.6）：已捕获节点读本地、与 render/reconcile 一致，未捕获才回源；"是否有本地配置"统一为 `inboundcfg.HasLocalConfig`。
-- [ ] *TODO*：前端可选——节点列表展示 `ConfigSyncState`。
+- [x] 前端节点列表展示 `ConfigSyncState`（v3.9.1）：node DTO 加 `config_sync_state` / `config_synced_at`（[admin_node.go](../internal/transport/http/handler/admin_node.go)），NodesView「状态」列在健康圆点旁加一个方形同步指示（synced/drift/pending/未捕获，带 tooltip + 上次捕获时间），仅对启用的真实节点显示。
 
 ---
 
