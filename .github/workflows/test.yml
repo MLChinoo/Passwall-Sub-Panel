@@ -1,7 +1,10 @@
 name: Test
 
-# Runs the Go test suite and the SPA type/build check. All three Go jobs run
-# the WHOLE suite (go test ./...); the postgres and mysql jobs additionally
+# Runs the Go test suite, the SPA type/build check, and a cross-platform compile
+# check. The build job cross-compiles the deployable binary for every release
+# GOOS/GOARCH (CGO off, pure Go) so a platform-specific build break is caught
+# here on push/PR instead of only when a release tag is cut. All three Go test
+# jobs run the WHOLE suite (go test ./...); the postgres and mysql jobs additionally
 # set PSP_TEST_DB_KIND / PSP_TEST_DB_DSN so internal/adapters/sqlstore/testdb_test.go
 # points the DB-adapter tests (schema + every repo + the grouped / scoped-settings
 # layer) at a real server, giving each test its own database on the shared
@@ -36,6 +39,36 @@ jobs:
       - name: build
         working-directory: web-react
         run: npm run build
+
+  build:
+    name: build (cross-compile release targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Cross-compile the deployable binary for every release GOOS/GOARCH. The
+      # binary is pure Go (CGO_ENABLED=0), so this is fast and needs no C
+      # toolchains. The committed internal/web/dist/.gitkeep satisfies
+      # //go:embed all:dist, so no SPA build is required just to confirm the Go
+      # binary links — the web job covers the SPA build separately. Output is
+      # discarded (-o /dev/null); we only care that every target compiles.
+      - name: cross-compile ./cmd/panel
+        run: |
+          set -uo pipefail
+          fail=0
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            if GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+                 go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/panel; then
+              echo "✓ ${target}"
+            else
+              echo "✗ ${target}"
+              fail=1
+            fi
+          done
+          exit "$fail"
 
   sqlite:
     name: sqlite (full suite)
