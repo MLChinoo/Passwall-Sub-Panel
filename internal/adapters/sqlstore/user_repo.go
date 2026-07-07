@@ -65,6 +65,10 @@ var pollOwnedColumns = []string{
 	// this column (no live re-derivation) — a clobber there silently
 	// un-suspends the user and the next push re-enables their 3X-UI client.
 	"service_disabled_reason", "service_disable_detail", "service_disabled_at",
+	// RBAC v2 per-user overrides — written ONLY via the column-scoped
+	// UpdatePermissionOverrides writer and read by the effective-permission
+	// resolver, so a stale edit-dialog Save can't clobber a just-granted override.
+	"permission_overrides",
 }
 
 func (r *userRepo) Update(ctx context.Context, u *domain.User) error {

@@ -1549,7 +1549,7 @@ function MailTab() {
         onClose={() => setTplVarsAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{ sx: { p: 2, maxWidth: 460, bgcolor: md.surfaceContainerHigh } }}>
+        PaperProps={{ sx: { p: 2, maxWidth: 460, maxHeight: 'min(720px, calc(100vh - 48px))', overflowY: 'auto', bgcolor: md.surfaceContainerHigh } }}>
         <Typography sx={{ fontWeight: 500, mb: 1 }}>
           {t('settings.mail.tpl_vars_title', { defaultValue: '模板可用变量' })}
         </Typography>
@@ -1561,6 +1561,7 @@ function MailTab() {
           fontSize: 12, lineHeight: 1.5,
         }}>
           {[
+            ['{{.UserID}}', t('settings.mail.tpl_vars.user_id', { defaultValue: '内部用户 ID' })],
             ['{{.UPN}}', t('settings.mail.tpl_vars.upn', { defaultValue: '登录名（邮箱）' })],
             ['{{.DisplayName}}', t('settings.mail.tpl_vars.display_name', { defaultValue: '显示名（用于"你好 X"，无则留空）' })],
             ['{{.Email}}', t('settings.mail.tpl_vars.email', { defaultValue: '邮箱地址' })],
@@ -1570,10 +1571,17 @@ function MailTab() {
             ['{{.TrafficRemainGB}}', t('settings.mail.tpl_vars.traffic_remain_gb', { defaultValue: '剩余流量 GB' })],
             ['{{.PeriodUsedGB}}', t('settings.mail.tpl_vars.period_used_gb', { defaultValue: '本周期已用 GB（流量耗尽模板）' })],
             ['{{.TrafficLimitGB}}', t('settings.mail.tpl_vars.traffic_limit_gb', { defaultValue: '流量上限 GB' })],
+            ['{{.DisableReason}}', t('settings.mail.tpl_vars.disable_reason', { defaultValue: '停用原因代码' })],
             ['{{.DisableDetail}}', t('settings.mail.tpl_vars.disable_detail', { defaultValue: '停用原因（可选，建议用 {{if}} 包裹）' })],
+            ['{{.EnableReason}}', t('settings.mail.tpl_vars.enable_reason', { defaultValue: '恢复原因代码' })],
             ['{{.EnableDetail}}', t('settings.mail.tpl_vars.enable_detail', { defaultValue: '恢复备注（可选）' })],
+            ['{{.SuspendReason}}', t('settings.mail.tpl_vars.suspend_reason', { defaultValue: '服务暂停原因' })],
+            ['{{.SuspendReasonCode}}', t('settings.mail.tpl_vars.suspend_reason_code', { defaultValue: '服务暂停原因代码' })],
+            ['{{.SuspendDetail}}', t('settings.mail.tpl_vars.suspend_detail', { defaultValue: '服务暂停详情（可选，建议用 {{if}} 包裹）' })],
             ['{{.AnnouncementTitle}}', t('settings.mail.tpl_vars.announcement_title', { defaultValue: '公告标题（仅公告模板）' })],
+            ['{{.AnnouncementBody}}', t('settings.mail.tpl_vars.announcement_body', { defaultValue: '公告正文纯文本（仅公告模板）' })],
             ['{{.AnnouncementBodyHTML}}', t('settings.mail.tpl_vars.announcement_body_html', { defaultValue: '公告正文 HTML（仅公告模板）' })],
+            ['{{.ClientName}}', t('settings.mail.tpl_vars.client_name', { defaultValue: '被禁客户端名称' })],
             ['{{.PanelURL}}', t('settings.mail.tpl_vars.panel_url', { defaultValue: '面板访问地址（CTA 按钮指向）' })],
             ['{{.SiteTitle}}', t('settings.mail.tpl_vars.site_title', { defaultValue: '站点名称（用于邮件头）' })],
             ['{{.LogoURL}}', t('settings.mail.tpl_vars.logo_url', { defaultValue: '站点 Logo（自动 dark 兜底）' })],

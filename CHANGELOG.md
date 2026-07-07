@@ -4,6 +4,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 semver per `feedback_semver` (major = refactor, minor = feature, patch = fix +
 small improvement).
 
+## v3.9.1-beta.3 — 2026-07-07
+
+### 新功能
+
+- **RBAC v2 基础数据模型落地** —— 新增权限目录、角色定义、角色分配与 per-user grant/deny override 的 domain/schema 骨架；AutoMigrate 新增 `roles` / `role_assignments` 与 `users.permission_overrides`，并在启动时幂等 seed `admin` / `operator` / `user` 三个内置角色。`admin` 继续沿用现有 slug 以保持零数据迁移，并在每次启动时自愈为不可变的 `["*"]` 全局管理员；`operator` / `user` 仅首插，不覆盖后续管理员编辑。当前 beta 仍保持现有路由鉴权语义不变，为后续细粒度权限切换铺表。
+
+### 修复
+
+- **英文界面的邮件模板变量弹窗不再混出中文** —— 补齐 `settings.mail.tpl_vars.*` 的 en-US / zh-CN 资源键，避免英文语言下因组件内中文 `defaultValue` 兜底而显示中文说明；同时补全 `ClientName`、`SuspendReason`、`SuspendDetail`、`UserID` 等实际模板可用字段，并给变量弹窗加最大高度与滚动，防止小屏溢出。
+
 ## v3.9.1-beta.2 — 2026-07-03
 
 ### 新功能

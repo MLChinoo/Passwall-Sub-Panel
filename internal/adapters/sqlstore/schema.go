@@ -91,6 +91,14 @@ type userRow struct {
 	TOTPSecret    string      `gorm:"column:totp_secret;size:255;not null;default:''"`
 	TOTPEnabled   bool        `gorm:"column:totp_enabled;not null;default:false"`
 	RecoveryCodes jsonStrings `gorm:"column:recovery_codes"`
+	// PermissionOverrides carries per-user grant/deny layered on top of the
+	// user's role(s) (RBAC v2). Like the TOTP columns above it is an OWNED
+	// column: written ONLY via the column-scoped UpdatePermissionOverrides writer
+	// and listed in pollOwnedColumns, so a stale edit-dialog Save can't clobber a
+	// just-granted override. Not mapped in to/fromDomain for the same reason —
+	// the effective-permission resolver reads it directly. jsonPermOverrides.Scan
+	// tolerates NULL so AutoMigrate needs no backfill.
+	PermissionOverrides jsonPermOverrides `gorm:"column:permission_overrides"`
 	// NOTE: the per-user require_2fa column was dropped from the model in v3.8.0
 	// (enforcement is now staff-wide ∨ per-group). AutoMigrate does not drop
 	// columns, so the existing `require_2fa` column lingers as a harmless orphan
@@ -194,6 +202,98 @@ func userFromDomain(u *domain.User) *userRow {
 		LastOnlineAt:           u.LastOnlineAt,
 		CreatedAt:              u.CreatedAt,
 		UpdatedAt:              u.UpdatedAt,
+	}
+}
+
+// roleRow is a role definition: a named bundle of permissions (RBAC v2). Slug
+// equals the domain.Role string that users.role stores — an FK-by-convention
+// (AutoMigrate emits no real FKs on any table, xui_panel_repo.go:113). Permissions
+// reuse the text-pinned jsonStrings wrapper. Built-ins are seeded by
+// seedBuiltinRoles; the immutable Global Administrator (slug "admin") holds ["*"].
+type roleRow struct {
+	ID          int64       `gorm:"primaryKey;autoIncrement"`
+	Slug        string      `gorm:"size:64;uniqueIndex;not null"`
+	Name        string      `gorm:"size:128;not null"`
+	Description string      `gorm:"size:255"`
+	Builtin     bool        `gorm:"not null;default:false"` // cannot be deleted
+	Immutable   bool        `gorm:"not null;default:false"` // GA only: cannot be edited; perms locked to ["*"]
+	Permissions jsonStrings `gorm:"column:permissions"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (roleRow) TableName() string { return "roles" }
+
+func (r *roleRow) toDomain() *domain.RoleDef {
+	perms := make([]domain.Permission, len(r.Permissions))
+	for i, p := range r.Permissions {
+		perms[i] = domain.Permission(p)
+	}
+	return &domain.RoleDef{
+		Slug:        r.Slug,
+		Name:        r.Name,
+		Description: r.Description,
+		Permissions: perms,
+		Builtin:     r.Builtin,
+		Immutable:   r.Immutable,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
+
+func roleFromDomain(d *domain.RoleDef) *roleRow {
+	perms := make(jsonStrings, len(d.Permissions))
+	for i, p := range d.Permissions {
+		perms[i] = string(p)
+	}
+	return &roleRow{
+		Slug:        d.Slug,
+		Name:        d.Name,
+		Description: d.Description,
+		Builtin:     d.Builtin,
+		Immutable:   d.Immutable,
+		Permissions: perms,
+		CreatedAt:   d.CreatedAt,
+		UpdatedAt:   d.UpdatedAt,
+	}
+}
+
+// roleAssignmentRow is an ADDITIONAL, optionally group-scoped role grant beyond a
+// user's primary users.role (Entra administrative unit). ScopeGroupIDs reuses the
+// text-pinned jsonInt64s wrapper (empty/NULL = tenant-wide). Origin
+// ("admin" | "sso:<provider>") is provenance so SSO reconcile only ever rewrites
+// its own sso:* rows and never an admin's hand-grant. (user, role, scope)
+// uniqueness can't be a DB index (scope is a JSON blob) — deduped in the service.
+type roleAssignmentRow struct {
+	ID            int64      `gorm:"primaryKey;autoIncrement"`
+	UserID        int64      `gorm:"not null;index:idx_role_assign_user"`
+	RoleSlug      string     `gorm:"size:64;not null;index:idx_role_assign_role"`
+	ScopeGroupIDs jsonInt64s `gorm:"column:scope_group_ids"`
+	Origin        string     `gorm:"size:64;not null;default:admin"`
+	CreatedAt     time.Time
+}
+
+func (roleAssignmentRow) TableName() string { return "role_assignments" }
+
+func (r *roleAssignmentRow) toDomain() *domain.RoleAssignment {
+	return &domain.RoleAssignment{
+		ID:            r.ID,
+		UserID:        r.UserID,
+		RoleSlug:      r.RoleSlug,
+		ScopeGroupIDs: []int64(r.ScopeGroupIDs),
+		Origin:        r.Origin,
+		CreatedAt:     r.CreatedAt,
+	}
+}
+
+func roleAssignmentFromDomain(a *domain.RoleAssignment) *roleAssignmentRow {
+	return &roleAssignmentRow{
+		ID:            a.ID,
+		UserID:        a.UserID,
+		RoleSlug:      a.RoleSlug,
+		ScopeGroupIDs: jsonInt64s(a.ScopeGroupIDs),
+		Origin:        a.Origin,
+		CreatedAt:     a.CreatedAt,
 	}
 }
 
@@ -1115,6 +1215,45 @@ func (j *jsonRoleRules) Scan(value any) error {
 	return json.Unmarshal(b, j)
 }
 
+// jsonPermOverrides persists []domain.PermissionOverride as a JSON blob on the
+// users table (RBAC v2 per-user grant/deny). Same shape as jsonRoleRules —
+// Value returns "[]" for nil so the column stays NOT NULL / text; Scan tolerates
+// NULL so AutoMigrate needs no backfill.
+type jsonPermOverrides []domain.PermissionOverride
+
+func (j jsonPermOverrides) Value() (driver.Value, error) {
+	if j == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(j)
+	return string(b), err
+}
+
+// GormDBDataType — see jsonInt64s.GormDBDataType. []domain.PermissionOverride
+// would otherwise infer a Postgres array/composite column; pin it to text.
+func (jsonPermOverrides) GormDBDataType(*gorm.DB, *schema.Field) string { return "text" }
+
+func (j *jsonPermOverrides) Scan(value any) error {
+	if value == nil {
+		*j = nil
+		return nil
+	}
+	var b []byte
+	switch v := value.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("unsupported scan type for jsonPermOverrides: %T", value)
+	}
+	if len(b) == 0 {
+		*j = nil
+		return nil
+	}
+	return json.Unmarshal(b, j)
+}
+
 type jsonTagFilter domain.TagFilter
 
 func (j jsonTagFilter) Value() (driver.Value, error) {
@@ -1217,6 +1356,8 @@ func (j *jsonRelays) Scan(value any) error {
 // real MySQL/Postgres).
 var schemaModels = []any{
 	&userRow{},
+	&roleRow{},
+	&roleAssignmentRow{},
 	&groupRow{},
 	&nodeRow{},
 	// ownershipRow (user_xui_clients) is intentionally NOT here: v3.9.0 retired the
@@ -1262,7 +1403,92 @@ func EnsureSchema(db *gorm.DB) error {
 	if err := backfillTrafficCounterNulls(db); err != nil {
 		return err
 	}
+	if err := seedBuiltinRoles(db); err != nil {
+		return err
+	}
 	return cleanupLegacyState(db)
+}
+
+// seedBuiltinRoles ensures the three built-in roles (RBAC v2) exist after
+// AutoMigrate. It runs on every boot and is idempotent:
+//
+//   - The Global Administrator (slug "admin") is UPSERTED, self-healing: its
+//     definition columns are forced to the canonical immutable {"Global
+//     Administrator", ["*"]} every boot. This is safe precisely because the role
+//     is immutable — there are no admin edits to preserve — and it guarantees a
+//     bad migration or manual DB edit can never leave the panel with a GA that
+//     silently lost the wildcard and no recovery role (M4 / security invariant #1).
+//     Keeping slug "admin" makes the migration zero-row-change: every existing
+//     users.role='admin' row, CountEnabledAdmins ("WHERE role='admin'"), the JWT
+//     "r" claim, and existing SSO rules carry forward untouched.
+//   - operator and user are INSERT-IF-ABSENT by slug (never overwrite), so a
+//     later admin edit to their permission set survives a restart — mirroring
+//     initAdminIfNeeded's create-once posture.
+//
+// Seeded permission sets reproduce today's role powers exactly, so the migration
+// is behaviourally a no-op until enforcement flips on in a later phase.
+func seedBuiltinRoles(db *gorm.DB) error {
+	ga := roleRow{
+		Slug:        string(domain.RoleAdmin),
+		Name:        "Global Administrator",
+		Description: "Holds every permission. Immutable and can never be locked out.",
+		Builtin:     true,
+		Immutable:   true,
+		Permissions: jsonStrings{string(domain.PermAll)},
+	}
+	var existing roleRow
+	switch err := db.Where("slug = ?", ga.Slug).First(&existing).Error; {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		if err := db.Create(&ga).Error; err != nil {
+			return fmt.Errorf("seed global-administrator role: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("load global-administrator role: %w", err)
+	default:
+		// Self-heal the definition columns (never the id/created_at). Column-scoped
+		// Updates so we touch only what the immutable contract owns.
+		if err := db.Model(&roleRow{}).Where("slug = ?", ga.Slug).Updates(map[string]any{
+			"name":        ga.Name,
+			"description": ga.Description,
+			"builtin":     true,
+			"immutable":   true,
+			"permissions": ga.Permissions,
+		}).Error; err != nil {
+			return fmt.Errorf("self-heal global-administrator role: %w", err)
+		}
+	}
+
+	// operator: the exact closure of today's staffGroup access (day-to-day user
+	// management + per-user traffic + sync), minus every admin-only break-glass
+	// permission (no users.elevate, no *.write infra, no node-aggregate traffic).
+	editable := []roleRow{
+		{
+			Slug:        string(domain.RoleOperator),
+			Name:        "Operator",
+			Description: "Day-to-day user management without integration credentials or system settings.",
+			Builtin:     true,
+			Permissions: jsonStrings{
+				string(domain.PermUsersRead), string(domain.PermUsersWrite), string(domain.PermUsersDelete),
+				string(domain.PermTrafficRead), string(domain.PermTrafficWrite), string(domain.PermSyncOperate),
+				string(domain.PermNodesRead), string(domain.PermNodesToggle), string(domain.PermGroupsRead),
+				string(domain.PermContentRead), string(domain.PermAuditRead),
+			},
+		},
+		{
+			Slug:        string(domain.RoleUser),
+			Name:        "User",
+			Description: "End user with self-service access only.",
+			Builtin:     true,
+			Permissions: jsonStrings{},
+		},
+	}
+	for _, seed := range editable {
+		row := seed
+		if err := db.Where(roleRow{Slug: row.Slug}).Attrs(row).FirstOrCreate(&row).Error; err != nil {
+			return fmt.Errorf("seed builtin role %q: %w", row.Slug, err)
+		}
+	}
+	return nil
 }
 
 // cleanupLegacyState is the curated home for "one-time cleanups after a
