@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
@@ -60,7 +61,10 @@ func applyPagination(q *gorm.DB, p ports.Pagination, sortAllowlist map[string]st
 	if dir != "desc" {
 		dir = "asc"
 	}
-	q = q.Order(col + " " + dir)
+	q = q.Order(clause.OrderByColumn{
+		Column: clause.Column{Name: col},
+		Desc:   dir == "desc",
+	})
 	if p.PageSize > 0 {
 		size := p.PageSize
 		if size > 200 {
