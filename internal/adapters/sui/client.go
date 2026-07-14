@@ -42,9 +42,16 @@ func New(p *domain.Panel) (*Client, error) {
 	if p.AuthMethod == domain.XUIAuthPassword {
 		return nil, fmt.Errorf("S-UI adapter supports API token authentication only")
 	}
+	baseURL := strings.TrimRight(strings.TrimSpace(p.URL), "/")
+	// The server form asks for the panel base URL, but accepting a copied
+	// /apiv2 URL is cheap and avoids producing /apiv2/apiv2/... requests.
+	// Keep any installation path before it (for example /secret/apiv2).
+	if strings.HasSuffix(strings.ToLower(baseURL), "/apiv2") {
+		baseURL = strings.TrimRight(baseURL[:len(baseURL)-len("/apiv2")], "/")
+	}
 	return &Client{
 		panelName: p.Name,
-		baseURL:   strings.TrimRight(p.URL, "/"),
+		baseURL:   baseURL,
 		token:     p.APIToken,
 		http:      safehttp.NewClientTLS(30*time.Second, p.InsecureSkipVerify),
 	}, nil
@@ -212,6 +219,9 @@ func configFromSpec(spec ports.ClientSpec) map[string]map[string]any {
 		"shadowsocks16": {"name": name, "password": password},
 		"shadowsocks32": {"name": name, "password": password},
 		"hysteria2":     {"name": name, "password": password},
+		"anytls":        {"name": name, "password": password},
+		"tuic":          {"name": name, "uuid": spec.ID, "password": password},
+		"naive":         {"username": name, "password": password},
 	}
 }
 
@@ -288,7 +298,7 @@ func (c *Client) GetClient(ctx context.Context, email string) (*ports.ClientDeta
 		return nil, err
 	}
 	detail := &ports.ClientDetail{Email: model.Name, Enable: model.Enable, InboundIDs: append([]int(nil), model.Inbounds...)}
-	for _, key := range []string{"vless", "vmess"} {
+	for _, key := range []string{"vless", "vmess", "tuic"} {
 		if cfg := model.Config[key]; cfg != nil {
 			detail.ID, _ = cfg["uuid"].(string)
 			if key == "vless" {
@@ -299,7 +309,7 @@ func (c *Client) GetClient(ctx context.Context, email string) (*ports.ClientDeta
 			}
 		}
 	}
-	for _, key := range []string{"trojan", "shadowsocks", "shadowsocks16", "shadowsocks32"} {
+	for _, key := range []string{"trojan", "shadowsocks", "shadowsocks16", "shadowsocks32", "anytls", "tuic", "naive"} {
 		if cfg := model.Config[key]; cfg != nil {
 			if value, _ := cfg["password"].(string); value != "" {
 				detail.Password = value

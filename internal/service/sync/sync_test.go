@@ -57,6 +57,15 @@ func TestBuildClientSpecHysteria2SetsAuth(t *testing.T) {
 	}
 }
 
+func TestBuildClientSpecSUIModernProtocols(t *testing.T) {
+	for _, protocol := range []domain.Protocol{domain.ProtoAnyTLS, domain.ProtoTUIC, domain.ProtoNaive} {
+		spec := buildClientSpec(protocol, "", "uuid-xyz", "u@example.test", "", 0, 0)
+		if spec.ID != "uuid-xyz" || spec.Password != "uuid-xyz" {
+			t.Fatalf("%s spec = %+v, want UUID in id and password", protocol, spec)
+		}
+	}
+}
+
 // TestBuildClientSpecSS2022KeyLength confirms the ssMethod threaded into
 // buildClientSpec reaches the derived PSK, so the credential pushed to 3X-UI
 // matches the inbound cipher's required key length (16 bytes for aes-128-gcm,

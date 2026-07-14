@@ -27,6 +27,9 @@ type Spec struct {
 	Socket      SocketOptions
 	Shadowsocks Shadowsocks
 	Hysteria2   Hysteria2
+	AnyTLS      AnyTLS
+	TUIC        TUIC
+	Naive       Naive
 	Sniffing    Sniffing
 }
 
@@ -100,6 +103,22 @@ type Hysteria2 struct {
 	MasqueradeData        string
 }
 
+type AnyTLS struct {
+	PaddingScheme []string
+}
+
+type TUIC struct {
+	CongestionControl string
+	AuthTimeout       string
+	ZeroRTTHandshake  bool
+	Heartbeat         string
+}
+
+type Naive struct {
+	Network               string
+	QUICCongestionControl string
+}
+
 type Sniffing struct {
 	Enabled             bool
 	DestinationOverride []string
@@ -152,6 +171,17 @@ func Decode(in ports.InboundSpec) (*Spec, error) {
 		spec.Shadowsocks.Network = "tcp,udp"
 	}
 	decodeHysteria2(&spec.Hysteria2, stream)
+	spec.AnyTLS = AnyTLS{PaddingScheme: stringSlice(settings["padding_scheme"])}
+	spec.TUIC = TUIC{
+		CongestionControl: stringValue(settings["congestion_control"]),
+		AuthTimeout:       stringValue(settings["auth_timeout"]),
+		ZeroRTTHandshake:  boolValue(settings["zero_rtt_handshake"]),
+		Heartbeat:         stringValue(settings["heartbeat"]),
+	}
+	spec.Naive = Naive{
+		Network:               stringValue(settings["network"]),
+		QUICCongestionControl: stringValue(settings["quic_congestion_control"]),
+	}
 	return spec, nil
 }
 

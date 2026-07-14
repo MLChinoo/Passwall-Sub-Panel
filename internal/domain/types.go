@@ -417,9 +417,9 @@ type Node struct {
 	ServerAddress string
 	Flow          string
 	// Protocol caches the upstream inbound's protocol (vless / vmess /
-	// trojan / shadowsocks / hysteria2, lowercased) so the UI can gate
+	// trojan / shadowsocks / hysteria2 / anytls / tuic / naive, lowercased) so the UI can gate
 	// protocol-specific fields (e.g. Flow is VLESS-only) without a live
-	// 3X-UI fetch. Populated on import / create / inbound edit; empty for
+	// upstream-panel fetch. Populated on import / create / inbound edit; empty for
 	// rows written before this column existed (treated as "unknown").
 	Protocol string
 	// Port caches the upstream inbound's listen port so the health checker can

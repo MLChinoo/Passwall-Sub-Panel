@@ -53,6 +53,10 @@ export interface InboundSpec {
   sniffing: string
   allocate: string
   expiry_time?: number
+  /** Update-only hint: inject this managed certificate before the adapter
+   * writes a TLS inbound. Kept on the same DTO for API compatibility. */
+  cert_source?: 'psp_managed'
+  cert_id?: number
 }
 
 export interface CreateInboundRequest {
@@ -63,6 +67,8 @@ export interface CreateInboundRequest {
   region: string
   tags?: string[]
   sort_order?: number
+  cert_source?: 'psp_managed'
+  cert_id?: number
   inbound: InboundSpec
 }
 

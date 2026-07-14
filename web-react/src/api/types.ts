@@ -101,7 +101,7 @@ export interface Node {
   server_address: string
   flow?: string
   /** Cached upstream inbound protocol (vless / vmess / trojan /
-   *  shadowsocks / hysteria2, lowercased). Empty for nodes imported
+   *  shadowsocks / hysteria2 / anytls / tuic / naive, lowercased). Empty for nodes imported
    *  before this field existed; used to gate protocol-specific UI like
    *  the VLESS-only Flow field. */
   protocol?: string

@@ -55,16 +55,43 @@ func (c *Client) tlsModels(ctx context.Context) (map[int]tlsModel, error) {
 }
 
 func (c *Client) fullInbound(ctx context.Context, id int) (map[string]any, error) {
+	items, err := c.fullInbounds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
+	return items[id], nil
+}
+
+// fullInbounds batches S-UI's comma-separated id filter. ListInbounds used to
+// issue one GET per inbound, which made probes and reconciliation progressively
+// slower as a panel grew. The upstream API accepts id=1,2,... and returns the
+// exact same full rows in one response.
+func (c *Client) fullInbounds(ctx context.Context, ids []int) (map[int]map[string]any, error) {
+	out := make(map[int]map[string]any, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			parts = append(parts, strconv.Itoa(id))
+		}
+	}
+	if len(parts) == 0 {
+		return out, nil
+	}
 	var obj struct {
 		Inbounds []map[string]any `json:"inbounds"`
 	}
-	if err := c.do(ctx, http.MethodGet, "inbounds?id="+strconv.Itoa(id), nil, &obj); err != nil {
+	if err := c.do(ctx, http.MethodGet, "inbounds?id="+strings.Join(parts, ","), nil, &obj); err != nil {
 		return nil, err
 	}
-	if len(obj.Inbounds) == 0 {
-		return nil, nil
+	for _, item := range obj.Inbounds {
+		if id := intValue(item["id"]); id > 0 {
+			out[id] = item
+		}
 	}
-	return obj.Inbounds[0], nil
+	return out, nil
 }
 
 func (c *Client) ListInbounds(ctx context.Context) ([]ports.Inbound, error) {
@@ -80,24 +107,18 @@ func (c *Client) ListInbounds(ctx context.Context) ([]ports.Inbound, error) {
 	if err != nil {
 		return nil, err
 	}
-	byInbound := make(map[int][]ports.ClientTraffic)
-	for _, client := range clients {
-		for _, id := range client.Inbounds {
-			byInbound[id] = append(byInbound[id], ports.ClientTraffic{
-				ID: client.ID, InboundID: id, Email: client.Name,
-				Up: client.Up + client.TotalUp, Down: client.Down + client.TotalDown,
-				Total:  client.Up + client.Down + client.TotalUp + client.TotalDown,
-				Enable: client.Enable, ExpiryTime: client.Expiry * 1000,
-				LastOnline: client.OnlineAt * 1000,
-			})
-		}
+	ids := make([]int, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
 	}
+	fullByID, err := c.fullInbounds(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byInbound := clientTrafficByInbound(clients)
 	out := make([]ports.Inbound, 0, len(summaries))
 	for _, summary := range summaries {
-		full, err := c.fullInbound(ctx, summary.ID)
-		if err != nil {
-			return nil, err
-		}
+		full := fullByID[summary.ID]
 		if full == nil {
 			continue
 		}
@@ -112,20 +133,57 @@ func (c *Client) ListInbounds(ctx context.Context) ([]ports.Inbound, error) {
 }
 
 func (c *Client) ListInboundsSlim(ctx context.Context) ([]ports.Inbound, error) {
+	// PanelClient promises the same inbound connection fields on the slim
+	// path; render uses them during the pre-snapshot transition window. S-UI
+	// has no endpoint that combines native inbound/TLS/client data into that
+	// shape, so reuse the batched full implementation. It is still a fixed four
+	// requests per panel (summary, full rows, TLS, clients), never N+3.
 	return c.ListInbounds(ctx)
 }
 
 func (c *Client) GetInbound(ctx context.Context, id int) (*ports.Inbound, error) {
-	items, err := c.ListInbounds(ctx)
+	full, err := c.fullInbound(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	for i := range items {
-		if items[i].ID == id {
-			return &items[i], nil
+	if full == nil {
+		return nil, fmt.Errorf("%w: S-UI inbound %d not found", domain.ErrNotFound, id)
+	}
+	tlsByID, err := c.tlsModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clients, err := c.listClients(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summary := inboundSummary{
+		ID: id, Type: stringValue(full["type"]), Tag: stringValue(full["tag"]),
+		TLSID: intValue(full["tls_id"]), Listen: stringValue(full["listen"]),
+		ListenPort: intValue(full["listen_port"]),
+	}
+	inbound, err := normaliseInbound(summary, full, tlsByID)
+	if err != nil {
+		return nil, fmt.Errorf("S-UI inbound %d: %w", id, err)
+	}
+	inbound.ClientStats = clientTrafficByInbound(clients)[id]
+	return &inbound, nil
+}
+
+func clientTrafficByInbound(clients []clientModel) map[int][]ports.ClientTraffic {
+	out := make(map[int][]ports.ClientTraffic)
+	for _, client := range clients {
+		for _, id := range client.Inbounds {
+			out[id] = append(out[id], ports.ClientTraffic{
+				ID: client.ID, InboundID: id, Email: client.Name,
+				Up: client.Up + client.TotalUp, Down: client.Down + client.TotalDown,
+				Total:  client.Up + client.Down + client.TotalUp + client.TotalDown,
+				Enable: client.Enable, ExpiryTime: client.Expiry * 1000,
+				LastOnline: client.OnlineAt * 1000,
+			})
 		}
 	}
-	return nil, fmt.Errorf("%w: S-UI inbound %d not found", domain.ErrNotFound, id)
+	return out
 }
 
 func normaliseInbound(summary inboundSummary, raw map[string]any, tlsByID map[int]tlsModel) (ports.Inbound, error) {
@@ -138,6 +196,14 @@ func normaliseInbound(summary inboundSummary, raw map[string]any, tlsByID map[in
 	}
 	if network, ok := raw["network"].(string); ok {
 		settings["network"] = network
+	}
+	for _, key := range []string{
+		"padding_scheme", "congestion_control", "auth_timeout",
+		"zero_rtt_handshake", "heartbeat", "quic_congestion_control",
+	} {
+		if value, ok := raw[key]; ok && value != nil {
+			settings[key] = value
+		}
 	}
 	settingsJSON, _ := json.Marshal(settings)
 

@@ -32,6 +32,7 @@ import (
 // matches what these clients fetch with their built-in subscription updater.
 func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []renderItem, st ports.UISettings) (*Output, error) {
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
+	sharedEmails := s.sharedClientEmailsByNode(ctx, u)
 
 	// Local snapshot for captured nodes, one batched ListInbounds per panel for
 	// the un-captured transition-window remainder. See resolveInbounds.
@@ -56,7 +57,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 				"node_id", it.node.ID)
 			continue
 		}
-		userEmail := u.ClientEmail(it.node.ID, emailRules)
+		userEmail := clientEmailForNode(u, it.node.ID, emailRules, sharedEmails)
 		// it.name (not DisplayName) carries the layout-applied name — the
 		// region-flag prefix and, for relay variants, the per-line suffix —
 		// so each transit entry gets a distinct fragment.
@@ -104,7 +105,7 @@ func (s *Service) renderURIList(ctx context.Context, u *domain.User, items []ren
 // userEmail is unused for URI builds today (WireGuard has no standard URI
 // form) but kept in the signature so adding it in the future is a one-line
 // switch case.
-func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _ string, relay *domain.RelayLine) (string, error) {
+func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, userEmail string, relay *domain.RelayLine) (string, error) {
 	var settings xuiInboundSettings
 	_ = json.Unmarshal([]byte(inb.Settings), &settings)
 	var stream xuiStreamSettings
@@ -142,8 +143,77 @@ func buildURI(name string, n *domain.Node, u *domain.User, inb *ports.Inbound, _
 			opts.SNI = sni
 		}
 		return buildHysteria2URI(name, host, port, u.UUID, opts), nil
+	case domain.ProtoAnyTLS:
+		return buildAnyTLSURI(name, host, port, u.UUID, stream), nil
+	case domain.ProtoTUIC:
+		return buildTUICURI(name, host, port, u.UUID, settings, stream), nil
+	case domain.ProtoNaive:
+		return buildNaiveURI(name, host, port, userEmail, u.UUID, stream), nil
 	}
 	return "", nil
+}
+
+func applyStandardTLSQuery(q url.Values, stream xuiStreamSettings) {
+	q.Set("security", "tls")
+	if stream.TLSSettings == nil {
+		return
+	}
+	tls := stream.TLSSettings
+	if tls.ServerName != "" {
+		q.Set("sni", tls.ServerName)
+	}
+	if len(tls.ALPN) > 0 {
+		q.Set("alpn", strings.Join(tls.ALPN, ","))
+	}
+	if tls.AllowInsecure {
+		q.Set("insecure", "1")
+	}
+	if tls.Settings.Fingerprint != "" {
+		q.Set("fp", tls.Settings.Fingerprint)
+	}
+}
+
+func buildAnyTLSURI(name, host string, port int, password string, stream xuiStreamSettings) string {
+	q := url.Values{}
+	applyStandardTLSQuery(q, stream)
+	u := &url.URL{
+		Scheme: "anytls", User: url.User(password), Host: joinHostPort(host, port),
+		RawQuery: q.Encode(), Fragment: name,
+	}
+	return u.String()
+}
+
+func buildTUICURI(name, host string, port int, credential string, settings xuiInboundSettings, stream xuiStreamSettings) string {
+	q := url.Values{}
+	applyStandardTLSQuery(q, stream)
+	q.Set("congestion_control", defaultStr(settings.CongestionControl, "cubic"))
+	u := &url.URL{
+		Scheme: "tuic", User: url.UserPassword(credential, credential), Host: joinHostPort(host, port),
+		RawQuery: q.Encode(), Fragment: name,
+	}
+	return u.String()
+}
+
+// buildNaiveURI mirrors S-UI's http2:// subscription link. The userinfo,
+// endpoint and port are encoded together as standard base64 by the Naive link
+// format; the username is the actual provisioned S-UI client name.
+func buildNaiveURI(name, host string, port int, username, password string, stream xuiStreamSettings) string {
+	credential := fmt.Sprintf("%s:%s@%s", username, password, joinHostPort(host, port))
+	q := url.Values{"padding": {"1"}}
+	if stream.TLSSettings != nil {
+		tls := stream.TLSSettings
+		if tls.ServerName != "" {
+			q.Set("peer", tls.ServerName)
+		}
+		if len(tls.ALPN) > 0 {
+			q.Set("alpn", strings.Join(tls.ALPN, ","))
+		}
+		if tls.AllowInsecure {
+			q.Set("insecure", "1")
+		}
+	}
+	return "http2://" + base64.StdEncoding.EncodeToString([]byte(credential)) +
+		"?" + q.Encode() + "#" + url.PathEscape(name)
 }
 
 // buildVLESSURI emits `vless://uuid@host:port?...#name`. Covers TCP / WS /

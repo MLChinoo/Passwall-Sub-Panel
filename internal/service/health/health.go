@@ -4,9 +4,9 @@
 //
 // The health verdict is pure reachability — "is the proxy port open?" — not a
 // 3X-UI control-plane check:
-//   - TCP protocols (VLESS/VMess/Trojan/Shadowsocks): a TCP connect to
+//   - TCP protocols (VLESS/VMess/Trojan/Shadowsocks/AnyTLS/Naive): a TCP connect to
 //     ServerAddress:Port. Connect succeeds → up; refused/timeout → down.
-//   - UDP-only protocols (Hysteria2): a best-effort UDP probe. UDP is
+//   - UDP-only protocols (Hysteria2/TUIC): a best-effort UDP probe. UDP is
 //     connectionless, so this is "open|filtered" — we only call it down when
 //     the OS surfaces an ICMP port-unreachable; otherwise it's treated as up.
 //
@@ -55,10 +55,11 @@ func New(nodes ports.NodeRepo) *Service {
 
 // isUDPProtocol reports whether a proxy protocol carries its traffic over UDP
 // (so the port must be probed with a UDP, not TCP, check). Currently just the
-// Hysteria2 / QUIC family.
+// Hysteria2 / TUIC QUIC family.
 func isUDPProtocol(proto string) bool {
 	p := strings.ToLower(strings.TrimSpace(proto))
-	return p == string(domain.ProtoHysteria2) || strings.Contains(p, "hysteria") || p == "hy2"
+	return p == string(domain.ProtoHysteria2) || p == string(domain.ProtoTUIC) ||
+		strings.Contains(p, "hysteria") || p == "hy2"
 }
 
 // portOpen probes host:port and returns nil when the port is open. For TCP a

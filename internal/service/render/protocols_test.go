@@ -155,3 +155,23 @@ func TestParseHysteria2Opts_NoObfs(t *testing.T) {
 	}
 }
 
+func TestEmitSUIModernMihomoProxies(t *testing.T) {
+	tls := xuiStreamSettings{Security: "tls", TLSSettings: &xuiTLSSettings{
+		ServerName: "edge.example.com", ALPN: []string{"h3"}, AllowInsecure: true,
+	}}
+	tls.TLSSettings.Settings.Fingerprint = "chrome"
+	anytls := emitAnyTLS(map[string]any{"name": "any", "udp": true}, "uuid-1", tls)
+	if anytls["type"] != "anytls" || anytls["password"] != "uuid-1" ||
+		anytls["sni"] != "edge.example.com" || anytls["client-fingerprint"] != "chrome" {
+		t.Fatalf("AnyTLS proxy = %#v", anytls)
+	}
+
+	tuic := emitTUIC(map[string]any{"name": "tuic", "udp": true}, "uuid-2", xuiInboundSettings{
+		CongestionControl: "bbr", ZeroRTTHandshake: true, Heartbeat: "8s",
+	}, tls)
+	if tuic["type"] != "tuic" || tuic["uuid"] != "uuid-2" || tuic["password"] != "uuid-2" ||
+		tuic["congestion-controller"] != "bbr" || tuic["reduce-rtt"] != true ||
+		tuic["heartbeat-interval"] != int64(8000) {
+		t.Fatalf("TUIC proxy = %#v", tuic)
+	}
+}

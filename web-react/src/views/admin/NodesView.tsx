@@ -82,7 +82,7 @@ import {
   validateName,
 } from '@/utils/validators'
 
-type CreateProtocol = 'vless' | 'vmess' | 'trojan' | 'ss2022' | 'hysteria2'
+type CreateProtocol = 'vless' | 'vmess' | 'trojan' | 'ss2022' | 'hysteria2' | 'anytls' | 'tuic' | 'naive'
 type VlessNetwork = 'tcp' | 'ws' | 'grpc' | 'httpupgrade' | 'http' | 'xhttp'
 type VlessSecurity = 'none' | 'tls' | 'reality'
 type SS2022Method = '2022-blake3-aes-128-gcm' | '2022-blake3-aes-256-gcm' | '2022-blake3-chacha20-poly1305'
@@ -105,7 +105,7 @@ function usesVlessStream(p: CreateProtocol): boolean {
 const ALPN_HY2 = 'h3'
 const ALPN_TLS = 'h2,http/1.1'
 function defaultAlpn(p: CreateProtocol): string {
-  return p === 'hysteria2' ? ALPN_HY2 : ALPN_TLS
+  return p === 'hysteria2' || p === 'tuic' ? ALPN_HY2 : ALPN_TLS
 }
 
 const tagFilter = createFilterOptions<string>()
@@ -307,6 +307,16 @@ interface InboundFormState {
   //   string -> literal response body
   //   '' / unset -> masquerade block omitted entirely
   hy2_masquerade_content: string
+  // S-UI-native modern protocols. These fields live in the canonical
+  // settings JSON and are translated by the S-UI adapter into sing-box
+  // inbound fields; they are never offered for a 3X-UI server.
+  anytls_padding_scheme_text: string
+  tuic_congestion_control: 'cubic' | 'new_reno' | 'bbr'
+  tuic_auth_timeout: number
+  tuic_zero_rtt_handshake: boolean
+  tuic_heartbeat: number
+  naive_network: '' | 'tcp' | 'udp'
+  naive_quic_congestion_control: '' | 'bbr' | 'bbr_standard' | 'bbr2' | 'bbr2_variant' | 'cubic' | 'reno'
   // Sockopt — socket-level tuning at the listener layer. All fields are
   // optional; empty/zero defaults emit nothing. mark is the SO_MARK
   // applied to outgoing sockets (transparent proxy / iptables tagging).
@@ -409,6 +419,17 @@ const EMPTY_INBOUND: InboundFormState = {
   hy2_udp_idle_timeout: 60,
   hy2_masquerade_type: '',
   hy2_masquerade_content: '',
+  anytls_padding_scheme_text: [
+    'stop=8', '0=30-30', '1=100-400',
+    '2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000',
+    '3=9-9,500-1000', '4=500-1000', '5=500-1000', '6=500-1000', '7=500-1000',
+  ].join('\n'),
+  tuic_congestion_control: 'cubic',
+  tuic_auth_timeout: 3,
+  tuic_zero_rtt_handshake: false,
+  tuic_heartbeat: 10,
+  naive_network: '',
+  naive_quic_congestion_control: '',
   sockopt_enabled: false,
   sockopt_mark: 0,
   sockopt_tcp_fast_open: false,
@@ -428,7 +449,11 @@ const PROTOCOL_OPTIONS: { value: CreateProtocol; label: string }[] = [
   { value: 'trojan', label: 'Trojan' },
   { value: 'ss2022', label: 'Shadowsocks 2022' },
   { value: 'hysteria2', label: 'Hysteria 2' },
+  { value: 'anytls', label: 'AnyTLS' },
+  { value: 'tuic', label: 'TUIC' },
+  { value: 'naive', label: 'Naive' },
 ]
+const SUI_ONLY_PROTOCOLS = new Set<CreateProtocol>(['anytls', 'tuic', 'naive'])
 const VLESS_NETWORKS: { value: VlessNetwork; label: string }[] = [
   { value: 'tcp', label: 'TCP' },
   { value: 'ws', label: 'WebSocket' },
@@ -489,6 +514,11 @@ function boolValue(v: unknown, fallback = false): boolean {
 function numberValue(v: unknown, fallback = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
+function durationSeconds(v: unknown, fallback = 0): number {
+  if (typeof v !== 'string') return fallback
+  const match = v.trim().match(/^(\d+(?:\.\d+)?)s$/)
+  return match ? Number(match[1]) : fallback
+}
 function listToText(v: unknown): string {
   return Array.isArray(v) ? v.filter(item => item !== '').join(',') : ''
 }
@@ -541,6 +571,28 @@ function buildHysteria2Settings(_f: InboundFormState): unknown {
   return { version: 2, clients: [] }
 }
 
+function buildAnyTLSSettings(f: InboundFormState): unknown {
+  return {
+    padding_scheme: f.anytls_padding_scheme_text.split(/\r?\n/).map(s => s.trim()).filter(Boolean),
+  }
+}
+
+function buildTUICSettings(f: InboundFormState): unknown {
+  return {
+    congestion_control: f.tuic_congestion_control || 'cubic',
+    auth_timeout: f.tuic_auth_timeout > 0 ? `${f.tuic_auth_timeout}s` : '',
+    zero_rtt_handshake: f.tuic_zero_rtt_handshake,
+    heartbeat: f.tuic_heartbeat > 0 ? `${f.tuic_heartbeat}s` : '',
+  }
+}
+
+function buildNaiveSettings(f: InboundFormState): unknown {
+  return {
+    network: f.naive_network,
+    quic_congestion_control: f.naive_quic_congestion_control,
+  }
+}
+
 // settingsBuilderFor picks the protocol-specific inbound settings builder
 // so submit handlers stay free of switch statements.
 function settingsBuilderFor(p: CreateProtocol): (f: InboundFormState) => unknown {
@@ -549,6 +601,9 @@ function settingsBuilderFor(p: CreateProtocol): (f: InboundFormState) => unknown
     case 'vmess': return buildVmessSettings
     case 'trojan': return buildTrojanSettings
     case 'hysteria2': return buildHysteria2Settings
+    case 'anytls': return buildAnyTLSSettings
+    case 'tuic': return buildTUICSettings
+    case 'naive': return buildNaiveSettings
     default: return buildVlessSettings
   }
 }
@@ -561,6 +616,9 @@ function canonicalProtocolName(p: CreateProtocol): string {
     case 'vmess': return 'vmess'
     case 'trojan': return 'trojan'
     case 'hysteria2': return 'hysteria2'
+    case 'anytls': return 'anytls'
+    case 'tuic': return 'tuic'
+    case 'naive': return 'naive'
     default: return 'vless'
   }
 }
@@ -613,6 +671,13 @@ function buildStreamSettings(f: InboundFormState): unknown {
       finalmask,
       externalProxy: [],
       ...buildSockoptWrapper(f),
+    }
+  }
+  if (SUI_ONLY_PROTOCOLS.has(f.protocol)) {
+    return {
+      network: 'tcp',
+      security: 'tls',
+      tlsSettings: buildTLSSettings(f),
     }
   }
   // VMess can't use REALITY (clients don't support it). Trojan REQUIRES
@@ -853,6 +918,9 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     case 'vmess': protocol = 'vmess'; break
     case 'trojan': protocol = 'trojan'; break
     case 'hysteria2': protocol = 'hysteria2'; break
+    case 'anytls': protocol = 'anytls'; break
+    case 'tuic': protocol = 'tuic'; break
+    case 'naive': protocol = 'naive'; break
     case 'shadowsocks':
       protocol = stringValue(settings.method).startsWith('2022-') ? 'ss2022' : 'vless'
       break
@@ -946,6 +1014,21 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     hy2_udp_idle_timeout: numberValue(hysteriaSettings.udpIdleTimeout, 60),
     hy2_masquerade_type: masqueradeType,
     hy2_masquerade_content: masqueradeContent,
+    anytls_padding_scheme_text: Array.isArray(settings.padding_scheme)
+      ? settings.padding_scheme.map(v => String(v)).join('\n')
+      : EMPTY_INBOUND.anytls_padding_scheme_text,
+    tuic_congestion_control: (['cubic', 'new_reno', 'bbr'].includes(stringValue(settings.congestion_control))
+      ? stringValue(settings.congestion_control)
+      : 'cubic') as InboundFormState['tuic_congestion_control'],
+    tuic_auth_timeout: durationSeconds(settings.auth_timeout, 3),
+    tuic_zero_rtt_handshake: boolValue(settings.zero_rtt_handshake),
+    tuic_heartbeat: durationSeconds(settings.heartbeat, 10),
+    naive_network: (['tcp', 'udp'].includes(stringValue(settings.network))
+      ? stringValue(settings.network)
+      : '') as InboundFormState['naive_network'],
+    naive_quic_congestion_control: (['bbr', 'bbr_standard', 'bbr2', 'bbr2_variant', 'cubic', 'reno'].includes(stringValue(settings.quic_congestion_control))
+      ? stringValue(settings.quic_congestion_control)
+      : '') as InboundFormState['naive_quic_congestion_control'],
     sockopt_enabled: Object.keys(sockopt).length > 0,
     sockopt_mark: numberValue(sockopt.mark),
     sockopt_tcp_fast_open: boolValue(sockopt.tcpFastOpen),
@@ -963,7 +1046,7 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
   }
 }
 
-function validateInboundForm(f: InboundFormState, t: (k: string) => string): string | null {
+function validateInboundForm(f: InboundFormState, panelType: PanelType, t: (k: string) => string): string | null {
   if (!f.display_name || !f.server_address || !f.region) {
     return t('admin:nodes.create_dialog.validate_required')
   }
@@ -980,6 +1063,14 @@ function validateInboundForm(f: InboundFormState, t: (k: string) => string): str
     if (!f.ss_method || !f.ss_password) {
       return t('admin:nodes.create_dialog.validate_ss2022')
     }
+  }
+  const tlsInbound = f.protocol === 'trojan' || f.protocol === 'hysteria2' ||
+    SUI_ONLY_PROTOCOLS.has(f.protocol) || (usesVlessStream(f.protocol) && f.vless_security === 'tls')
+  if (panelType === 'sui' && tlsInbound) {
+    const complete = (f.tls_cert_mode === 'file' && !!f.tls_cert_file && !!f.tls_key_file) ||
+      (f.tls_cert_mode === 'inline' && !!f.tls_cert_pem && !!f.tls_key_pem) ||
+      (f.tls_cert_mode === 'psp_managed' && f.cert_id > 0)
+    if (!complete) return 'S-UI TLS 入站必须选择完整的证书与私钥，或绑定一个有效的 PSP 托管证书。'
   }
   return null
 }
@@ -1031,6 +1122,9 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
   const [realityScannerOpen, setRealityScannerOpen] = useState(false)
   const selectedServer = servers?.find(s => s.id === form.panel_id)
   const effectivePanelType = panelType ?? selectedServer?.panel_type ?? '3xui'
+  const protocolOptions = effectivePanelType === 'sui'
+    ? PROTOCOL_OPTIONS
+    : PROTOCOL_OPTIONS.filter(option => !SUI_ONLY_PROTOCOLS.has(option.value))
   const canUseAdvanced = effectivePanelType === '3xui'
   const canScanReality = allowRealityScan ?? selectedServer?.capabilities?.includes('reality.scan') ?? false
   useEffect(() => {
@@ -1238,8 +1332,13 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                       next.ss_iv_check = false
                       next.sockopt_enabled = false
                       next.sockopt_tproxy = ''
-                    } else if (next.vless_network === 'http') {
-                      next.vless_network = 'tcp'
+                    } else {
+                      if (SUI_ONLY_PROTOCOLS.has(next.protocol)) {
+                        next.protocol = 'vless'
+                        next.vless_security = 'reality'
+                        next.tls_alpn_text = defaultAlpn('vless')
+                      }
+                      if (next.vless_network === 'http') next.vless_network = 'tcp'
                     }
                     if (!prev.server_address || prev.server_address === prevHost) {
                       next.server_address = hostFromURL(v.url)
@@ -1267,7 +1366,7 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                 // gets no security config at all.
                 setForm(prev => {
                   let sec = prev.vless_security
-                  if (p === 'trojan') sec = 'tls'
+                  if (p === 'trojan' || SUI_ONLY_PROTOCOLS.has(p)) sec = 'tls'
                   else if (p === 'vmess' && sec === 'reality') sec = 'tls'
                   // Retarget the ALPN default for the new protocol (Hysteria2 →
                   // h3, TCP-TLS → h2,http/1.1) — but only when the field still
@@ -1280,7 +1379,7 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                   return { ...prev, protocol: p, vless_security: sec, tls_alpn_text: alpn }
                 })
               }}>
-              {PROTOCOL_OPTIONS.map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
+              {protocolOptions.map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
             </Select>
           </Box>
         </Box>
@@ -1673,6 +1772,76 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                 same way the VLESS stream does (see buildStreamSettings), so the
                 shared cert picker wires up directly instead of punting to the
                 3X-UI side. */}
+            {tlsCertFields()}
+          </Box>
+        </Box>
+      )}
+
+      {!advanced && SUI_ONLY_PROTOCOLS.has(form.protocol) && (
+        <Box>
+          {sectionTitle(`${protocolLabel} · S-UI / sing-box`)}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+            {form.protocol === 'anytls' && (
+              <TextField size="small" fullWidth multiline minRows={5} maxRows={12}
+                label="Padding scheme（每行一条）"
+                value={form.anytls_padding_scheme_text}
+                onChange={e => update('anytls_padding_scheme_text', e.target.value)}
+                helperText="留空时使用 S-UI 的 AnyTLS 默认 padding scheme。"
+                sx={{ '& textarea': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12 } }} />
+            )}
+            {form.protocol === 'tuic' && (
+              <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+                <TextField select size="small" label="Congestion control"
+                  value={form.tuic_congestion_control}
+                  onChange={e => update('tuic_congestion_control', e.target.value as InboundFormState['tuic_congestion_control'])}
+                  sx={{ minWidth: 190 }}>
+                  {['cubic', 'new_reno', 'bbr'].map(value => <MenuItem key={value} value={value}>{value}</MenuItem>)}
+                </TextField>
+                <TextField size="small" type="number" label="Auth timeout（秒）"
+                  value={form.tuic_auth_timeout}
+                  onChange={e => update('tuic_auth_timeout', Math.max(0, Number(e.target.value) || 0))}
+                  sx={{ width: 170 }} />
+                <TextField size="small" type="number" label="Heartbeat（秒）"
+                  value={form.tuic_heartbeat}
+                  onChange={e => update('tuic_heartbeat', Math.max(0, Number(e.target.value) || 0))}
+                  sx={{ width: 170 }} />
+                {switchControl('Zero-RTT handshake', form.tuic_zero_rtt_handshake,
+                  checked => update('tuic_zero_rtt_handshake', checked))}
+              </Box>
+            )}
+            {form.protocol === 'naive' && (
+              <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                <TextField select size="small" label="Network"
+                  value={form.naive_network}
+                  onChange={e => update('naive_network', e.target.value as InboundFormState['naive_network'])}
+                  sx={{ minWidth: 170 }}>
+                  <MenuItem value="">TCP + UDP（默认）</MenuItem>
+                  <MenuItem value="tcp">TCP</MenuItem>
+                  <MenuItem value="udp">UDP</MenuItem>
+                </TextField>
+                <TextField select size="small" label="QUIC congestion control"
+                  value={form.naive_quic_congestion_control}
+                  onChange={e => update('naive_quic_congestion_control', e.target.value as InboundFormState['naive_quic_congestion_control'])}
+                  sx={{ minWidth: 230 }}>
+                  <MenuItem value="">不启用 QUIC</MenuItem>
+                  {['bbr', 'bbr_standard', 'bbr2', 'bbr2_variant', 'cubic', 'reno'].map(value =>
+                    <MenuItem key={value} value={value}>{value}</MenuItem>)}
+                </TextField>
+              </Box>
+            )}
+            <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+              <TextField size="small" label="SNI" value={form.tls_server_name}
+                onChange={e => update('tls_server_name', e.target.value)} sx={{ flex: '2 1 240px' }} />
+              <TextField size="small" label="ALPN" value={form.tls_alpn_text}
+                onChange={e => update('tls_alpn_text', e.target.value)} sx={{ flex: '1 1 180px' }} />
+              <TextField select size="small" label="uTLS fingerprint" value={form.tls_fingerprint}
+                onChange={e => update('tls_fingerprint', e.target.value)} sx={{ minWidth: 190 }}>
+                <MenuItem value="">—</MenuItem>
+                {FINGERPRINTS.map(value => <MenuItem key={value} value={value}>{value}</MenuItem>)}
+              </TextField>
+              {switchControl('跳过证书验证', form.tls_allow_insecure,
+                checked => update('tls_allow_insecure', checked))}
+            </Box>
             {tlsCertFields()}
           </Box>
         </Box>
@@ -2604,7 +2773,7 @@ export default function NodesView() {
       return
     }
     if (writableServers.length === 0) {
-      pushSnack(t('admin:nodes.create_dialog.no_writable_servers', { defaultValue: '当前面板适配器均不支持创建 inbound；S-UI 可先导入已有 inbound' }), 'warning')
+      pushSnack(t('admin:nodes.create_dialog.no_writable_servers', { defaultValue: '当前没有支持创建 inbound 的可写面板，请先检查服务器配置与适配器能力。' }), 'warning')
       return
     }
     setCreateForm({ ...EMPTY_INBOUND, panel_id: writableServers[0].id, server_address: hostFromURL(writableServers[0].url) })
@@ -2633,6 +2802,7 @@ export default function NodesView() {
   async function submitCreate(e: FormEvent) {
     e.preventDefault()
     const f = createForm
+    const panelType = servers.find(s => s.id === f.panel_id)?.panel_type ?? '3xui'
     if (createAdvanced) {
       // Advanced mode skips the structured validator (which checks
       // fields like reality_dest that the raw JSON path doesn't care
@@ -2645,7 +2815,7 @@ export default function NodesView() {
         catch { pushSnack(t('admin:nodes.create_dialog.advanced_invalid_json', { field: label, defaultValue: `${label} 不是合法的 JSON` }), 'warning'); return }
       }
     } else {
-      const err = validateInboundForm(f, t)
+      const err = validateInboundForm(f, panelType, t)
       if (err) { pushSnack(err, 'warning'); return }
     }
 
@@ -2655,7 +2825,6 @@ export default function NodesView() {
     const streamSettings = createAdvanced
       ? (f.raw_stream_settings || '{}')
       : JSON.stringify(buildStreamSettings(f))
-    const panelType = servers.find(s => s.id === f.panel_id)?.panel_type ?? '3xui'
     const sniffing = createAdvanced
       ? (f.raw_sniffing || '{}')
       : panelType === '3xui' ? JSON.stringify(buildSniffing(f)) : '{}'
@@ -2670,6 +2839,8 @@ export default function NodesView() {
         region: f.region,
         tags: f.tags_text ? f.tags_text.split(',').map(s => s.trim()).filter(Boolean) : [],
         sort_order: f.sort_order,
+        cert_source: f.tls_cert_mode === 'psp_managed' && f.cert_id > 0 ? 'psp_managed' : undefined,
+        cert_id: f.tls_cert_mode === 'psp_managed' && f.cert_id > 0 ? f.cert_id : undefined,
         inbound: {
           remark: f.display_name,
           enable: panelType === '3xui' ? f.enable : true,
@@ -2683,16 +2854,6 @@ export default function NodesView() {
           expiry_time: 0,
         },
       })
-      // If the cert source is "PSP-managed", bind + deploy the picked cert now
-      // that the node and its live inbound exist. Best-effort: a binding failure
-      // doesn't undo the successful node creation (the operator can retry from
-      // the edit dialog). Only possible for a synchronously-created node (the
-      // queued path has no id yet — those bind later via the edit dialog).
-      if (!('queued' in res) && f.tls_cert_mode === 'psp_managed' && f.cert_id > 0) {
-        try {
-          await setNodeCertSource(res.id, 'psp_managed', f.cert_id)
-        } catch { /* binding error surfaces via the axios interceptor */ }
-      }
       pushSnack(
         'queued' in res
           ? t('admin:nodes.create_dialog.queued')
@@ -2731,7 +2892,8 @@ export default function NodesView() {
       const ib = detail.inbound
       if (ib.protocol !== 'vless' && ib.protocol !== 'shadowsocks' &&
           ib.protocol !== 'vmess' && ib.protocol !== 'trojan' &&
-          ib.protocol !== 'hysteria2') {
+          ib.protocol !== 'hysteria2' && ib.protocol !== 'anytls' &&
+          ib.protocol !== 'tuic' && ib.protocol !== 'naive') {
         setEditInboundUnsupported(true)
         return
       }
@@ -2765,22 +2927,15 @@ export default function NodesView() {
     e.preventDefault()
     if (!editingInboundNode) return
     const f = editInboundForm
+    const panelType = servers.find(s => s.id === editingInboundNode.panel_id)?.panel_type ?? '3xui'
     if (editAdvanced) {
       for (const [label, raw] of [['settings', f.raw_settings], ['streamSettings', f.raw_stream_settings], ['sniffing', f.raw_sniffing]] as const) {
         try { JSON.parse(raw || '{}') }
         catch { pushSnack(t('admin:nodes.create_dialog.advanced_invalid_json', { field: label, defaultValue: `${label} 不是合法的 JSON` }), 'warning'); return }
       }
-    } else if (f.protocol === 'vless' && f.vless_security === 'reality') {
-      if (!f.private_key || !f.public_key || splitList(f.short_ids_text).length === 0) {
-        pushSnack(t('admin:nodes.create_dialog.validate_reality_keys'), 'warning'); return
-      }
-      if (!f.reality_dest || splitList(f.reality_server_names_text).length === 0) {
-        pushSnack(t('admin:nodes.create_dialog.validate_reality_target'), 'warning'); return
-      }
-    } else if (f.protocol === 'ss2022') {
-      if (!f.ss_method || !f.ss_password) {
-        pushSnack(t('admin:nodes.create_dialog.validate_ss2022'), 'warning'); return
-      }
+    } else {
+      const err = validateInboundForm(f, panelType, t)
+      if (err) { pushSnack(err, 'warning'); return }
     }
     const settings = editAdvanced
       ? (f.raw_settings || '{}')
@@ -2788,7 +2943,6 @@ export default function NodesView() {
     const streamSettings = editAdvanced
       ? (f.raw_stream_settings || '{}')
       : JSON.stringify(buildStreamSettings(f))
-    const panelType = servers.find(s => s.id === editingInboundNode.panel_id)?.panel_type ?? '3xui'
     const sniffing = editAdvanced
       ? (f.raw_sniffing || '{}')
       : panelType === '3xui' ? JSON.stringify(buildSniffing(f)) : '{}'
@@ -2802,6 +2956,8 @@ export default function NodesView() {
         protocol: canonicalProtocolName(f.protocol),
         settings, stream_settings: streamSettings, sniffing,
         allocate: '',
+        cert_source: f.tls_cert_mode === 'psp_managed' && f.cert_id > 0 ? 'psp_managed' : undefined,
+        cert_id: f.tls_cert_mode === 'psp_managed' && f.cert_id > 0 ? f.cert_id : undefined,
       })
       // VLESS flow is a node-level property (stored on the node row, consumed by
       // the subscription renderers) — updateInboundConfig does NOT carry it, so
@@ -2822,10 +2978,9 @@ export default function NodesView() {
         } catch { /* toast via interceptor */ }
       }
       // Reconcile the managed-cert binding (the unified Certificate-source
-      // selector). For psp_managed we ALWAYS re-deploy: the updateInboundConfig
-      // push above emitted certificates:[] (managed mode carries no inline cert),
-      // so the bound cert must be re-inlined by SetNodeCertSource→DeployToNode,
-      // which re-reads the just-saved inbound and pushes it back with the cert.
+      // selector). The update request already asks the backend to inject a
+      // managed cert before the panel update; this call persists/reconciles the
+      // binding and is content-diff-gated, so it does not cause a second push.
       const wantManaged = f.tls_cert_mode === 'psp_managed' && f.cert_id > 0
       const prevManaged = editingInboundNode.cert_source === 'psp_managed'
       try {

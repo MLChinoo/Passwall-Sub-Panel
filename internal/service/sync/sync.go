@@ -257,12 +257,13 @@ func (s *Service) SetOwnedClientEnableWithInbound(ctx context.Context, panelID i
 // spec on every field PSP would push, so an UpdateClient would be a pure no-op
 // (its only effect being an Xray restart). It returns false — i.e. "go ahead and
 // update" — whenever it cannot FULLY verify a match: a nil/slim inbound, a
-// missing client, a settings parse error, or Hysteria2 (whose `auth` credential
-// is not represented in the parsed client). That conservatism guarantees a skip
+// missing client, a settings parse error, or a protocol whose S-UI credential
+// is not represented in the historical Xray-shaped settings. That conservatism guarantees a skip
 // never leaves the panel stale; the worst case is an unnecessary update, exactly
 // today's behaviour.
 func clientUnchanged(inb *ports.Inbound, spec ports.ClientSpec, protocol domain.Protocol) bool {
-	if inb == nil || protocol == domain.ProtoHysteria2 {
+	if inb == nil || protocol == domain.ProtoHysteria2 || protocol == domain.ProtoAnyTLS ||
+		protocol == domain.ProtoTUIC || protocol == domain.ProtoNaive {
 		return false
 	}
 	settings, err := xrayspec.ParseSettings(inb.Settings)
@@ -461,8 +462,11 @@ func buildClientSpec(protocol domain.Protocol, ssMethod, userUUID, email, flow s
 	switch protocol {
 	case domain.ProtoVLESS, domain.ProtoVMess:
 		spec.ID = userUUID
-	case domain.ProtoTrojan, domain.ProtoSS, domain.ProtoSS2022:
-		spec.ID = userUUID // 3X-UI still expects an id field
+	case domain.ProtoTrojan, domain.ProtoSS, domain.ProtoSS2022,
+		domain.ProtoAnyTLS, domain.ProtoTUIC, domain.ProtoNaive:
+		// Keep the stable UUID available to adapters that identify a client by
+		// UUID (notably TUIC); password-based protocols consume Password.
+		spec.ID = userUUID
 		spec.Password = password
 	case domain.ProtoHysteria2:
 		// 3X-UI keys Hysteria2 clients by the "auth" field (it treats auth as

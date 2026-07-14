@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -57,6 +59,49 @@ func TestBuildSingBoxHysteria2Outbound_NoObfs(t *testing.T) {
 	}
 }
 
+func TestEmitSingBoxSUIModernOutbounds(t *testing.T) {
+	node := &domain.Node{ID: 1, DisplayName: "edge", ServerAddress: "edge.example.com"}
+	user := &domain.User{UUID: "uuid-1"}
+	stream := `{"network":"tcp","security":"tls","tlsSettings":{"serverName":"sni.example.com","alpn":["h3"],"settings":{"fingerprint":"chrome"}}}`
+
+	tests := []struct {
+		protocol string
+		settings string
+		email    string
+		check    func(*testing.T, map[string]any)
+	}{
+		{"anytls", `{}`, "u1@psp.local", func(t *testing.T, got map[string]any) {
+			if got["type"] != "anytls" || got["password"] != "uuid-1" {
+				t.Fatalf("AnyTLS outbound = %#v", got)
+			}
+		}},
+		{"tuic", `{"congestion_control":"bbr","zero_rtt_handshake":true,"heartbeat":"9s"}`, "u1@psp.local", func(t *testing.T, got map[string]any) {
+			if got["type"] != "tuic" || got["uuid"] != "uuid-1" || got["congestion_control"] != "bbr" || got["zero_rtt_handshake"] != true {
+				t.Fatalf("TUIC outbound = %#v", got)
+			}
+		}},
+		{"naive", `{"quic_congestion_control":"bbr2_variant"}`, "actual@psp.local", func(t *testing.T, got map[string]any) {
+			if got["type"] != "naive" || got["username"] != "actual@psp.local" || got["quic"] != true || got["quic_congestion_control"] != "bbr2" {
+				t.Fatalf("Naive outbound = %#v", got)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.protocol, func(t *testing.T) {
+			got, err := emitSingBoxOutbound("edge", node, user, &ports.Inbound{
+				Port: 443, Protocol: tc.protocol, Settings: tc.settings, StreamSettings: stream,
+			}, tc.email, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, got)
+			tls, ok := got["tls"].(map[string]any)
+			if !ok || tls["server_name"] != "sni.example.com" || tls["utls"] == nil {
+				t.Fatalf("TLS = %#v", got["tls"])
+			}
+		})
+	}
+}
 
 // TestBuildSingBoxRouteRules_NetworkUDP pins the NETWORK,udp translation: it
 // becomes a sing-box route rule matching network=udp that routes to the named

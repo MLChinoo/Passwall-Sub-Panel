@@ -53,6 +53,9 @@ func TestDetectProtocol_All(t *testing.T) {
 		{"ss-legacy", "shadowsocks", "aes-256-gcm", domain.ProtoSS},
 		{"ss2022", "shadowsocks", "2022-blake3-aes-128-gcm", domain.ProtoSS2022},
 		{"hysteria2", "hysteria2", "", domain.ProtoHysteria2},
+		{"anytls", "anytls", "", domain.ProtoAnyTLS},
+		{"tuic", "tuic", "", domain.ProtoTUIC},
+		{"naive", "naive", "", domain.ProtoNaive},
 		{"case-insensitive", "VLESS", "", domain.ProtoVLESS},
 		{"unknown", "dokodemo-door", "", ""},
 	}
@@ -99,7 +102,10 @@ func TestDeriveProxyPassword_SS2022KeyLength(t *testing.T) {
 // whose credential is the raw UUID (VLESS/VMess/Trojan/SS-legacy).
 func TestDeriveProxyPassword_NonSS2022(t *testing.T) {
 	const uuid = "abc-uuid"
-	for _, p := range []domain.Protocol{domain.ProtoVLESS, domain.ProtoVMess, domain.ProtoTrojan, domain.ProtoSS} {
+	for _, p := range []domain.Protocol{
+		domain.ProtoVLESS, domain.ProtoVMess, domain.ProtoTrojan, domain.ProtoSS,
+		domain.ProtoAnyTLS, domain.ProtoTUIC, domain.ProtoNaive,
+	} {
 		if got := DeriveProxyPassword(uuid, p, "2022-blake3-aes-128-gcm"); got != uuid {
 			t.Fatalf("protocol %q: got %q, want raw uuid %q", p, got, uuid)
 		}

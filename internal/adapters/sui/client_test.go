@@ -67,6 +67,15 @@ func TestAddClientUsesTokenAndSaveContract(t *testing.T) {
 		if got := model.Config["trojan"]["password"]; got != "pw-1" {
 			t.Errorf("trojan password = %#v", got)
 		}
+		if got := model.Config["anytls"]["password"]; got != "pw-1" {
+			t.Errorf("anytls password = %#v", got)
+		}
+		if got := model.Config["tuic"]["uuid"]; got != "uuid-1" {
+			t.Errorf("tuic uuid = %#v", got)
+		}
+		if got := model.Config["naive"]["username"]; got != "u1@psp.local" {
+			t.Errorf("naive username = %#v", got)
+		}
 		writeObject(t, w, nil)
 	}))
 	defer server.Close()

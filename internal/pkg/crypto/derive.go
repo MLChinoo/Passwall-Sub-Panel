@@ -19,6 +19,7 @@ import (
 //	Trojan:        uuid as-is (uuid string used as the password)
 //	SS:            uuid as-is
 //	SS-2022:       base64(SHA-256(uuid)) truncated to the method's key length
+//	AnyTLS/TUIC/Naive: uuid as-is
 //
 // ssMethod is only consulted for SS-2022: SIP022 fixes the PSK byte length per
 // cipher (aes-128-gcm → 16, aes-256-gcm / chacha20-poly1305 → 32). SHA-256
@@ -29,7 +30,7 @@ func DeriveProxyPassword(userUUID string, protocol domain.Protocol, ssMethod str
 	switch protocol {
 	case domain.ProtoVLESS, domain.ProtoVMess:
 		return userUUID
-	case domain.ProtoTrojan:
+	case domain.ProtoTrojan, domain.ProtoAnyTLS, domain.ProtoTUIC, domain.ProtoNaive:
 		return userUUID
 	case domain.ProtoSS:
 		return userUUID
@@ -96,6 +97,12 @@ func DetectProtocol(inboundProtocol, ssMethod string) domain.Protocol {
 		return domain.ProtoSS
 	case "hysteria2", "hy2":
 		return domain.ProtoHysteria2
+	case "anytls":
+		return domain.ProtoAnyTLS
+	case "tuic":
+		return domain.ProtoTUIC
+	case "naive":
+		return domain.ProtoNaive
 	}
 	return ""
 }

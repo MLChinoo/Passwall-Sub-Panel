@@ -5,7 +5,7 @@
 <h1 align="center">Passwall Sub Panel</h1>
 
 <p align="center">
-  Multi-user subscription panel on top of 3X-UI — dynamically renders Clash/Mihomo, sing-box and V2rayN
+  Multi-user subscription panel with pluggable 3X-UI / S-UI adapters — dynamically renders Clash/Mihomo, sing-box and V2rayN
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 
 ## Introduction
 
-Passwall Sub Panel is a proxy subscription management system built with Go + React. It integrates with [3X-UI](https://github.com/MHSanaei/3x-ui) panels to provide complete user management, subscription generation and traffic monitoring, plus SSO single sign-on (SAML / OIDC), 2FA / passkeys for local login, an operation audit trail, multiple databases (SQLite / MySQL / PostgreSQL) and non-root operation.
+Passwall Sub Panel is a proxy subscription management system built with Go + React. Pluggable adapters integrate it with [3X-UI](https://github.com/MHSanaei/3x-ui) and [S-UI](https://github.com/alireza0/s-ui) panels to provide complete user management, subscription generation and traffic monitoring, plus SSO single sign-on (SAML / OIDC), 2FA / passkeys for local login, an operation audit trail, multiple databases (SQLite / MySQL / PostgreSQL) and non-root operation.
 
 **Use case**: From personal / friend groups and small teams to mid-to-large organizations that need single sign-on, an audit trail, compliance records and non-root deployment — all covered by the same single binary, enabled as needed.
 
@@ -36,7 +36,7 @@ Passwall Sub Panel is a proxy subscription management system built with Go + Rea
 ### Core
 - **Subscription** — Dynamic generation of Clash/Mihomo, Sing-box, and V2rayN URI-list formats
 - **User management** — CRUD, group management (tag filter + render layout), expiration, traffic quotas
-- **Node management** — Wraps 3X-UI inbound APIs. Supports multi-panel, both "create new" and "import existing" flows
+- **Node management** — Wraps 3X-UI / S-UI inbound APIs through pluggable adapters. Supports heterogeneous multi-panel, both "create new" and "import existing" flows
 - **Client detection** — UA-based identification with allow/deny lists
 - **Auto-disable** — Disables an account after repeated use of blocked clients; auto-syncs disable on quota/expiry
 
@@ -54,7 +54,7 @@ Passwall Sub Panel is a proxy subscription management system built with Go + Rea
 ### Other
 - Traffic statistics & history curves (per user + per node)
 - Audit log, subscription access log
-- Sync task queue (async retryable 3X-UI writes)
+- Sync task queue (async retryable upstream-panel writes)
 - Multi-language (zh-CN / en-US), dark / light theme
 - RBAC: admin / operator / user
 
@@ -65,6 +65,7 @@ Passwall Sub Panel is a proxy subscription management system built with Go + Rea
 - **Runtime**: Linux (recommended) or any OS Go supports
 - **Database**: Embedded SQLite (default, zero-config) or MySQL 8.0+
 - **3X-UI**: Already deployed and reachable; have an API token or admin credentials ready
+- **S-UI (optional)**: A recent build exposing token-authenticated `/apiv2`
 - **Build-time** (only if building from source): Go 1.26+, Node.js 20+
 
 ### Build from source

@@ -85,6 +85,9 @@ const (
 	ProtoSS        Protocol = "shadowsocks"
 	ProtoSS2022    Protocol = "ss2022"
 	ProtoHysteria2 Protocol = "hysteria2"
+	ProtoAnyTLS    Protocol = "anytls"
+	ProtoTUIC      Protocol = "tuic"
+	ProtoNaive     Protocol = "naive"
 )
 
 type ClientType string

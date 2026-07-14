@@ -16,13 +16,13 @@ import (
 // node with a clear reason rather than treating it as a hard failure.
 var errNotTLS = errors.New("inbound is not a TLS inbound")
 
-// injectInlineCert rewrites an inbound's streamSettings so its
+// InjectInlineCert rewrites an inbound's streamSettings so its
 // tlsSettings.certificates carries a single INLINE cert entry — the exact shape
 // PSP's own node form emits (web-react buildTLSSettings): certificate/key are
 // single-element PEM-string arrays. It errors with errNotTLS when the inbound's
 // security isn't "tls". All other tlsSettings fields (serverName/alpn/...) are
 // preserved.
-func injectInlineCert(streamSettings, certPEM, keyPEM string) (string, error) {
+func InjectInlineCert(streamSettings, certPEM, keyPEM string) (string, error) {
 	var ss map[string]any
 	if err := json.Unmarshal([]byte(streamSettings), &ss); err != nil {
 		return "", fmt.Errorf("parse stream settings: %w", err)
@@ -94,7 +94,7 @@ func (s *Service) DeployToNode(ctx context.Context, n *domain.Node, cert *domain
 		return err
 	}
 	n = fresh
-	newSS, err := injectInlineCert(n.StreamSettings, cert.CertPEM, cert.KeyPEM)
+	newSS, err := InjectInlineCert(n.StreamSettings, cert.CertPEM, cert.KeyPEM)
 	if err != nil {
 		return err
 	}

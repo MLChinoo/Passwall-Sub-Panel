@@ -455,18 +455,19 @@ export default function ServersView() {
   }
 
   function validateForm(f: FormState, isEdit: boolean): FieldErrors<ServerField> {
+    const tokenRequired = f.panel_type === 'sui' || f.auth_method === 'token'
+    const tokenConfigured = isEdit && !!editing?.has_api_token && !f.change_api_token
+    const passwordConfigured = isEdit && !!editing?.has_password && !f.change_password
     return {
       name: validateName(f.name, { required: true, max: 64 }),
       url: validateUrl(f.url, { required: true }),
-      // On create, at least one credential is required (server enforces this
-      // too — the panel won't probe without a token or login). On edit, both
-      // fields are optional unless the admin explicitly toggled "change".
-      api_token: !isEdit && !f.api_token && !f.password
-        ? validateRequired('', 'validation.required')
-        : '',
-      password: !isEdit && !f.api_token && !f.password
-        ? validateRequired('', 'validation.required')
-        : '',
+      // Validate the credential selected by auth_method. S-UI exposes only
+      // token-authenticated /apiv2, so a stale 3X-UI password must never make
+      // this form appear valid after switching the adapter kind.
+      api_token: tokenRequired && !f.api_token && !tokenConfigured
+        ? validateRequired('', 'validation.required') : '',
+      password: !tokenRequired && !f.password && !passwordConfigured
+        ? validateRequired('', 'validation.required') : '',
     }
   }
 
@@ -1220,7 +1221,18 @@ export default function ServersView() {
               value={form.panel_type}
               onChange={e => {
                 const panelType = e.target.value as PanelType
-                setForm({ ...form, panel_type: panelType, auth_method: panelType === 'sui' ? 'token' : form.auth_method })
+                setForm(prev => panelType === 'sui'
+                  ? {
+                      ...prev,
+                      panel_type: panelType,
+                      auth_method: 'token',
+                      username: '',
+                      password: '',
+                      change_password: false,
+                      show_password: false,
+                    }
+                  : { ...prev, panel_type: panelType })
+                setFieldErr(prev => ({ ...prev, api_token: '', password: '' }))
               }}>
               <MenuItem value="3xui">3X-UI</MenuItem>
               <MenuItem value="sui">S-UI</MenuItem>
@@ -1270,6 +1282,8 @@ export default function ServersView() {
                 changing={form.change_api_token}
                 alreadyConfigured={!!editing?.has_api_token}
                 onStartChange={() => setForm({ ...form, change_api_token: true })}
+                error={!!fieldErr.api_token}
+                helperText={fieldErr.api_token ? t(`admin:${fieldErr.api_token}`) : ''}
               />)
             ) : (
               <>
@@ -1291,6 +1305,8 @@ export default function ServersView() {
                   changing={form.change_password}
                   alreadyConfigured={!!editing?.has_password}
                   onStartChange={() => setForm({ ...form, change_password: true })}
+                  error={!!fieldErr.password}
+                  helperText={fieldErr.password ? t(`admin:${fieldErr.password}`) : ''}
                 />
               </>
             )}
@@ -1342,6 +1358,8 @@ interface SecretFieldProps {
   changing: boolean
   alreadyConfigured: boolean
   onStartChange: () => void
+  error?: boolean
+  helperText?: string
 }
 
 function SecretField(p: SecretFieldProps) {
@@ -1376,6 +1394,8 @@ function SecretField(p: SecretFieldProps) {
       placeholder={p.placeholder}
       value={p.value}
       onChange={e => p.onChange(e.target.value)}
+      error={p.error}
+      helperText={p.helperText}
       slotProps={{
         input: {
           endAdornment: (

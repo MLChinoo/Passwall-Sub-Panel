@@ -8,7 +8,7 @@ import (
 
 func TestInjectInlineCertSetsCertificatesArray(t *testing.T) {
 	ss := `{"network":"tcp","security":"tls","tlsSettings":{"serverName":"x.example.com","alpn":["h2"]}}`
-	out, err := injectInlineCert(ss, "CERTPEM", "KEYPEM")
+	out, err := InjectInlineCert(ss, "CERTPEM", "KEYPEM")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,14 +46,14 @@ func TestInjectInlineCertRejectsNonTLS(t *testing.T) {
 		`{"security":"none"}`,
 		`{"network":"tcp"}`,
 	} {
-		if _, err := injectInlineCert(ss, "C", "K"); !errors.Is(err, errNotTLS) {
+		if _, err := InjectInlineCert(ss, "C", "K"); !errors.Is(err, errNotTLS) {
 			t.Fatalf("non-tls (%s) must be errNotTLS, got %v", ss, err)
 		}
 	}
 }
 
 func TestInjectInlineCertCreatesTLSSettingsIfMissing(t *testing.T) {
-	out, err := injectInlineCert(`{"security":"tls"}`, "C", "K")
+	out, err := InjectInlineCert(`{"security":"tls"}`, "C", "K")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestInjectInlineCertCreatesTLSSettingsIfMissing(t *testing.T) {
 }
 
 func TestInjectInlineCertRejectsBadJSON(t *testing.T) {
-	if _, err := injectInlineCert("{not json", "C", "K"); err == nil {
+	if _, err := InjectInlineCert("{not json", "C", "K"); err == nil {
 		t.Fatal("malformed stream settings must error")
 	}
 }

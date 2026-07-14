@@ -104,6 +104,7 @@ func (c *Client) UpdateInbound(ctx context.Context, id int, input ports.InboundS
 		c.deleteManagedTLS(ctx, newTLSID)
 		return err
 	}
+	body = mergeSUIInboundUpdate(current, body)
 	body["id"] = id
 	if err := c.save(ctx, "inbounds", "edit", body); err != nil {
 		if saved, readErr := c.fullInbound(ctx, id); readErr == nil && saved != nil &&
@@ -120,6 +121,34 @@ func (c *Client) UpdateInbound(ctx context.Context, id int, input ports.InboundS
 		c.deleteManagedTLS(ctx, oldTLSID)
 	}
 	return nil
+}
+
+// mergeSUIInboundUpdate preserves native S-UI options that PSP does not model
+// (for example multiplex, detour, tcp_multi_path, udp_fragment, addrs and the
+// generated out_json) while replacing every field controlled by PSP's form.
+// Without this read-modify-write step, editing an imported inbound silently
+// erased those options even when the admin changed only its port or TLS data.
+func mergeSUIInboundUpdate(current, desired map[string]any) map[string]any {
+	out := make(map[string]any, len(current)+len(desired))
+	for key, value := range current {
+		if key != "users" {
+			out[key] = value
+		}
+	}
+	for _, key := range []string{
+		"type", "tag", "listen", "listen_port", "tls_id",
+		"transport", "method", "password", "network", "managed",
+		"obfs", "udp_timeout", "masquerade",
+		"padding_scheme", "congestion_control", "auth_timeout",
+		"zero_rtt_handshake", "heartbeat", "quic_congestion_control",
+		"routing_mark", "tcp_fast_open", "tcp_keep_alive_interval", "tcp_keep_alive",
+	} {
+		delete(out, key)
+	}
+	for key, value := range desired {
+		out[key] = value
+	}
+	return out
 }
 
 func (c *Client) DelInbound(ctx context.Context, id int) error {
@@ -156,15 +185,13 @@ func suiInboundFromSpec(spec *nodespec.Spec, tag string, tlsID int) (map[string]
 		protocol = "shadowsocks"
 	}
 	switch protocol {
-	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2":
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "anytls", "tuic", "naive":
 	default:
 		return nil, fmt.Errorf("%w: protocol %q is not supported by the S-UI adapter", domain.ErrValidation, spec.Protocol)
 	}
-	if protocol == "trojan" && spec.Security.Mode != "tls" {
-		return nil, fmt.Errorf("%w: S-UI Trojan inbounds require TLS", domain.ErrValidation)
-	}
-	if protocol == "hysteria2" && spec.Security.Mode != "tls" {
-		return nil, fmt.Errorf("%w: S-UI Hysteria 2 inbounds require TLS", domain.ErrValidation)
+	if (protocol == "trojan" || protocol == "hysteria2" || protocol == "anytls" ||
+		protocol == "tuic" || protocol == "naive") && spec.Security.Mode != "tls" {
+		return nil, fmt.Errorf("%w: S-UI %s inbounds require TLS", domain.ErrValidation, protocol)
 	}
 	if spec.Security.Mode == "reality" && protocol != "vless" {
 		return nil, fmt.Errorf("%w: S-UI REALITY is supported only for VLESS", domain.ErrValidation)
@@ -235,6 +262,53 @@ func suiInboundFromSpec(spec *nodespec.Spec, tag string, tlsID int) (map[string]
 		}
 		if masquerade := suiMasquerade(spec.Hysteria2); masquerade != nil {
 			body["masquerade"] = masquerade
+		}
+	case "anytls":
+		padding := spec.AnyTLS.PaddingScheme
+		if len(padding) == 0 {
+			padding = []string{
+				"stop=8", "0=30-30", "1=100-400",
+				"2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
+				"3=9-9,500-1000", "4=500-1000", "5=500-1000", "6=500-1000", "7=500-1000",
+			}
+		}
+		body["padding_scheme"] = padding
+	case "tuic":
+		congestion := strings.ToLower(strings.TrimSpace(spec.TUIC.CongestionControl))
+		if congestion == "" {
+			congestion = "cubic"
+		}
+		switch congestion {
+		case "cubic", "new_reno", "bbr":
+			body["congestion_control"] = congestion
+		default:
+			return nil, fmt.Errorf("%w: S-UI TUIC congestion control must be cubic, new_reno, or bbr", domain.ErrValidation)
+		}
+		if value := strings.TrimSpace(spec.TUIC.AuthTimeout); value != "" {
+			body["auth_timeout"] = value
+		}
+		if spec.TUIC.ZeroRTTHandshake {
+			body["zero_rtt_handshake"] = true
+		}
+		if value := strings.TrimSpace(spec.TUIC.Heartbeat); value != "" {
+			body["heartbeat"] = value
+		}
+	case "naive":
+		network := strings.ToLower(strings.TrimSpace(spec.Naive.Network))
+		switch network {
+		case "":
+		case "tcp", "udp":
+			body["network"] = network
+		default:
+			return nil, fmt.Errorf("%w: S-UI Naive network must be tcp or udp", domain.ErrValidation)
+		}
+		congestion := strings.ToLower(strings.TrimSpace(spec.Naive.QUICCongestionControl))
+		switch congestion {
+		case "":
+		case "bbr", "bbr_standard", "bbr2", "bbr2_variant", "cubic", "reno":
+			body["quic_congestion_control"] = congestion
+		default:
+			return nil, fmt.Errorf("%w: unsupported S-UI Naive QUIC congestion control %q", domain.ErrValidation, congestion)
 		}
 	}
 	return body, nil

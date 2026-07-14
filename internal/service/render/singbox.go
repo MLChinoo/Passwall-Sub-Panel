@@ -84,6 +84,7 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 	// Same EmailRules resolution as mihomo's buildProxies — needed so the
 	// WireGuard dispatcher can look up the user's peer entry by email.
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
+	sharedEmails := s.sharedClientEmailsByNode(ctx, u)
 
 	// Local snapshot for captured nodes, one batched ListInbounds per panel for
 	// the un-captured transition-window remainder. See resolveInbounds.
@@ -116,7 +117,7 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID)
 			continue
 		}
-		userEmail := u.ClientEmail(it.node.ID, emailRules)
+		userEmail := clientEmailForNode(u, it.node.ID, emailRules, sharedEmails)
 		block, err := emitSingBoxOutbound(it.name, it.node, u, inb, userEmail, it.relay)
 		if err != nil {
 			log.Warn("render: skip node, emit sing-box failed", "node_id", it.node.ID, "err", err)
@@ -202,6 +203,34 @@ func emitSingBoxOutbound(tag string, n *domain.Node, u *domain.User, inb *ports.
 			opts.SNI = sni
 		}
 		return buildSingBoxHysteria2Outbound(tag, server, port, u.UUID, opts), nil
+	case domain.ProtoAnyTLS:
+		base["type"] = "anytls"
+		base["password"] = u.UUID
+		applySingBoxTLS(base, stream)
+		return base, nil
+	case domain.ProtoTUIC:
+		base["type"] = "tuic"
+		base["uuid"] = u.UUID
+		base["password"] = u.UUID
+		base["congestion_control"] = defaultStr(settings.CongestionControl, "cubic")
+		if settings.ZeroRTTHandshake {
+			base["zero_rtt_handshake"] = true
+		}
+		if settings.Heartbeat != "" {
+			base["heartbeat"] = settings.Heartbeat
+		}
+		applySingBoxTLS(base, stream)
+		return base, nil
+	case domain.ProtoNaive:
+		base["type"] = "naive"
+		base["username"] = userEmail
+		base["password"] = u.UUID
+		if settings.QUICCongestionControl != "" {
+			base["quic"] = true
+			base["quic_congestion_control"] = normalizedNaiveCongestion(settings.QUICCongestionControl)
+		}
+		applySingBoxTLS(base, stream)
+		return base, nil
 	}
 	return nil, nil
 }
@@ -266,8 +295,25 @@ func applySingBoxTLS(base map[string]any, stream xuiStreamSettings) {
 		if stream.TLSSettings != nil {
 			tls["server_name"] = stream.TLSSettings.ServerName
 			tls["insecure"] = stream.TLSSettings.AllowInsecure
+			if len(stream.TLSSettings.ALPN) > 0 {
+				tls["alpn"] = stream.TLSSettings.ALPN
+			}
+			if fingerprint := stream.TLSSettings.Settings.Fingerprint; fingerprint != "" {
+				tls["utls"] = map[string]any{"enabled": true, "fingerprint": fingerprint}
+			}
 		}
 		base["tls"] = tls
+	}
+}
+
+func normalizedNaiveCongestion(value string) string {
+	switch value {
+	case "bbr_standard":
+		return "bbr"
+	case "bbr2_variant":
+		return "bbr2"
+	default:
+		return value
 	}
 }
 

@@ -147,7 +147,7 @@ func pwReqFor(nc NodeCred) int {
 			return pwClass128
 		}
 		return pwClass256
-	case domain.ProtoTrojan, domain.ProtoSS:
+	case domain.ProtoTrojan, domain.ProtoSS, domain.ProtoAnyTLS, domain.ProtoTUIC, domain.ProtoNaive:
 		return pwClassDefault
 	default:
 		return pwAgnostic

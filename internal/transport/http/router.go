@@ -359,7 +359,7 @@ func NewRouter(d Deps) stdhttp.Handler {
 		// v3.9.0 cutover Stage 0: one-shot psp_client backfill (admin-only;
 		// DB-only, idempotent, nothing reads psp_client in production yet).
 
-		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.User, d.Repos.XUIPanel, d.Repos.PSPClient)
+		nodes := handler.NewAdminNodeHandler(d.Node, d.Sync, d.Repos.Ownership, d.Repos.User, d.Repos.XUIPanel, d.Repos.PSPClient, d.Repos.Certificate)
 		// A batch scan can fan out to hundreds of bounded TLS probes on the
 		// selected node. Keep it admin-only and rate-limit repeated launches per
 		// source IP; 3X-UI applies its own task/concurrency/SSRF caps downstream.

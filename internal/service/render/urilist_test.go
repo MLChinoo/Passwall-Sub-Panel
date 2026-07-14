@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -94,6 +95,37 @@ func TestBuildVLESSURI_FlowVerbatim(t *testing.T) {
 
 	got = buildVLESSURI("n", "1.2.3.4", 443, "uuid-1", reality, "xtls-rprx-vision")
 	mustContain(t, got, "flow=xtls-rprx-vision")
+}
+
+func TestBuildSUIModernURIs(t *testing.T) {
+	stream := xuiStreamSettings{Security: "tls", TLSSettings: &xuiTLSSettings{
+		ServerName: "sni.example.com", ALPN: []string{"h3"}, AllowInsecure: true,
+	}}
+	stream.TLSSettings.Settings.Fingerprint = "chrome"
+	anytls := buildAnyTLSURI("Any TLS", "edge.example.com", 443, "uuid-1", stream)
+	if !strings.HasPrefix(anytls, "anytls://uuid-1@edge.example.com:443?") {
+		t.Fatalf("AnyTLS URI = %s", anytls)
+	}
+	mustContain(t, anytls, "sni=sni.example.com")
+	mustContain(t, anytls, "fp=chrome")
+
+	tuic := buildTUICURI("TUIC", "edge.example.com", 443, "uuid-1", xuiInboundSettings{CongestionControl: "bbr"}, stream)
+	if !strings.HasPrefix(tuic, "tuic://uuid-1:uuid-1@edge.example.com:443?") {
+		t.Fatalf("TUIC URI = %s", tuic)
+	}
+	mustContain(t, tuic, "congestion_control=bbr")
+
+	naive := buildNaiveURI("Naive", "edge.example.com", 443, "actual@psp.local", "uuid-1", stream)
+	prefix := "http2://"
+	encoded := strings.TrimPrefix(strings.SplitN(naive, "?", 2)[0], prefix)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode Naive userinfo: %v (%s)", err, naive)
+	}
+	if string(decoded) != "actual@psp.local:uuid-1@edge.example.com:443" {
+		t.Fatalf("Naive authority = %q", decoded)
+	}
+	mustContain(t, naive, "peer=sni.example.com")
 }
 
 func mustContain(t *testing.T, s, sub string) {

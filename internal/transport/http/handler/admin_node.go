@@ -14,6 +14,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/realitykey"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
+	certsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/cert"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/middleware"
@@ -28,10 +29,11 @@ type AdminNodeHandler struct {
 	users      ports.UserRepo
 	panels     ports.XUIPanelRepo
 	pspClients ports.PSPClientRepo
+	certs      ports.CertificateRepo
 }
 
-func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo, pspClients ports.PSPClientRepo) *AdminNodeHandler {
-	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels, pspClients: pspClients}
+func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo, pspClients ports.PSPClientRepo, certs ports.CertificateRepo) *AdminNodeHandler {
+	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels, pspClients: pspClients, certs: certs}
 }
 
 // ---- DTOs ----
@@ -138,6 +140,8 @@ type createNodeRequest struct {
 	SortOrder     int            `json:"sort_order"`
 	Relays        []relayLineDTO `json:"relays"`
 	HideDirect    bool           `json:"hide_direct"`
+	CertSource    string         `json:"cert_source"`
+	CertID        int64          `json:"cert_id"`
 	Inbound       inboundSpecDTO `json:"inbound" binding:"required"`
 }
 
@@ -152,6 +156,8 @@ type inboundSpecDTO struct {
 	Sniffing       string `json:"sniffing"`
 	Allocate       string `json:"allocate"`
 	ExpiryTime     int64  `json:"expiry_time"`
+	CertSource     string `json:"cert_source"`
+	CertID         int64  `json:"cert_id"`
 }
 
 type updateMetadataRequest struct {
@@ -491,6 +497,25 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 		Allocate:       req.Inbound.Allocate,
 		ExpiryTime:     req.Inbound.ExpiryTime,
 	}
+	if domain.CertSource(req.CertSource) == domain.CertSourceManaged {
+		if req.CertID <= 0 || h.certs == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "an active managed certificate is required"})
+			return
+		}
+		managed, err := h.certs.GetByID(c.Request.Context(), req.CertID)
+		if err != nil || managed == nil || managed.Status != domain.CertStatusActive ||
+			strings.TrimSpace(managed.CertPEM) == "" || strings.TrimSpace(managed.KeyPEM) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "managed certificate is not active or has no issued key pair"})
+			return
+		}
+		spec.StreamSettings, err = certsvc.InjectInlineCert(spec.StreamSettings, managed.CertPEM, managed.KeyPEM)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		n.CertSource = domain.CertSourceManaged
+		n.CertID = managed.ID
+	}
 	if err := h.node.CreateInbound(c.Request.Context(), n, spec); err != nil {
 		mapNodeServiceError(c, err)
 		return
@@ -574,6 +599,23 @@ func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
 		Sniffing:       req.Sniffing,
 		Allocate:       req.Allocate,
 		ExpiryTime:     req.ExpiryTime,
+	}
+	if domain.CertSource(req.CertSource) == domain.CertSourceManaged {
+		if req.CertID <= 0 || h.certs == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "an active managed certificate is required"})
+			return
+		}
+		managed, err := h.certs.GetByID(c.Request.Context(), req.CertID)
+		if err != nil || managed == nil || managed.Status != domain.CertStatusActive ||
+			strings.TrimSpace(managed.CertPEM) == "" || strings.TrimSpace(managed.KeyPEM) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "managed certificate is not active or has no issued key pair"})
+			return
+		}
+		spec.StreamSettings, err = certsvc.InjectInlineCert(spec.StreamSettings, managed.CertPEM, managed.KeyPEM)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	if err := h.node.UpdateInboundConfig(c.Request.Context(), id, spec); err != nil {
 		mapNodeServiceError(c, err)

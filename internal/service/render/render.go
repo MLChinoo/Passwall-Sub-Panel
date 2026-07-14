@@ -277,6 +277,7 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 	// Pre-resolve EmailRules once per render. ClientEmail is per-(user,
 	// node), so the rules can be reused across the loop.
 	emailRules := domain.EmailRules{Domain: st.EmailDomain}
+	sharedEmails := s.sharedClientEmailsByNode(ctx, u)
 
 	// Captured nodes render from the local snapshot (zero 3X-UI calls), so a
 	// subscription still renders while 3X-UI is unreachable; un-captured nodes
@@ -296,7 +297,7 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 				"node_id", it.node.ID, "panel_id", it.node.PanelID, "inbound_id", it.node.InboundID)
 			continue
 		}
-		userEmail := u.ClientEmail(it.node.ID, emailRules)
+		userEmail := clientEmailForNode(u, it.node.ID, emailRules, sharedEmails)
 		block, err := emitProxy(it.name, it.node, u, inb, userEmail, it.relay)
 		if err != nil {
 			log.Warn("render: skip node, emit failed", "node_id", it.node.ID, "err", err)
@@ -319,6 +320,47 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 			"user_id", u.ID, "items_considered", len(items))
 	}
 	return withSentinelIfEmpty(out)
+}
+
+// sharedClientEmailsByNode resolves the first-class PSP client actually
+// provisioned on each node. Most protocols derive credentials from the user
+// UUID, but Naive authenticates with the S-UI client name, so its subscription
+// username must be byte-identical to the provisioned client email. During the
+// migration window an unprovisioned shared attachment falls back to the legacy
+// per-node email, matching the client that is still live upstream.
+func (s *Service) sharedClientEmailsByNode(ctx context.Context, u *domain.User) map[int64]string {
+	if u == nil || s.repos.PSPClient == nil {
+		return nil
+	}
+	clients, err := s.repos.PSPClient.ListByUser(ctx, u.ID)
+	if err != nil {
+		log.Warn("render: list PSP clients for email resolution", "user_id", u.ID, "err", err)
+		return nil
+	}
+	out := make(map[int64]string)
+	for _, client := range clients {
+		if client == nil || client.Email == "" {
+			continue
+		}
+		attachments, err := s.repos.PSPClient.ListInbounds(ctx, client.ID)
+		if err != nil {
+			log.Warn("render: list PSP client attachments for email resolution", "client_id", client.ID, "err", err)
+			continue
+		}
+		for _, attachment := range attachments {
+			if attachment.Provisioned {
+				out[attachment.NodeID] = client.Email
+			}
+		}
+	}
+	return out
+}
+
+func clientEmailForNode(u *domain.User, nodeID int64, rules domain.EmailRules, shared map[int64]string) string {
+	if email := shared[nodeID]; email != "" {
+		return email
+	}
+	return u.ClientEmail(nodeID, rules)
 }
 
 // prefetchInboundsForRender pulls every inbound the proxy-block builder

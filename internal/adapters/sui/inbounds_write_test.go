@@ -262,3 +262,70 @@ func TestShadowsocksBothNetworksUsesSingBoxDefault(t *testing.T) {
 		t.Fatalf("both-network Shadowsocks must omit sing-box network: %#v", body)
 	}
 }
+
+func TestSUIModernProtocolPayloads(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		settings string
+		check    func(*testing.T, map[string]any)
+	}{
+		{
+			name: "anytls", protocol: "anytls", settings: `{"padding_scheme":["stop=8","0=30-30"]}`,
+			check: func(t *testing.T, body map[string]any) {
+				padding, ok := body["padding_scheme"].([]string)
+				if !ok || len(padding) != 2 || padding[0] != "stop=8" {
+					t.Fatalf("padding_scheme = %#v", body["padding_scheme"])
+				}
+			},
+		},
+		{
+			name: "tuic", protocol: "tuic", settings: `{"congestion_control":"bbr","auth_timeout":"4s","zero_rtt_handshake":true,"heartbeat":"12s"}`,
+			check: func(t *testing.T, body map[string]any) {
+				if body["congestion_control"] != "bbr" || body["auth_timeout"] != "4s" ||
+					body["zero_rtt_handshake"] != true || body["heartbeat"] != "12s" {
+					t.Fatalf("TUIC body = %#v", body)
+				}
+			},
+		},
+		{
+			name: "naive", protocol: "naive", settings: `{"network":"udp","quic_congestion_control":"bbr2_variant"}`,
+			check: func(t *testing.T, body map[string]any) {
+				if body["network"] != "udp" || body["quic_congestion_control"] != "bbr2_variant" {
+					t.Fatalf("Naive body = %#v", body)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := nodespec.Decode(ports.InboundSpec{
+				Enable: true, Port: 443, Protocol: tc.protocol, Settings: tc.settings,
+				StreamSettings: `{"network":"tcp","security":"tls","tlsSettings":{"serverName":"edge.example.com","certificates":[{"certificateFile":"/cert.pem","keyFile":"/key.pem"}]}}`,
+			})
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			body, err := suiInboundFromSpec(spec, tc.name, 9)
+			if err != nil {
+				t.Fatalf("suiInboundFromSpec: %v", err)
+			}
+			if body["type"] != tc.protocol || intValue(body["tls_id"]) != 9 {
+				t.Fatalf("base body = %#v", body)
+			}
+			tc.check(t, body)
+		})
+	}
+}
+
+func TestSUIModernProtocolsRequireTLS(t *testing.T) {
+	for _, protocol := range []string{"anytls", "tuic", "naive"} {
+		spec, err := nodespec.Decode(ports.InboundSpec{Enable: true, Port: 443, Protocol: protocol})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := suiInboundFromSpec(spec, protocol, 0); err == nil {
+			t.Fatalf("%s without TLS was accepted", protocol)
+		}
+	}
+}

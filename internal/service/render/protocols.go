@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -68,8 +69,66 @@ func emitProxy(displayName string, n *domain.Node, u *domain.User, inb *ports.In
 			opts.SNI = sni
 		}
 		return emitHysteria2(base, u.UUID, opts), nil
+	case domain.ProtoAnyTLS:
+		return emitAnyTLS(base, u.UUID, stream), nil
+	case domain.ProtoTUIC:
+		return emitTUIC(base, u.UUID, settings, stream), nil
+	case domain.ProtoNaive:
+		// Mihomo does not expose a Naive proxy type. sing-box and URI-list
+		// subscriptions still render it; Mihomo profiles intentionally skip it.
+		return nil, nil
 	}
 	return nil, nil
+}
+
+func applyMihomoStandardTLS(base map[string]any, stream xuiStreamSettings) {
+	if stream.TLSSettings == nil {
+		return
+	}
+	tls := stream.TLSSettings
+	if tls.ServerName != "" {
+		base["sni"] = tls.ServerName
+	}
+	if len(tls.ALPN) > 0 {
+		base["alpn"] = tls.ALPN
+	}
+	base["skip-cert-verify"] = tls.AllowInsecure
+	if tls.Settings.Fingerprint != "" {
+		base["client-fingerprint"] = tls.Settings.Fingerprint
+	}
+}
+
+func emitAnyTLS(base map[string]any, password string, stream xuiStreamSettings) map[string]any {
+	base["type"] = "anytls"
+	base["password"] = password
+	applyMihomoStandardTLS(base, stream)
+	return base
+}
+
+func emitTUIC(base map[string]any, uuid string, settings xuiInboundSettings, stream xuiStreamSettings) map[string]any {
+	base["type"] = "tuic"
+	base["uuid"] = uuid
+	base["password"] = uuid
+	base["congestion-controller"] = defaultStr(settings.CongestionControl, "cubic")
+	if settings.ZeroRTTHandshake {
+		base["reduce-rtt"] = true
+	}
+	if heartbeat := durationMilliseconds(settings.Heartbeat); heartbeat > 0 {
+		base["heartbeat-interval"] = heartbeat
+	}
+	applyMihomoStandardTLS(base, stream)
+	return base
+}
+
+func durationMilliseconds(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0
+	}
+	return duration.Milliseconds()
 }
 
 // emitSeparator produces a fake proxy entry whose only job is to appear as a

@@ -48,11 +48,19 @@ The S-UI adapter uses token-authenticated `/apiv2` endpoints. The admin API
 continues accepting its historical Xray-shaped inbound payload for backward
 compatibility, but `internal/pkg/nodespec` decodes the structured fields into a
 vendor-neutral model before the S-UI adapter emits native sing-box objects.
-The supported write subset is VLESS, VMess, Trojan, Shadowsocks 2022, and
-Hysteria 2 with TCP, WebSocket, gRPC, HTTPUpgrade, or HTTP transport and TLS or
-VLESS REALITY where applicable. XHTTP and the raw advanced JSON editor remain
+The supported write subset is VLESS, VMess, Trojan, Shadowsocks 2022,
+Hysteria 2, AnyTLS, TUIC, and Naive. VLESS/VMess/Trojan support TCP,
+WebSocket, gRPC, HTTPUpgrade, or HTTP transport; TLS and VLESS REALITY are
+translated where applicable. AnyTLS, TUIC, and Naive are exposed only when an
+S-UI server is selected. XHTTP and the raw advanced JSON editor remain
 3X-UI-only so adapter conversion never silently discards vendor-specific
 options.
+
+Subscription output for S-UI-native protocols is format-aware: AnyTLS and
+TUIC render to Mihomo, sing-box, and URI-list; Naive renders to sing-box and
+S-UI-compatible `http2://` URI-list links because Mihomo has no Naive proxy
+type. The Naive username is resolved from the provisioned first-class PSP
+client attachment instead of reconstructing a legacy per-node email.
 
 Modern sing-box performs sniffing through route actions rather than persisted
 per-inbound fields. The S-UI editor therefore hides PSP's Xray-specific
@@ -65,3 +73,13 @@ per-inbound TLS row, swaps it atomically on update, and only garbage-collects
 unreferenced TLS rows carrying the `PSP:` prefix. Hand-managed or shared S-UI
 TLS records are never deleted. S-UI has no persisted per-inbound enable flag,
 so the capability is not advertised and the admin UI disables that switch.
+PSP-managed certificates are injected before S-UI create/update, so the
+native TLS row is valid on the first write rather than relying on a second
+post-create deployment.
+
+S-UI list normalization is bounded to four `/apiv2` reads per panel
+(summaries, batched full rows, TLS, and clients); it does not issue one full
+inbound request per node. Updating an imported inbound is read-modify-write:
+PSP-controlled fields are replaced while S-UI-native fields PSP does not yet
+model (for example multiplex, detour, address and generated outbound data) are
+preserved.
