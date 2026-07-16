@@ -981,6 +981,7 @@
       "section_sockopt": "Socket 选项",
       "sockopt_enabled": "启用 sockopt",
       "sockopt_mark": "SO_MARK",
+      "sockopt_accept_proxy_protocol": "Accept Proxy Protocol",
       "sockopt_tcp_fast_open": "TCP Fast Open",
       "sockopt_tcp_keep_alive_interval": "KeepAlive 间隔（秒）",
       "sockopt_tcp_keep_alive_idle": "KeepAlive 空闲（秒）",
