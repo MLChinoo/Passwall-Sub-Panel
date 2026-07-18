@@ -146,6 +146,12 @@ func (s *Service) CheckOnce(ctx context.Context) error {
 		// Relay probes are opt-in, except HideDirect forces them on. Only
 		// enabled lines are user-visible/probed. Their snapshot is separate
 		// from Relays so this worker never overwrites admin-owned config.
+		//
+		// Scope of a relay "ok": this measures FRONT-EDGE reachability only —
+		// the relay's ServerAddress:Port accepts a connection. It does NOT
+		// verify the relay actually tunnels to the landing, nor that TLS /
+		// Reality / WS / credentials succeed. For CDN-fronted relays a healthy
+		// dot can therefore mean "the edge is up", not "the transit works".
 		if n.EffectiveShowRelayStatus() {
 			for relayIndex, relay := range n.Relays {
 				if !relay.Enabled {

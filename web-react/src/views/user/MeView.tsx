@@ -167,12 +167,13 @@ function ServerStatusPanel({ md }: { md: M3Tokens }) {
     return [...direct, ...relays]
   })
   const okCount = rows.filter(row => row.status === 'ok').length
+  const downCount = rows.filter(row => row.status === 'down').length
   const checkedAt = rows.find(row => row.checked_at)?.checked_at
   return (
     <Card sx={{ p: { xs: 2.5, sm: 3 }, bgcolor: md.surfaceContainerLow, border: `1px solid ${md.outlineVariant}` }}>
       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 2, flexWrap: 'wrap' }}>
         <Typography sx={{ fontWeight: 500 }}>{t('status.title', { defaultValue: '服务器状态' })}</Typography>
-        <Typography variant="body2" sx={{ color: okCount === rows.length ? md.primary : md.error }}>
+        <Typography variant="body2" sx={{ color: downCount > 0 ? md.error : okCount === rows.length ? md.primary : md.onSurfaceVariant }}>
           {t('status.summary', { ok: okCount, total: rows.length, defaultValue: '{{ok}}/{{total}} 正常' })}
         </Typography>
       </Box>

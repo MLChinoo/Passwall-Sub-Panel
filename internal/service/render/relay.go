@@ -26,8 +26,11 @@ func expandRelays(items []renderItem) []renderItem {
 			continue
 		}
 		// HideDirect only takes effect when at least one relay is enabled, so
-		// a node can never silently vanish from the subscription.
-		if !it.node.HideDirect {
+		// a node can never silently vanish from the subscription. We're already
+		// inside the len(relays) > 0 branch, so EffectiveHideDirect() matches
+		// the bare HideDirect here — using the helper keeps the invariant in
+		// one place (shared with the status/DTO layer).
+		if !it.node.EffectiveHideDirect() {
 			out = append(out, it)
 		}
 		for i := range relays {
