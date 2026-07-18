@@ -800,6 +800,58 @@
     "hint": {
       "proxy_group_order": "可留空；一行一个策略组名。绑定该规则集的订阅会优先按这里排列，未列出的策略组保持规则内容中的首次出现顺序。"
     },
+    "tabs": {
+      "rules": "规则内容",
+      "members": "策略组成员"
+    },
+    "members": {
+      "groups_title": "代理组",
+      "groups_hint": "从当前规则内容自动识别",
+      "custom": "自定义编排",
+      "system_default": "系统默认",
+      "unsaved": "有未保存的修改",
+      "no_groups": "规则内容中尚未识别到代理组",
+      "first_default": "第一项是客户端默认选中的出口",
+      "restore_default": "恢复系统默认",
+      "default_badge": "默认",
+      "add_title": "添加成员",
+      "add": "添加",
+      "kind_node": "具体节点",
+      "kind_remaining": "其余节点",
+      "kind_region": "区域节点",
+      "kind_tag": "标签节点",
+      "kind_builtin": "内置出口",
+      "kind_group": "其他代理组",
+      "remaining": "其余节点（自动去重）",
+      "region_set": "区域：{{value}}",
+      "tag_set": "标签：{{value}}",
+      "missing_node": "已删除节点 #{{id}}",
+      "disabled": "已禁用",
+      "search_placeholder": "搜索并选择…",
+      "move_up": "上移",
+      "move_down": "下移",
+      "preview_title": "最终顺序预览",
+      "preview_group_label": "分组：",
+      "preview_all": "全部启用节点",
+      "preview_empty": "当前范围没有可用成员，将安全回退到 DIRECT",
+      "issues": {
+        "unknown_group": "策略组不在当前规则内容中",
+        "empty_members": "自定义成员不能为空；如需默认行为请恢复系统默认",
+        "too_many_members": "成员数量不能超过 {{max}}",
+        "duplicate": "存在重复成员：{{member}}",
+        "unknown_builtin": "未知内置出口：{{value}}",
+        "self_reference": "代理组不能引用自身",
+        "missing_group": "引用的代理组不存在：{{value}}",
+        "invalid_node_id": "节点引用缺少有效 node_id",
+        "missing_node": "节点 #{{id}} 已不存在，渲染时会跳过",
+        "disabled_node": "{{name}} 当前已禁用，渲染时会跳过",
+        "invalid_node_set": "非法节点集合：{{value}}",
+        "empty_node_set": "节点集合当前没有匹配项：{{value}}",
+        "unknown_kind": "未知成员类型：{{value}}",
+        "missing_remaining": "未包含“其余节点”，未来新增节点不会自动进入此代理组",
+        "cycle": "代理组引用形成循环"
+      }
+    },
     "table": {
       "slug": "Slug",
       "name": "名称",
@@ -816,7 +868,8 @@
     },
     "validate": {
       "slug_name_required": "slug 和 name 必填",
-      "slug_exists": "已存在 slug 为“{{slug}}”的规则集 —— 请换一个 slug"
+      "slug_exists": "已存在 slug 为“{{slug}}”的规则集 —— 请换一个 slug",
+      "proxy_group_members": "策略组成员配置存在错误，请先修正"
     },
     "toast": {
       "saved": "已保存",

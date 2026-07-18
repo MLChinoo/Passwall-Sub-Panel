@@ -767,6 +767,16 @@ enabled: true
 proxy_group_order:
   - 节点选择
   - 中国大陆
+proxy_group_members:
+  中国大陆:
+    - kind: node
+      node_id: 42
+    - kind: builtin
+      value: DIRECT
+    - kind: proxy_group
+      value: 节点选择
+    - kind: node_set
+      value: remaining
 rules:
   - DOMAIN-SUFFIX,example.com,节点选择
 ```
@@ -1212,6 +1222,8 @@ GET /{sub_path}/abc123 (UA: mihomo)
 | `@region:TW+tag:reality` | AND 组合 |
 
 规则集内的 `proxy_group_order` 是 mihomo `proxy-groups` 和 sing-box selector outbounds 的默认展示顺序。模板负责声明使用哪些规则集；规则集负责声明策略组顺序和规则内容。
+
+`proxy_group_members` 可选地覆盖单个策略组内部的成员顺序，Mihomo 与 sing-box 共用。支持具体节点（稳定 `node_id`）、内置出口、其他策略组以及 `remaining` / `region:XX` / `tag:name` 动态节点集合；展开后按首次出现去重。字段缺失时继续使用内置的名称匹配默认顺序。后台入口为「规则库 → 编辑规则集 → 策略组成员」。
 
 ### 9.2 分组级 layout
 

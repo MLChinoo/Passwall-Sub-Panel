@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +153,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		return nil, fmt.Errorf("marshal proxies: %w", err)
 	}
 
-	rulesCommon, proxyGroupOrder, err := s.resolveRulesCommon(ctx, tpl)
+	rulesCommon, proxyGroupOrder, proxyGroupMembers, err := s.resolveRulesCommon(ctx, tpl)
 	if err != nil {
 		return nil, fmt.Errorf("resolve rules: %w", err)
 	}
@@ -160,9 +161,9 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 		proxyGroupOrder = tpl.ProxyGroupOrder
 	}
 	if ct == domain.ClientSingBox {
-		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder, st)
+		return s.renderSingBox(ctx, u, tpl, items, rulesCommon, proxyGroupOrder, proxyGroupMembers, st)
 	}
-	proxyGroupsYAML, err := buildProxyGroupsYAML(strings.Join([]string{u.PersonalRules, rulesCommon}, "\n"), proxyGroupOrder)
+	proxyGroupsYAML, err := buildProxyGroupsYAMLWithMembers(strings.Join([]string{u.PersonalRules, rulesCommon}, "\n"), proxyGroupOrder, proxyGroupMembers, items)
 	if err != nil {
 		return nil, fmt.Errorf("build proxy groups: %w", err)
 	}
@@ -491,15 +492,16 @@ recv:
 	return out
 }
 
-func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template) (string, []string, error) {
+func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template) (string, []string, map[string][]domain.ProxyGroupMember, error) {
 	slugs := tpl.RuleSets
 	if len(slugs) == 0 {
 		log.Debug("render: no rule_sets configured for template", "template", tpl.Slug)
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	parts := make([]string, 0, len(slugs))
 	proxyGroupOrder := []string{}
 	seenOrder := map[string]bool{}
+	proxyGroupMembers := map[string][]domain.ProxyGroupMember{}
 	for _, slug := range slugs {
 		rs, err := s.repos.RuleSet.GetBySlug(ctx, slug)
 		if err != nil {
@@ -524,11 +526,35 @@ func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template) 
 			seenOrder[target] = true
 			proxyGroupOrder = append(proxyGroupOrder, target)
 		}
+		// Templates define rule-set precedence. The first enabled rule set
+		// providing a member layout for a group wins, matching the existing
+		// first-occurrence semantics of proxy_group_order.
+		for _, target := range mergeFirstProxyGroupMembers(proxyGroupMembers, rs.ProxyGroupMembers) {
+			if target != "" {
+				log.Warn("render: duplicate proxy-group member config; first rule_set wins", "group", target, "rule_set", slug)
+			}
+		}
 		log.Debug("render: loaded rule_set", "slug", slug, "lines", strings.Count(content, "\n")+1)
 	}
 	result := strings.Join(parts, "\n")
 	log.Debug("render: rules_common resolved", "total_length", len(result), "rule_sets", len(parts))
-	return result, proxyGroupOrder, nil
+	return result, proxyGroupOrder, proxyGroupMembers, nil
+}
+
+// mergeFirstProxyGroupMembers applies template rule-set precedence: once a
+// group has a layout, later rule sets cannot replace it. The returned names are
+// duplicates so the caller can surface deterministic conflict diagnostics.
+func mergeFirstProxyGroupMembers(dst, src map[string][]domain.ProxyGroupMember) []string {
+	duplicates := []string{}
+	for target, configured := range src {
+		if _, exists := dst[target]; exists {
+			duplicates = append(duplicates, target)
+			continue
+		}
+		dst[target] = append([]domain.ProxyGroupMember(nil), configured...)
+	}
+	sort.Strings(duplicates)
+	return duplicates
 }
 
 // DefaultSubProfileNameTemplate is the compiled-in fallback for

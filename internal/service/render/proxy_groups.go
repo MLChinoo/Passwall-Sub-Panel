@@ -1,6 +1,10 @@
 package render
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+)
 
 var builtInRuleTargets = map[string]bool{
 	"DIRECT":          true,
@@ -17,8 +21,17 @@ type proxyGroup struct {
 }
 
 func buildProxyGroupsYAML(rules string, preferredOrder []string) (string, error) {
+	return buildProxyGroupsYAMLInternal(rules, preferredOrder, nil, nil, false)
+}
+
+func buildProxyGroupsYAMLWithMembers(rules string, preferredOrder []string, configs map[string][]domain.ProxyGroupMember, items []renderItem) (string, error) {
+	return buildProxyGroupsYAMLInternal(rules, preferredOrder, configs, items, true)
+}
+
+func buildProxyGroupsYAMLInternal(rules string, preferredOrder []string, configs map[string][]domain.ProxyGroupMember, items []renderItem, resolve bool) (string, error) {
 	targets := ruleTargetsInOrder(rules)
 	targets = withRequiredProxyGroupDependencies(targets)
+	targets = withConfiguredProxyGroupDependencies(targets, configs)
 	targets = applyProxyGroupOrder(targets, preferredOrder)
 	if len(targets) == 0 {
 		return "[]", nil
@@ -31,7 +44,18 @@ func buildProxyGroupsYAML(rules string, preferredOrder []string) (string, error)
 			"  type: select",
 			"  proxies:",
 		)
-		for _, proxy := range proxyGroupChoices(target) {
+		choices := proxyGroupChoices(target)
+		if resolve {
+			members := defaultMembersForTarget(target)
+			if configured, ok := configs[target]; ok {
+				members = configured
+			}
+			choices = resolveConfiguredMembers(members, items)
+			if len(choices) == 0 {
+				choices = []string{"DIRECT"}
+			}
+		}
+		for _, proxy := range choices {
 			lines = append(lines, "  - "+yamlScalar(proxy))
 		}
 	}

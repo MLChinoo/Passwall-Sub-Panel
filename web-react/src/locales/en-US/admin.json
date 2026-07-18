@@ -800,6 +800,58 @@
     "hint": {
       "proxy_group_order": "Optional; one group name per line. Templates binding this set order their proxy groups by this list first; anything not listed keeps the order of first occurrence in the content."
     },
+    "tabs": {
+      "rules": "Rules",
+      "members": "Group members"
+    },
+    "members": {
+      "groups_title": "Proxy groups",
+      "groups_hint": "Detected from the current rule content",
+      "custom": "Custom layout",
+      "system_default": "System default",
+      "unsaved": "Has unsaved changes",
+      "no_groups": "No proxy groups were detected in the rule content",
+      "first_default": "The first item is selected by default in the client",
+      "restore_default": "Restore system default",
+      "default_badge": "Default",
+      "add_title": "Add member",
+      "add": "Add",
+      "kind_node": "Specific node",
+      "kind_remaining": "Remaining nodes",
+      "kind_region": "Region nodes",
+      "kind_tag": "Tagged nodes",
+      "kind_builtin": "Built-in outbound",
+      "kind_group": "Another proxy group",
+      "remaining": "Remaining nodes (deduplicated)",
+      "region_set": "Region: {{value}}",
+      "tag_set": "Tag: {{value}}",
+      "missing_node": "Deleted node #{{id}}",
+      "disabled": "Disabled",
+      "search_placeholder": "Search and select…",
+      "move_up": "Move up",
+      "move_down": "Move down",
+      "preview_title": "Resolved order preview",
+      "preview_group_label": "Group:",
+      "preview_all": "All enabled nodes",
+      "preview_empty": "No member is available in this scope; rendering will safely fall back to DIRECT",
+      "issues": {
+        "unknown_group": "This proxy group does not occur in the current rule content",
+        "empty_members": "A custom member list cannot be empty; restore the system default instead",
+        "too_many_members": "A group cannot contain more than {{max}} members",
+        "duplicate": "Duplicate member: {{member}}",
+        "unknown_builtin": "Unknown built-in outbound: {{value}}",
+        "self_reference": "A proxy group cannot reference itself",
+        "missing_group": "Referenced proxy group does not exist: {{value}}",
+        "invalid_node_id": "The node reference has no valid node_id",
+        "missing_node": "Node #{{id}} no longer exists and will be skipped while rendering",
+        "disabled_node": "{{name}} is disabled and will be skipped while rendering",
+        "invalid_node_set": "Invalid node set: {{value}}",
+        "empty_node_set": "The node set currently has no matches: {{value}}",
+        "unknown_kind": "Unknown member type: {{value}}",
+        "missing_remaining": "Without “Remaining nodes”, newly added nodes will not enter this proxy group automatically",
+        "cycle": "Proxy-group references form a cycle"
+      }
+    },
     "table": {
       "slug": "Slug",
       "name": "Name",
@@ -816,7 +868,8 @@
     },
     "validate": {
       "slug_name_required": "Slug and name are required",
-      "slug_exists": "A rule set with slug \"{{slug}}\" already exists — choose a different slug"
+      "slug_exists": "A rule set with slug \"{{slug}}\" already exists — choose a different slug",
+      "proxy_group_members": "Fix the proxy-group member errors before saving"
     },
     "toast": {
       "saved": "Saved",

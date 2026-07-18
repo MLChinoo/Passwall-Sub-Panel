@@ -964,7 +964,21 @@ type RuleSet struct {
 	Sort            int
 	Enabled         bool
 	ProxyGroupOrder []string
-	Content         string // raw YAML rules fragment
+	// ProxyGroupMembers optionally overrides the generated choices for an
+	// individual policy group. A nil/empty map preserves the legacy
+	// name-based defaults in render.proxyGroupChoices.
+	ProxyGroupMembers map[string][]ProxyGroupMember
+	Content           string // raw YAML rules fragment
+}
+
+// ProxyGroupMember is one ordered choice in a generated Mihomo/sing-box
+// selector. Kind is one of: builtin, proxy_group, node, node_set. NodeID is
+// used only by node; Value carries the builtin/group name or a node-set
+// selector (remaining, region:XX, tag:name).
+type ProxyGroupMember struct {
+	Kind   string `json:"kind" yaml:"kind"`
+	Value  string `json:"value,omitempty" yaml:"value,omitempty"`
+	NodeID int64  `json:"node_id,omitempty" yaml:"node_id,omitempty"`
 }
 
 // Template is one Clash/Sing-box config template stored under config/templates/.
