@@ -155,6 +155,7 @@ export default function ProxyGroupMembersEditor({ content, groupOrder, initialGr
   }
 
   function remove(index: number) {
+    if (currentMembers.length <= 1) return
     commit(currentMembers.filter((_, i) => i !== index))
   }
 
@@ -334,7 +335,9 @@ export default function ProxyGroupMembersEditor({ content, groupOrder, initialGr
                 </Box>
                 <Tooltip title={t('admin:rules.members.move_up')}><span><IconButton size="small" disabled={index === 0} onClick={() => move(index, index - 1)}><ArrowUpwardIcon fontSize="small" /></IconButton></span></Tooltip>
                 <Tooltip title={t('admin:rules.members.move_down')}><span><IconButton size="small" disabled={index === currentMembers.length - 1} onClick={() => move(index, index + 1)}><ArrowDownwardIcon fontSize="small" /></IconButton></span></Tooltip>
-                <IconButton size="small" color="error" onClick={() => remove(index)}><DeleteIcon fontSize="small" /></IconButton>
+                <IconButton size="small" color="error" disabled={currentMembers.length <= 1} onClick={() => remove(index)}>
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
               </Box>
             ))}
           </Stack>
