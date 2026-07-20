@@ -75,6 +75,7 @@ import { PagedTableFooter } from '@/components/PagedTableFooter'
 import { pushSnack } from '@/components/SnackbarHost'
 import { useTabParam } from '@/hooks/useTabParam'
 import RealityTargetScannerDialog from './RealityTargetScannerDialog'
+import { TLSCipherSuitesSelect } from './TLSCipherSuitesSelect'
 import {
   type FieldErrors,
   firstError,
@@ -105,6 +106,7 @@ function usesVlessStream(p: CreateProtocol): boolean {
 // change.
 const ALPN_HY2 = 'h3'
 const ALPN_TLS = 'h2,http/1.1'
+
 function defaultAlpn(p: CreateProtocol): string {
   return p === 'hysteria2' || p === 'tuic' ? ALPN_HY2 : ALPN_TLS
 }
@@ -243,6 +245,8 @@ interface InboundFormState {
   tls_alpn_text: string
   tls_min_version: string
   tls_max_version: string
+  // Xray expects one colon-delimited string, not a JSON array.
+  tls_cipher_suites: string
   // utls browser fingerprint — anti-detection knob; "chrome" / "firefox" /
   // "safari" / "ios" / "android" / "edge" / "360" / "qq" / "random" /
   // "randomized". Empty = no fingerprint set. VLESS+Vision deployments
@@ -390,6 +394,7 @@ const EMPTY_INBOUND: InboundFormState = {
   tls_alpn_text: 'h2,http/1.1',
   tls_min_version: '',
   tls_max_version: '',
+  tls_cipher_suites: '',
   tls_fingerprint: 'chrome',
   tls_allow_insecure: false,
   tls_reject_unknown_sni: false,
@@ -815,7 +820,7 @@ function buildTLSSettings(f: InboundFormState): Record<string, unknown> {
     serverName: f.tls_server_name,
     minVersion: f.tls_min_version,
     maxVersion: f.tls_max_version,
-    cipherSuites: [],
+    cipherSuites: f.tls_cipher_suites,
     alpn: splitList(f.tls_alpn_text),
     certificates: certs,
     rejectUnknownSni: f.tls_reject_unknown_sni,
@@ -987,6 +992,7 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     tls_alpn_text: listToText(tls.alpn) || defaultAlpn(protocol),
     tls_min_version: stringValue(tls.minVersion),
     tls_max_version: stringValue(tls.maxVersion),
+    tls_cipher_suites: stringValue(tls.cipherSuites),
     tls_fingerprint: stringValue(tlsInner.fingerprint) || stringValue(tls.fingerprint, 'chrome'),
     tls_allow_insecure: boolValue(tls.allowInsecure),
     tls_reject_unknown_sni: boolValue(tls.rejectUnknownSni),
@@ -1633,6 +1639,11 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                     {TLS_VERSIONS.map(v => <MenuItem key={v} value={v}>{v || '—'}</MenuItem>)}
                   </TextField>
                 </Box>
+                <TLSCipherSuitesSelect
+                  label={t('admin:nodes.create_dialog.tls_cipher_suites')}
+                  value={form.tls_cipher_suites}
+                  onChange={value => update('tls_cipher_suites', value)}
+                  helperText={t('admin:nodes.create_dialog.tls_cipher_suites_hint')} />
                 <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                   {switchControl(t('admin:nodes.create_dialog.tls_allow_insecure', { defaultValue: 'Allow insecure (dev only)' }),
                     form.tls_allow_insecure,
@@ -1745,6 +1756,11 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                 onChange={e => update('hy2_udp_idle_timeout', Number(e.target.value) || 60)}
                 sx={{ width: 160 }} />
             </Box>
+            <TLSCipherSuitesSelect
+              label={t('admin:nodes.create_dialog.tls_cipher_suites')}
+              value={form.tls_cipher_suites}
+              onChange={value => update('tls_cipher_suites', value)}
+              helperText={t('admin:nodes.create_dialog.tls_cipher_suites_hint')} />
             <TextField size="small" fullWidth
               label={t('admin:nodes.create_dialog.hy2_obfs_password', { defaultValue: '混淆 (salamander) 密码 — 留空 = 不启用' })}
               value={form.hy2_obfs_password}
