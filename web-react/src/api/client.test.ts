@@ -75,6 +75,18 @@ describe('shared API client interceptors', () => {
 
     expect(mocks.state.request?.(config)).toBe(config)
     expect(config.headers.Authorization).toBe('Bearer access-token')
+    expect(config.headers['Cache-Control']).toBe('no-cache')
+    expect(config.headers.Pragma).toBe('no-cache')
+  })
+
+  it('does not add cache directives to authenticated mutations', () => {
+    localStorage.setItem('psp_access', 'access-token')
+    const config = { method: 'put', headers: {} as Record<string, string> }
+
+    expect(mocks.state.request?.(config)).toBe(config)
+    expect(config.headers.Authorization).toBe('Bearer access-token')
+    expect(config.headers['Cache-Control']).toBeUndefined()
+    expect(config.headers.Pragma).toBeUndefined()
   })
 
   it('throttles sync-pending response notifications', () => {

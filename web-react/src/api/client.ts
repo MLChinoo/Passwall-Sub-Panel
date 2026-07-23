@@ -35,6 +35,15 @@ client.interceptors.request.use((config) => {
   const token = localStorage.getItem('psp_access')
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`
+    // Authenticated reads are dynamic and user-specific. Ask existing browser
+    // and proxy caches to revalidate as well as relying on the server's
+    // Cache-Control: no-store response header. This matters immediately after
+    // a mutation, when a stale list response would otherwise overwrite the
+    // freshly-saved state in the UI.
+    if ((config.method || 'get').toLowerCase() === 'get') {
+      config.headers['Cache-Control'] = 'no-cache'
+      config.headers.Pragma = 'no-cache'
+    }
   }
   return config
 })

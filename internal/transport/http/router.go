@@ -193,7 +193,7 @@ func NewRouter(d Deps) stdhttp.Handler {
 		loginguard.New(d.Repos.AuthEvent), captchaSvc, twofaSvc, passkeySvc, login2faSvc)
 	loginLimiter := middleware.NewPerIPLimiter(d.LoginPerIPPerMin, time.Minute)
 	loginLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.LoginPerIPPerMin, func(s ports.UISettings) int { return s.LoginPerIPPerMin }).get)
-	authGroup := g.Group("/api/auth")
+	authGroup := g.Group("/api/auth", middleware.NoStore())
 	{
 		authGroup.GET("/methods", authLocal.Methods)
 		// Image-captcha challenge for the login form. Shares the login limiter
@@ -274,6 +274,7 @@ func NewRouter(d Deps) stdhttp.Handler {
 
 	userMe := handler.NewUserMeHandler(d.User, d.Traffic, d.Repos.ScopedSettings, d.Group, twofaSvc, passkeySvc, enroll2FA)
 	userGroup := g.Group("/api/user/me",
+		middleware.NoStore(),
 		middleware.RequireAuth(d.Auth, d.User, authUserCache),
 		// Operators are included so that an operator forced to enroll 2FA (via the
 		// staff-wide / group / per-user requirement) can actually reach the
@@ -326,11 +327,13 @@ func NewRouter(d Deps) stdhttp.Handler {
 	//                    set + template writes, audit clear.
 	// Both share the AuditWrites engine-level middleware.
 	staffGroup := g.Group("/api/admin",
+		middleware.NoStore(),
 		middleware.RequireAuth(d.Auth, d.User, authUserCache),
 		middleware.RequireRole(domain.RoleAdmin, domain.RoleOperator),
 		require2FAGate,
 	)
 	adminGroup := g.Group("/api/admin",
+		middleware.NoStore(),
 		middleware.RequireAuth(d.Auth, d.User, authUserCache),
 		middleware.RequireRole(domain.RoleAdmin),
 		require2FAGate,
