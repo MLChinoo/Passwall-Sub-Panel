@@ -71,6 +71,9 @@ import {
 } from '@/api/users'
 import type { UpdateUserRequest } from '@/api/users'
 import { listGroups } from '@/api/groups'
+import { getLimitEnforcement, type LimitEnforcement, type LimitPanel } from '@/api/limitEnforcement'
+import { assessDeviceLimit, assessIPLimit, isMisleading, type CapAssessment } from '@/utils/limitEnforcement'
+import FieldHint from '@/components/FieldHint'
 import { listServers, type Server } from '@/api/servers'
 import { deviceCapIsInert, ipCapUnenforcedPanels, unenforceablePanels } from '@/utils/capabilities'
 import { runReconcile } from '@/api/reconcile'
@@ -263,6 +266,11 @@ export default function UsersView() {
   // leaves the list empty, which suppresses the hint rather than
   // inventing one.
   const [servers, setServers] = useState<Server[]>([])
+  // Per-user enforcement facts, loaded when the edit dialog opens. Null while
+  // it is unknown, which is NOT the same as "nothing to report": until it
+  // arrives the dialog falls back to the fleet-wide hints rather than
+  // asserting a cap is fine.
+  const [limitFacts, setLimitFacts] = useState<LimitEnforcement | null>(null)
   const [reconcileBusy, setReconcileBusy] = useState(false)
   // Paged user list. The fetcher closes over groupFilter so changing
   // the group filter triggers a re-fetch through the hook's normal
@@ -446,19 +454,11 @@ export default function UsersView() {
     // never runs. Naming panels here would be worse than silence — it
     // would imply the ones not named do enforce it.
     if (capability === 'client.devicelimit' && deviceCapIsInert(limit)) {
-      return (
-        <Box component="span" sx={{ color: 'warning.main' }}>
-          {t('admin:users.field.device_limit_inert')}
-        </Box>
-      )
+      return hint('device_limit_inert')
     }
     const panels = unenforceablePanels(limit, servers, capability)
     if (panels.length) {
-      return (
-        <Box component="span" sx={{ color: 'warning.main' }}>
-          {t('admin:users.field.limit_unsupported', { panels: panels.join('/ ') })}
-        </Box>
-      )
+      return hint('limit_unsupported', { panels: panels.join(' / ') })
     }
     // A panel that CAN store the cap can still be unable to act on it: 3X-UI
     // needs fail2ban on the node, and the write succeeds either way. Checked
@@ -467,14 +467,74 @@ export default function UsersView() {
     if (capability === 'client.iplimit') {
       const dead = ipCapUnenforcedPanels(limit, servers)
       if (dead.length) {
-        return (
-          <Box component="span" sx={{ color: 'warning.main' }}>
-            {t('admin:users.field.ip_limit_unenforced', { panels: dead.join('/ ') })}
-          </Box>
-        )
+        return hint('ip_limit_unenforced', { panels: dead.join(' / ') })
       }
     }
     return null
+  }
+
+  // Every cap hint is a short verdict plus the reasoning behind it, and the
+  // reasoning is one click away rather than inline: a full sentence under the
+  // field reflows the form as the admin types, and a warning that moves the
+  // layout around gets ignored as reliably as one that says nothing.
+  //
+  // The two halves share a key stem — `<key>` is the detail, `<key>_short` the
+  // summary — so a hint can never be added with only one of them written. The
+  // locale guard in utils/limitEnforcement.test.ts checks both.
+  function hint(key: string, vars?: Record<string, unknown>, tone?: 'warning' | 'muted') {
+    return (
+      <FieldHint
+        tone={tone}
+        summary={t(`admin:users.field.${key}_short`, vars ?? {})}
+        detail={t(`admin:users.field.${key}`, vars ?? {})}
+      />
+    )
+  }
+
+  // The per-user answer, used in the EDIT dialog only. The create form has no
+  // user yet, so there are no clients to count and the fleet-wide capHint is
+  // the best available there.
+  //
+  // It supersedes capHint rather than joining it, for two reasons. It is
+  // SCOPED — capHint warns about every panel in the deployment, so a fleet
+  // containing one S-UI put a warning on every user's form including those
+  // with no client there. And it can say the thing capHint structurally
+  // cannot: the caps are budgeted per (panel, client email) while this form
+  // takes one number, so the fleet-wide reachable total is a MULTIPLE of what
+  // was typed, and no amount of per-panel warning conveys that.
+  function userCapHint(limit: number, which: 'ip' | 'device') {
+    if (!limitFacts || !Number.isFinite(limit) || limit <= 0) return null
+    // The form's live value, not the saved one: an admin who has just typed a
+    // new number is asking about THAT number.
+    const facts = which === 'ip'
+      ? { ...limitFacts, ip_limit: limit }
+      : { ...limitFacts, device_limit: limit }
+    const a: CapAssessment = which === 'ip' ? assessIPLimit(facts) : assessDeviceLimit(facts)
+    const names = (ps: LimitPanel[]) =>
+      ps.map(p => p.name || `#${p.panel_id}`).join(' / ')
+
+    // Tone follows isMisleading rather than a second judgement made here: a
+    // verdict is drawn in warning colour exactly when the number on the form
+    // is not the number in force. 'multiplied' qualifies — the cap works, but
+    // the fleet-wide total is a multiple of what was typed, which is the whole
+    // reason this hint exists.
+    const tone = isMisleading(a.verdict) ? 'warning' : 'muted'
+    switch (a.verdict) {
+      case 'never_enforced':
+        return hint('device_limit_inert', undefined, tone)
+      case 'void':
+        return hint('cap_void', { panels: names(a.voidPanels) }, tone)
+      case 'unknown':
+        return hint('cap_unknown', { panels: names(a.unknownPanels) }, tone)
+      case 'multiplied':
+        return hint('cap_multiplied', {
+          total: a.typed * a.enforcingRows, rows: a.enforcingRows, typed: a.typed,
+        }, tone)
+      case 'no_clients':
+        return hint('cap_no_clients', undefined, tone)
+      default:
+        return null
+    }
   }
 
   async function loadServers() {
@@ -579,6 +639,13 @@ export default function UsersView() {
       enabled: accountEnabledForEdit(u),
     })
     setEditErr({})
+    // Cleared before the fetch, not after: showing the PREVIOUS user's panel
+    // facts next to this user's number would be worse than showing none.
+    setLimitFacts(null)
+    void getLimitEnforcement(u.id).then(setLimitFacts).catch(() => {
+      /* Optional. A failure leaves limitFacts null, which falls back to the
+         fleet-wide hint rather than claiming the caps are fine. */
+    })
     setEditOpen(true)
   }
 
@@ -1828,7 +1895,7 @@ export default function UsersView() {
                   disabled={editForm.inherit_ip}
                   onChange={e => setEditForm({ ...editForm, ip_limit: Number(e.target.value) || 0 })}
                   error={!!editErr.ip_limit}
-                  helperText={editErr.ip_limit ? t(`admin:${editErr.ip_limit}`) : (capHint(editForm.ip_limit, 'client.iplimit') ?? t('admin:users.field.limit_zero_hint'))}
+                  helperText={editErr.ip_limit ? t(`admin:${editErr.ip_limit}`) : (userCapHint(editForm.ip_limit, 'ip') ?? capHint(editForm.ip_limit, 'client.iplimit') ?? t('admin:users.field.limit_zero_hint'))}
                   slotProps={{ htmlInput: { min: 0, step: 1 } }} />
                 {inheritToggle(editForm.inherit_ip, v => setEditForm({ ...editForm, inherit_ip: v }))}
               </Box>
@@ -1838,7 +1905,7 @@ export default function UsersView() {
                   disabled={editForm.inherit_device}
                   onChange={e => setEditForm({ ...editForm, device_limit: Number(e.target.value) || 0 })}
                   error={!!editErr.device_limit}
-                  helperText={editErr.device_limit ? t(`admin:${editErr.device_limit}`) : (capHint(editForm.device_limit, 'client.devicelimit') ?? t('admin:users.field.limit_zero_hint'))}
+                  helperText={editErr.device_limit ? t(`admin:${editErr.device_limit}`) : (userCapHint(editForm.device_limit, 'device') ?? capHint(editForm.device_limit, 'client.devicelimit') ?? t('admin:users.field.limit_zero_hint'))}
                   slotProps={{ htmlInput: { min: 0, step: 1 } }} />
                 {inheritToggle(editForm.inherit_device, v => setEditForm({ ...editForm, inherit_device: v }))}
               </Box>

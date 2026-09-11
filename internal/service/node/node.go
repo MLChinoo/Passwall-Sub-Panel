@@ -25,6 +25,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xrayspec"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/inboundcfg"
@@ -68,9 +69,12 @@ type Service struct {
 	// where runBackground falls back to an untracked safego.Go.
 	bg func(name string, fn func(ctx context.Context))
 	// invalidateSubscriptions is late-bound by app wiring because the node
-	// package must not import the group or render services. It is called only
-	// after an ordering transaction commits successfully.
+	// package must not import the group or render services. It fires after any
+	// successful write that changes what a subscription renders.
 	invalidateSubscriptions func()
+	// repoWrapped guards SetSubscriptionInvalidator against stacking a second
+	// decorator on a re-wire.
+	repoWrapped bool
 }
 
 // SetMemberResyncer late-binds the shared-client member resyncer (user.Service).
@@ -85,14 +89,81 @@ func (s *Service) SetBackgroundRunner(run func(name string, fn func(ctx context.
 
 // SetSubscriptionInvalidator wires cache invalidation for subscription-visible
 // node and separator mutations without coupling this package to render.
+//
+// Wiring the invalidator is ALSO what installs it, by wrapping this service's
+// repo handles (invalidating_repo.go). It used to be a call each mutating
+// method had to remember and 15 of 17 forgot — among them SetEnabled, so a
+// node the operator disabled kept being served for up to a minute, and
+// UpdateSeparator, so a disabled separator kept rendering while the admin UI
+// reported success. Making it a property of the WRITE means a new mutating
+// method cannot forget.
+//
+// Done here rather than in New so a Service assembled by struct literal — as
+// every test in this package does — behaves the same as the wired one the
+// moment it declares that it wants invalidation. Doing it in New would leave
+// those silently un-invalidating, which is the exact failure mode being fixed.
+//
+// Only THIS service's handles are wrapped. The traffic poll and health loop
+// keep the undecorated repos they were given, so their per-cycle column writes
+// do not keep the render cache empty.
 func (s *Service) SetSubscriptionInvalidator(invalidate func()) {
 	s.invalidateSubscriptions = invalidate
+	if s.repoWrapped {
+		// Idempotent: re-wiring must not stack a second wrapper, which would
+		// fire the same drop twice per write.
+		return
+	}
+	s.repoWrapped = true
+	if s.nodes != nil {
+		s.nodes = invalidatingNodeRepo{NodeRepo: s.nodes, notify: s.invalidateSubscriptionCaches}
+	}
+	if s.separators != nil {
+		s.separators = invalidatingSeparatorRepo{SeparatorRepo: s.separators, notify: s.invalidateSubscriptionCaches}
+	}
 }
 
 func (s *Service) invalidateSubscriptionCaches() {
 	if s.invalidateSubscriptions != nil {
 		s.invalidateSubscriptions()
 	}
+}
+
+// markConfigSyncGaveUp moves a node off ConfigSyncPending once its retry has
+// been cancelled, because Pending is a promise: the admin dot reads "配置下发
+// 待重试" / "Config push pending retry" and the Sync Tasks view is where a
+// retry would be visible. Leaving the row Pending after the last attempt was
+// cancelled left that promise standing forever — the state was honest that the
+// push had failed and dishonest about what would happen next.
+//
+// Only the config-carrying task types touch the column. A SetEnabled task that
+// gives up is a real problem too, but it is not a CONFIG sync failure and
+// mislabelling it would make the dot mean two different things.
+//
+// Best-effort: this runs after the task was already cancelled, so a failed
+// write here must not stall the rest of the due batch. It is logged at Warn
+// because the consequence — a row still claiming a retry — is exactly what
+// this function exists to prevent.
+func (s *Service) markConfigSyncGaveUp(ctx context.Context, task *domain.SyncTask, cause error) {
+	if task.Type != domain.SyncTaskNodeUpdate && task.Type != domain.SyncTaskNodeCreate {
+		return
+	}
+	n, err := s.nodes.GetByID(ctx, task.TargetID)
+	if err != nil {
+		log.Warn("config-sync give-up: node not readable",
+			"node_id", task.TargetID, "err", err)
+		return
+	}
+	if n.ConfigSyncState == domain.ConfigSyncFailed {
+		return
+	}
+	n.SetConfigSyncState(domain.ConfigSyncFailed, time.Now())
+	if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
+		log.Warn("config-sync give-up: state not written; the node will keep claiming a pending retry",
+			"node_id", n.ID, "err", err)
+		return
+	}
+	log.Warn("config push gave up; node left un-converged and rendering from the panel's own config",
+		"node_id", n.ID, "task_id", task.ID, "cause", cause.Error())
 }
 
 // runBackground routes fire-and-forget work through the tracked dispatcher when
@@ -234,16 +305,28 @@ func (s *Service) UpdateSeparator(ctx context.Context, e *domain.SeparatorEntry)
 		return fmt.Errorf("separator repo not configured")
 	}
 	e.DisplayName = strings.TrimSpace(e.DisplayName)
-	// Edit dialog no longer surfaces sort_order; the absent field arrives
-	// as 0 and must not clobber the position the admin set via drag. Load
-	// the existing row and preserve it when the caller didn't specify one.
+	// The caller builds this entry from a request DTO, so the fields the form
+	// does not carry arrive as zero values. Two of them must come from storage
+	// instead, and for different reasons:
+	//
+	//   SortOrder is WRITTEN, so a zero would clobber the position the admin
+	//     set by dragging (the edit dialog no longer shows the field).
+	//   CreatedAt is NOT written — the repo omits the column — but it is
+	//     returned to the caller, which renders it and updates its local row
+	//     from the response. Leaving it zero made the API report a creation
+	//     date of year 1 for a row whose stored value was fine: the write was
+	//     honest and the answer was not.
+	//
+	// So the entry is reconciled with storage before the write, and the caller
+	// gets back what is actually stored rather than what it sent.
+	existing, err := s.separators.GetByID(ctx, e.ID)
+	if err != nil {
+		return err
+	}
 	if e.SortOrder <= 0 {
-		existing, err := s.separators.GetByID(ctx, e.ID)
-		if err != nil {
-			return err
-		}
 		e.SortOrder = existing.SortOrder
 	}
+	e.CreatedAt = existing.CreatedAt
 	return s.separators.Update(ctx, e)
 }
 
@@ -302,11 +385,9 @@ func (s *Service) ReorderSeparators(ctx context.Context, updates []ports.Separat
 		}
 		seen[u.SeparatorID] = struct{}{}
 	}
-	if err := s.separators.BatchUpdateSortOrder(ctx, updates); err != nil {
-		return err
-	}
-	s.invalidateSubscriptionCaches()
-	return nil
+	// Invalidation rides the repo write (invalidating_repo.go), so no explicit
+	// call here — it would fire the same drop twice.
+	return s.separators.BatchUpdateSortOrder(ctx, updates)
 }
 
 // ImportExisting registers an inbound that already lives in 3X-UI under
@@ -331,6 +412,30 @@ func (s *Service) ImportExisting(ctx context.Context, n *domain.Node) error {
 		return fmt.Errorf("inbound %d not found on panel %d: %w", n.InboundID, n.PanelID, err)
 	}
 	n.Enabled = true
+	// Adopt the inbound's own VLESS flow when the admin left the field blank.
+	//
+	// Flow otherwise arrives ONLY from the import form, and a blank one on a
+	// Reality/Vision inbound is the state every reader disagrees about: the
+	// legacy push falls back to the panel's flow (reconcile.resolveFlow), render
+	// emits Node.Flow and so hands the user a link with no flow, and the shared
+	// path has no fallback at all — clientplan derives from Node.Flow alone, so
+	// the client is PROVISIONED flowless, which is the same regression
+	// resolveFlow's comment records as fixed for the legacy path.
+	//
+	// Importing is taking ownership of what is already there, so the honest
+	// default is the value already there. Only a blank is filled: a flow the
+	// admin typed is their decision and stays untouched.
+	if n.Flow == "" && strings.EqualFold(n.Protocol, string(domain.ProtoVLESS)) {
+		if settings, perr := xrayspec.ParseSettings(inb.Settings); perr == nil {
+			n.Flow = xrayspec.FirstClientFlow(settings.Clients)
+		} else {
+			// Non-fatal: an unparseable settings blob costs the flow default,
+			// not the import. reconcile's flow_render_divergence still reports
+			// the resulting blank.
+			log.Warn("import: could not parse inbound settings for flow default",
+				"panel_id", n.PanelID, "inbound_id", n.InboundID, "err", perr)
+		}
+	}
 	// Import = take ownership: capture the live inbound's config into the local
 	// snapshot so render reads it without a live fetch and reconcile can keep
 	// 3X-UI aligned to PSP. clients[] is stripped (ownership-managed).
@@ -410,7 +515,10 @@ func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) err
 		if !inboundcfg.HasLocalConfig(n) {
 			return fmt.Errorf("%w: node %d has no captured inbound config to recreate", domain.ErrValidation, nodeID)
 		}
-		spec := inboundcfg.SpecFromNode(n)
+		spec, serr := inboundcfg.SpecFromNode(n)
+		if serr != nil {
+			return fmt.Errorf("recreate inbound on panel %d: %w", n.PanelID, serr)
+		}
 		spec.Enable = true
 		newID, aerr := c.AddInbound(ctx, spec)
 		if aerr != nil {
@@ -431,7 +539,11 @@ func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) err
 		// UpdateInbound RMW re-applies the snapshot (ensureClientsArray guarantees the
 		// clients[] array) while preserving whatever clients are live. So re-clicking
 		// recreate fixes an existing un-addable inbound without delete+recreate.
-		if uerr := c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n)); uerr != nil {
+		spec, serr := inboundcfg.SpecFromNode(n)
+		if serr != nil {
+			return fmt.Errorf("heal existing inbound %d on panel %d: %w", n.InboundID, n.PanelID, serr)
+		}
+		if uerr := c.UpdateInbound(ctx, n.InboundID, spec); uerr != nil {
 			return fmt.Errorf("heal existing inbound %d on panel %d: %w", n.InboundID, n.PanelID, uerr)
 		}
 		log.Info("recreate: re-pushed snapshot to heal existing inbound", "node_id", nodeID, "panel_id", n.PanelID, "inbound_id", n.InboundID)
@@ -536,11 +648,8 @@ func (s *Service) Reorder(ctx context.Context, updates []ports.NodeSortUpdate) e
 		}
 		seen[u.NodeID] = struct{}{}
 	}
-	if err := s.nodes.BatchUpdateSortOrder(ctx, updates); err != nil {
-		return err
-	}
-	s.invalidateSubscriptionCaches()
-	return nil
+	// Invalidation rides the repo write — see ReorderSeparators.
+	return s.nodes.BatchUpdateSortOrder(ctx, updates)
 }
 
 func (s *Service) UpdateMetadata(ctx context.Context, n *domain.Node) error {
@@ -588,10 +697,10 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 // Best-effort: a DB failure here is logged-only, the same edit will re-trigger
 // on the next admin save or the reconcile that comes after.
 func (s *Service) markConfigPending(ctx context.Context, n *domain.Node) {
-	if n.ConfigSyncState == "pending" {
+	if n.ConfigSyncState == domain.ConfigSyncPending {
 		return
 	}
-	n.ConfigSyncState = "pending"
+	n.SetConfigSyncState(domain.ConfigSyncPending, time.Now())
 	if err := s.nodes.UpdateInboundConfig(ctx, n); err != nil {
 		log.Warn("mark config pending failed", "node_id", n.ID, "err", err)
 	}
@@ -612,15 +721,21 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 	if err := s.nodes.UpdateEnabled(ctx, n.ID, enabled); err != nil {
 		return err
 	}
+	// A queued retry is a real outcome, so nil is right whenever the enqueue
+	// lands. It is only wrong when the enqueue ITSELF fails — then the panel
+	// still has the inbound enabled, nothing is pending, and the admin has been
+	// told the node is off. See errUnqueuedPush.
 	if clientErr != nil {
 		if taskErr := s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled}); taskErr != nil {
 			log.Warn("enqueue node enabled sync failed", "node_id", n.ID, "err", taskErr)
+			return errUnqueuedPush("set node enabled state", clientErr, taskErr)
 		}
 		return nil
 	}
 	if err := c.SetInboundEnable(ctx, n.InboundID, enabled); err != nil {
 		if taskErr := s.enqueueNodeTask(ctx, domain.SyncTaskNodeSetEnabled, n, "sync node enabled state", map[string]bool{"enabled": enabled}); taskErr != nil {
 			log.Warn("enqueue node enabled sync failed", "node_id", n.ID, "err", taskErr)
+			return errUnqueuedPush("set node enabled state", err, taskErr)
 		}
 		return nil
 	}
@@ -710,6 +825,7 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
 					log.Warn("node task cancel", "task_id", task.ID, "err", markErr)
 				}
+				s.markConfigSyncGaveUp(ctx, task, err)
 				continue
 			}
 			// Cap retries the same way the user processor does (maxUserTaskAttempts):
@@ -725,6 +841,7 @@ func (s *Service) ProcessDueTasks(ctx context.Context, limit int) error {
 				if markErr := s.tasks.Cancel(ctx, task.ID); markErr != nil {
 					log.Warn("node task cancel (max attempts)", "task_id", task.ID, "err", markErr)
 				}
+				s.markConfigSyncGaveUp(ctx, task, err)
 				continue
 			}
 			next := time.Now().Add(nodeTaskBackoff(task.Attempts + 1))
@@ -800,7 +917,13 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 		// regress 3X-UI to a superseded spec. Capture the version stamp we're
 		// about to push so the post-push state flip can detect a concurrent edit.
 		stamp := n.ConfigSyncedAt
-		if err := c.UpdateInbound(ctx, n.InboundID, inboundcfg.SpecFromNode(n)); err != nil {
+		spec, serr := inboundcfg.SpecFromNode(n)
+		if serr != nil {
+			// A task that can never produce a valid push must not spin: this is
+			// terminal for the task, not a transient panel failure.
+			return fmt.Errorf("%w: %w", domain.ErrValidation, serr)
+		}
+		if err := c.UpdateInbound(ctx, n.InboundID, spec); err != nil {
 			return err
 		}
 		// The push is a multi-second round-trip that may straddle an admin
@@ -814,8 +937,8 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 		if err != nil || fresh == nil || !sameSyncStamp(stamp, fresh.ConfigSyncedAt) {
 			return nil
 		}
-		if fresh.ConfigSyncState != "synced" {
-			fresh.ConfigSyncState = "synced"
+		if fresh.ConfigSyncState != domain.ConfigSyncSynced {
+			fresh.SetConfigSyncState(domain.ConfigSyncSynced, time.Now())
 			_ = s.nodes.UpdateInboundConfig(ctx, fresh)
 		}
 		return nil

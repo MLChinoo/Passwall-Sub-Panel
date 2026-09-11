@@ -47,19 +47,6 @@ type ClientSyncer interface {
 		protocol domain.Protocol, ssMethod, oldUUID, newUUID, flow string, want domain.UserLifecycle, panelLifetime int64) error
 }
 
-// TrafficUsageReader yields the bytes a user has consumed in their current
-// traffic period. user.Service needs this to compute the per-client floor
-// it pushes into 3X-UI (TrafficFloorBytes = limit - period_used). Defined
-// as an interface so user doesn't have to import traffic — the actual
-// implementation lives in traffic.Service and is wired late in app.Build.
-//
-// nil-safe: when the reader is nil (early-start path), trafficFloor returns
-// 0 (= unlimited on the 3X-UI side) — equivalent to the historical
-// behaviour before the floor was added.
-type TrafficUsageReader interface {
-	CurrentPeriodUsage(ctx context.Context, u *domain.User) (int64, error)
-}
-
 type Service struct {
 	users     ports.UserRepo
 	groups    ports.GroupRepo
@@ -73,11 +60,6 @@ type Service struct {
 	// changes. It is wired once during router construction and is nil in tests
 	// that do not exercise HTTP authentication.
 	authInvalidator func(int64)
-	// trafficUsage is set lazily via SetTrafficUsage after traffic.Service
-	// is constructed (traffic depends on user, so user must exist first).
-	// May be nil during early-start; trafficFloor degrades to 0 in that case.
-	trafficUsage TrafficUsageReader
-
 	// bg, when set via SetBackgroundRunner, routes fire-and-forget background
 	// work (group-member resync) through the app's tracked async dispatcher so
 	// App.Shutdown drains it and it runs under a cancellable background context.
@@ -187,9 +169,15 @@ func (s *Service) SetSharedMigrator(m SharedMigrator) { s.migrator = m }
 // it to the user's real state — so a caller that is about to delete the legacy
 // per-node fallback (ResyncMembership) MUST NOT proceed if this failed, or a
 // disabled/expired/over-quota user would be left with a fully-enabled shared
-// client and no fallback (the audit-#1 bypass). Callers that aren't deleting a
-// fallback (per-poll refresh, the reconcile heal) may ignore the returned error;
-// it is logged here either way.
+// client and no fallback (the audit-#1 bypass).
+//
+// NO caller may drop this error. It used to read "callers that aren't deleting a
+// fallback may ignore it, it is logged either way", and pushClientConfigToAll took
+// that literally — which was correct only while every user still had legacy
+// ownership rows to fall back on. Post-migration this push is the ONLY write those
+// callers make, so a dropped error becomes a nil return for a push that never
+// landed, and every retry-task enqueue gated on that nil goes unreachable. A log
+// line is not a retry.
 //
 // Push the quota floor (limit - period_used) too, parity with the per-node path:
 // it is the Xray-side safety net that cuts the client off even while PSP is
@@ -432,15 +420,6 @@ func New(users ports.UserRepo, groups ports.GroupRepo, ownership ports.Ownership
 	}
 }
 
-// SetTrafficUsage wires the late-bound traffic-usage reader. traffic.Service
-// implements TrafficUsageReader but is constructed after user.Service (it
-// takes user.Service as its disabler), so we can't pass it through New().
-// Calling SetTrafficUsage with nil disables floor computation, keeping the
-// 3X-UI side at "unlimited" on every push (the historical behaviour).
-func (s *Service) SetTrafficUsage(r TrafficUsageReader) {
-	s.trafficUsage = r
-}
-
 // trafficFloor returns the bytes value to push into 3X-UI's per-client
 // totalGB for u. 0 means "no cap on 3X-UI side" — used for unlimited
 // users, when the reader isn't wired, or on any error reading usage. Any
@@ -471,16 +450,17 @@ func (s *Service) trafficFloor(ctx context.Context, u *domain.User) int64 {
 	if u.EmergencyUntil != nil && time.Now().Before(*u.EmergencyUntil) {
 		return s.emergencyFloor(ctx, u)
 	}
-	if s.trafficUsage == nil {
-		return 0
-	}
-	used, err := s.trafficUsage.CurrentPeriodUsage(ctx, u)
-	if err != nil {
-		log.Warn("traffic floor: usage read failed, defaulting to unlimited",
-			"user_id", u.ID, "err", err)
-		return 0
-	}
-	return TrafficFloorBytes(u.TrafficLimitBytes, used)
+	// Period usage is read straight off the user row. It used to go through a
+	// late-wired TrafficUsageReader with two "cannot read -> 0" exits — a nil
+	// guard and an error branch — and BOTH resolved to 0, which the panel reads
+	// as no cap. They were defending a call that could not fail:
+	// traffic.CurrentPeriodUsage forwarded to periodUsage, whose whole body was
+	// `return u.PeriodUsed(), nil` — a subtraction of two columns already on the
+	// user in hand. So the guards bought nothing and stood ready to convert any
+	// future read failure into a silently unlimited user. Removing the indirection
+	// deletes both branches rather than making them handle the error better: the
+	// failure they guarded can no longer be expressed.
+	return TrafficFloorBytes(u.TrafficLimitBytes, u.PeriodUsed())
 }
 
 // emergencyFloor computes the 3X-UI floor for a user inside an active
@@ -1768,8 +1748,11 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 		serviceStateChanged = true
 	}
 	if groupChanged {
+		// ResyncMembershipOrEnqueue already returns nil when it managed to queue
+		// the work, so a non-nil error here means neither happened.
 		if err := s.ResyncMembershipOrEnqueue(ctx, userID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
 			log.Warn("enqueue user membership resync failed", "user_id", userID, "err", err)
+			return errUnqueuedPush("resync node membership", err, err)
 		}
 		return nil
 	}
@@ -1777,6 +1760,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, in UpdateInpu
 		if err := s.pushClientConfigToAll(ctx, u); err != nil {
 			if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 				log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
+				return errUnqueuedPush("sync enabled/expiry config", err, taskErr)
 			}
 			return nil
 		}
@@ -2016,6 +2000,7 @@ func (s *Service) ChangeGroupAndSync(ctx context.Context, userID, newGroupID int
 	}
 	if err := s.ResyncMembershipOrEnqueue(ctx, userID, fmt.Sprintf("sync node membership for user %s", u.UPN)); err != nil {
 		log.Warn("enqueue user membership resync failed", "user_id", userID, "err", err)
+		return errUnqueuedPush("resync node membership", err, err)
 	}
 	return nil
 }
@@ -2238,7 +2223,7 @@ func (s *Service) deletePrunedSharedClients(ctx context.Context, pruned map[int6
 			continue
 		}
 		for _, email := range emails {
-			if err := cli.DelClientByEmail(ctx, 0, email); err != nil {
+			if err := cli.DelClientByEmail(ctx, email); err != nil {
 				log.Warn("delete pruned shared client", "panel_id", panelID, "email", email, "err", err)
 			}
 		}
@@ -2376,6 +2361,7 @@ func (s *Service) SetEnabledAndSync(ctx context.Context, userID int64, enabled b
 	if pushErr != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync enabled/expiry config for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user config push failed", "user_id", userID, "err", taskErr)
+			return errUnqueuedPush("sync account enabled state", pushErr, taskErr)
 		}
 		return nil
 	}
@@ -2409,6 +2395,7 @@ func (s *Service) SetServiceSuspendedAndSync(ctx context.Context, userID int64, 
 	if err := s.pushClientConfigToAll(ctx, u); err != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync service status for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user service-status push failed", "user_id", userID, "err", taskErr)
+			return errUnqueuedPush("suspend proxy service", err, taskErr)
 		}
 		return nil
 	}
@@ -2442,6 +2429,7 @@ func (s *Service) ResumeServiceAndSync(ctx context.Context, userID int64) error 
 	if err := s.pushClientConfigToAll(ctx, u); err != nil {
 		if taskErr := s.enqueueUserTask(ctx, domain.SyncTaskUserPushConfig, userID, fmt.Sprintf("sync service resume for user %s", u.UPN)); taskErr != nil {
 			log.Warn("enqueue user service-resume push failed", "user_id", userID, "err", taskErr)
+			return errUnqueuedPush("resume proxy service", err, taskErr)
 		}
 		return nil
 	}
@@ -2484,14 +2472,26 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 	// keeps the Xray-side totalGB safety net (cut the user off while PSP is offline)
 	// current as the floor (limit - period_used) shrinks. Runs BEFORE the early
 	// return below, so a fully-migrated user (zero ownership rows) still gets it.
-	s.syncSharedLifecycle(ctx, u)
+	//
+	// Its error is KEPT. Once the legacy ownership table is dropped this is the
+	// only write this function performs, so discarding it made the function return
+	// nil for a push that never reached 3X-UI — and all six callers read that nil
+	// as "delivered" and skip their SyncTaskUserPushConfig enqueue. That includes
+	// SetEnabledAndSync, which admin disable and quota/expiry auto-disable funnel
+	// through: a disabled user stayed live on the panel with nothing queued to
+	// retry and PushConfigErrorTotal still reading zero.
+	//
+	// Per-node errors keep precedence in the return: a shared failure is also
+	// logged at its own site, a per-node one is only reported here. Either way the
+	// caller enqueues the same task, which re-runs this whole function.
+	sharedErr := s.syncSharedLifecycle(ctx, u)
 
 	entries, err := s.ownership.ListByUser(ctx, u.ID)
 	if err != nil {
 		return err
 	}
 	if len(entries) == 0 {
-		return nil
+		return sharedErr
 	}
 	floor := s.trafficFloor(ctx, u)
 	// Single now-snapshot for the whole fan-out; see the note in the rotate
@@ -2657,6 +2657,9 @@ func (s *Service) pushClientConfigToAll(ctx context.Context, u *domain.User) err
 		if o.err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("push config %d/%d/%s: %w", o.entry.PanelID, o.entry.InboundID, o.entry.ClientEmail, o.err)
 		}
+	}
+	if firstErr == nil {
+		firstErr = sharedErr
 	}
 	return firstErr
 }

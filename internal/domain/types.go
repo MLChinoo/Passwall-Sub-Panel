@@ -352,6 +352,77 @@ type SortEntry struct {
 // traffic accounting or health probing — they exist purely for layout.
 // Empty value is treated as NodeKindReal so existing rows in the DB
 // stay valid without a backfill.
+// SetConfigSyncState is the ONLY way this pair of fields should be written.
+//
+// The rule it enforces — stamp on the way in, clear on the way out, never
+// re-stamp while still un-converged — is one line of logic that was going to
+// be repeated at six call sites across five packages, which is how the state
+// column itself ended up as six bare literals nobody could enumerate.
+func (n *Node) SetConfigSyncState(state string, now time.Time) {
+	n.ConfigSyncState = state
+	switch state {
+	case ConfigSyncSynced, ConfigSyncNeverCaptured:
+		n.ConfigPendingSince = nil
+	default:
+		// Already un-converged: keep the original stamp so the age keeps
+		// growing. A node that has been stuck for three days must not look
+		// fifteen minutes old just because reconcile touched it again.
+		if n.ConfigPendingSince == nil {
+			t := now
+			n.ConfigPendingSince = &t
+		}
+	}
+}
+
+// ConfigSyncLag reports how long this node has been un-converged, and whether
+// that question has an answer at all. Converged nodes and rows written before
+// the column existed both answer false rather than zero — a zero-length lag
+// and an unknown one read identically on a dashboard, and only one of them is
+// reassuring.
+func (n *Node) ConfigSyncLag(now time.Time) (time.Duration, bool) {
+	if n == nil || n.ConfigPendingSince == nil {
+		return 0, false
+	}
+	return now.Sub(*n.ConfigPendingSince), true
+}
+
+// ConfigSyncState values. The whole set, because the admin UI colours a dot
+// per state and falls back to the "never captured" wording for anything it
+// does not recognise — so a state added here without matching frontend copy
+// renders as a DIFFERENT, wrong label rather than as an obvious gap.
+// TestConfigSyncStatesAreExhaustive and the frontend's own guard pin the two
+// lists to each other.
+const (
+	// ConfigSyncNeverCaptured is the empty value: PSP holds no local snapshot,
+	// so render live-fetches this node. Ordinary for a freshly imported node.
+	ConfigSyncNeverCaptured = ""
+	// ConfigSyncSynced means the last write PSP attempted succeeded. It does
+	// NOT mean PSP and the panel agree right now — an operator's panel-side
+	// edit between reconcile cycles leaves this untouched.
+	ConfigSyncSynced = "synced"
+	// ConfigSyncPending means a push failed and a retry is queued. The admin
+	// tooltip says exactly that, so it must not outlive the queued task.
+	ConfigSyncPending = "pending"
+	// ConfigSyncFailed means the retries ran out and the task was cancelled:
+	// nothing is pending and nothing will fix it without the operator.
+	//
+	// Split from Pending because the two demand different things from whoever
+	// is reading the dot. Before this existed, a node whose push permanently
+	// failed kept the Pending label — "配置下发待重试" / "Config push pending
+	// retry" — describing a retry that had already been cancelled, forever.
+	// The row was honest about the push having failed and dishonest about what
+	// would happen next, which is this project's recurring defect wearing a
+	// different hat.
+	ConfigSyncFailed = "failed"
+	// ConfigSyncDrift is DECLARED BUT NEVER WRITTEN today, and the admin UI
+	// renders an orange dot for it that therefore cannot light up. Reconcile
+	// detects a drift and repairs it inside the same call, so a node cannot
+	// rest here — see docs/adr/0024 for why that changes once convergence
+	// becomes asynchronous. Kept so the constant list matches what the UI can
+	// draw, and so the day a writer appears it has a name to use.
+	ConfigSyncDrift = "drift"
+)
+
 type NodeKind string
 
 const (
@@ -485,7 +556,25 @@ type Node struct {
 	// pushed to 3X-UI. nil means "never captured" — render falls back to a
 	// one-shot live fetch for such a node until the next poll backfills it.
 	ConfigSyncedAt *time.Time
-	// ConfigSyncState: "" (never captured) / "synced" / "drift" / "pending".
+	// ConfigPendingSince is when this node FIRST stopped being converged —
+	// nil whenever ConfigSyncState is synced or never-captured.
+	//
+	// Set once and not refreshed while the node stays un-converged, which is
+	// the whole point: reconcile re-marks a stuck node pending on every cycle,
+	// so a stamp rewritten on each write would reset the clock every fifteen
+	// minutes and the age could never grow past one cycle. An operator needs
+	// to tell ten seconds from three days, and that difference is the only
+	// thing that says whether to wait or to go look.
+	//
+	// Deliberately NOT ConfigSyncedAt, which is already doing two jobs: it is
+	// the "last captured" timestamp the admin UI renders, and it is the
+	// optimistic-concurrency token sameSyncStamp compares to detect a
+	// concurrent write. Overloading it a third time would break both.
+	ConfigPendingSince *time.Time
+	// ConfigSyncState is one of the ConfigSync* constants below. It was six
+	// bare string literals across five packages until they drifted into
+	// something a reader could not enumerate; the constants exist so the set
+	// is closed and the frontend guard has something to compare against.
 	ConfigSyncState string
 	// ---- Managed certificate binding (v3.6.4) ----
 	// CertSource discriminates how this inbound's TLS certificate is
@@ -678,6 +767,24 @@ const (
 	// failed — i.e. the proxy endpoint isn't actually reachable from the panel
 	// server. This is the data-plane probe layered on top of the inbound check.
 	NodeHealthUnreachable NodeHealthState = "unreachable"
+	// NodeHealthInconclusive means the probe RAN and could not decide. It is
+	// deliberately distinct from NodeHealthUnknown ("" = never probed): a
+	// detector that cannot see is not the same fact as a detector that has not
+	// looked yet, and collapsing the two is how a blind probe starts reading as
+	// a clean fleet.
+	//
+	// It exists because of connectionless UDP. A QUIC endpoint that answers our
+	// version-negotiation probe is provably up; one that returns ICMP
+	// port-unreachable is provably down; SILENCE is neither — it is a filtered
+	// port, a dead host, or a live Hysteria2 server with obfuscation enabled
+	// that is designed not to answer strangers. Reporting silence as "ok" (what
+	// this code did until 2026-09-09) made the UDP probe structurally incapable
+	// of ever saying anything but "up".
+	//
+	// Consumers must treat it as "not healthy" but NOT as an alert: an
+	// obfuscated node is permanently unprobeable, and a detector that fires
+	// forever on a condition nobody can fix trains its reader to ignore it.
+	NodeHealthInconclusive NodeHealthState = "inconclusive"
 )
 
 // NodeTrafficSnapshot is the per-node analogue of TrafficSnapshot: a

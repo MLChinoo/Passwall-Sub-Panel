@@ -75,6 +75,8 @@ import { PagedTableFooter } from '@/components/PagedTableFooter'
 import { pushSnack } from '@/components/SnackbarHost'
 import { useTabParam } from '@/hooks/useTabParam'
 import RealityTargetScannerDialog from './RealityTargetScannerDialog'
+import { nodeHealthColor } from './nodeHealth'
+import { CONFIG_SYNC_KEY, CONFIG_SYNC_STATES, configSyncColor, humanizeSince, type ConfigSyncState } from './configSync'
 import { TLSCipherSuitesSelect } from './TLSCipherSuitesSelect'
 import {
   type FieldErrors,
@@ -280,6 +282,7 @@ interface InboundFormState {
   public_key: string
   short_ids_text: string
   reality_fingerprint: string
+  reality_support_x25519mlkem768: boolean
   reality_spider_x: string
   reality_xver: number
   reality_max_timediff: number
@@ -410,11 +413,13 @@ const EMPTY_INBOUND: InboundFormState = {
   public_key: '',
   short_ids_text: '',
   reality_fingerprint: 'chrome',
+  reality_support_x25519mlkem768: false,
   reality_spider_x: '/ai',
   reality_xver: 0,
   reality_max_timediff: 0,
   // Default new REALITY inbounds to minClientVer 1.0.0 (= no version gate).
-  // xray-core >= 26.7.11 treats an EMPTY minClientVer as "26.3.27", which
+  // xray-core 26.7.11 through 26.7.28 treats an EMPTY minClientVer as
+  // "26.3.27", which
   // rejects mihomo/Clash Verge (hardcoded client version 1.8.2) and older
   // cores — so an empty default silently breaks every new node. Existing
   // nodes are unaffected: parseInboundForEdit overrides this with the panel's
@@ -480,7 +485,7 @@ const VLESS_SECURITIES: { value: VlessSecurity; label: string }[] = [
   { value: 'tls', label: 'TLS' },
   { value: 'reality', label: 'Reality' },
 ]
-const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized']
+const FINGERPRINTS = ['chrome', 'firefox', 'safari']
 const VLESS_FLOWS = ['', 'xtls-rprx-vision', 'xtls-rprx-vision-udp443']
 
 // hostFromURL extracts just the hostname from a 3X-UI panel URL so it can
@@ -745,6 +750,7 @@ function buildStreamSettings(f: InboundFormState): unknown {
   if (security === 'tls') {
     stream.tlsSettings = buildTLSSettings(f)
   } else if (security === 'reality') {
+    const realityFingerprint = f.reality_support_x25519mlkem768 ? 'chrome' : f.reality_fingerprint
     // REALITY field names follow 3X-UI's frontend model (target /
     // minClientVer / maxClientVer) so the inbound round-trips cleanly
     // when an admin opens it in 3X-UI's own web UI. xray-core itself
@@ -766,7 +772,8 @@ function buildStreamSettings(f: InboundFormState): unknown {
       mldsa65Seed: '',
       settings: {
         publicKey: f.public_key,
-        fingerprint: f.reality_fingerprint,
+        fingerprint: realityFingerprint,
+        supportX25519MLKEM768: f.reality_support_x25519mlkem768,
         serverName: '',
         spiderX: f.reality_spider_x || '/ai',
         // mldsa65Verify is the client-side counterpart; same parity
@@ -1013,7 +1020,10 @@ function parseInboundForEdit(node: Node, ib: InboundDetail): InboundFormState {
     private_key: stringValue(reality.privateKey),
     public_key: stringValue(realityInner.publicKey),
     short_ids_text: listToText(reality.shortIds),
-    reality_fingerprint: stringValue(realityInner.fingerprint, 'chrome'),
+    reality_fingerprint: boolValue(realityInner.supportX25519MLKEM768)
+      ? 'chrome'
+      : stringValue(realityInner.fingerprint, 'chrome'),
+    reality_support_x25519mlkem768: boolValue(realityInner.supportX25519MLKEM768),
     reality_spider_x: stringValue(realityInner.spiderX, '/ai'),
     reality_xver: numberValue(reality.xver),
     reality_max_timediff: numberValue(reality.maxTimediff),
@@ -1708,6 +1718,7 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                   <TextField select size="small" label={t('admin:nodes.create_dialog.reality_fingerprint')}
                     value={form.reality_fingerprint}
                     onChange={e => update('reality_fingerprint', e.target.value)}
+                    disabled={form.reality_support_x25519mlkem768}
                     sx={{ flex: '1 1 180px', minWidth: 140 }}>
                     {FINGERPRINTS.map(fp => <MenuItem key={fp} value={fp}>{fp}</MenuItem>)}
                   </TextField>
@@ -1716,6 +1727,28 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                     onChange={e => update('reality_spider_x', e.target.value)}
                     sx={{ flex: '1 1 180px' }} />}
                 </Box>
+                <FormControlLabel
+                  control={<Switch size="small"
+                    checked={form.reality_support_x25519mlkem768}
+                    onChange={(_, checked) => setForm(prev => ({
+                      ...prev,
+                      reality_support_x25519mlkem768: checked,
+                      reality_fingerprint: checked ? 'chrome' : prev.reality_fingerprint,
+                    }))}
+                    slotProps={{ input: { 'aria-label': t('admin:nodes.create_dialog.reality_support_x25519mlkem768') } }} />}
+                  label={<Box>
+                    <Typography sx={{ fontSize: 13, lineHeight: 1.5 }}>
+                      {t('admin:nodes.create_dialog.reality_support_x25519mlkem768')}
+                    </Typography>
+                    <Typography sx={{ mt: 0.25, fontSize: 12, color: md.onSurfaceVariant }}>
+                      {t('admin:nodes.create_dialog.reality_support_x25519mlkem768_hint')}
+                    </Typography>
+                  </Box>}
+                  sx={{
+                    ml: 0, mr: 0, alignItems: 'flex-start',
+                    '& .MuiSwitch-root': { flexShrink: 0 },
+                    '& .MuiFormControlLabel-label': { ml: 1, pt: 0.25 },
+                  }} />
                 <TextField required size="small" fullWidth label={t('admin:nodes.create_dialog.private_key')}
                   value={form.private_key}
                   onChange={e => update('private_key', e.target.value)}
@@ -1730,8 +1763,9 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                   sx={{ '& input': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 13, py: 1.25 } }} />
                 {/* minClientVer / maxClientVer gate the REALITY handshake by the
                     client's self-reported xray-core version. Both empty = no gate
-                    (pre-3.5 behavior). IMPORTANT: xray-core >= 26.7.11 changed an
-                    EMPTY minClientVer to default to "26.3.27" server-side, which
+                    (pre-3.5 behavior). IMPORTANT: xray-core 26.7.11 through
+                    26.7.28 changed an EMPTY minClientVer to default to "26.3.27"
+                    server-side, which
                     rejects mihomo/Clash-Verge (they hardcode client version 1.8.2)
                     and any older core — set minClientVer to "1.0.0" to restore the
                     open behavior. See docs/3xui-compat.md 2026-07-13. */}
@@ -2758,14 +2792,21 @@ export default function NodesView() {
       return <Typography sx={{ fontSize: 13, color: md.onSurfaceVariant }}>—</Typography>
     }
     const state = n.health_state || ''
-    const palette: Record<string, { bg: string; label: string }> = {
-      ok:                   { bg: '#22c55e', label: t('admin:nodes.health.ok',                   { defaultValue: '健康' }) },
-      panel_unreachable:    { bg: md.error,  label: t('admin:nodes.health.panel_unreachable',    { defaultValue: '面板不可达' }) },
-      inbound_missing:      { bg: '#f97316', label: t('admin:nodes.health.inbound_missing',      { defaultValue: 'Inbound 缺失' }) },
-      inbound_disabled:     { bg: '#9ca3af', label: t('admin:nodes.health.inbound_disabled',     { defaultValue: 'Inbound 已关闭' }) },
-      '':                   { bg: md.outlineVariant, label: t('admin:nodes.health.unknown',      { defaultValue: '尚未探测' }) },
+    // Colour comes from nodeHealth.ts so the guard in nodeHealth.test.ts governs
+    // what actually renders here, rather than a second copy of the table that
+    // can drift from it. The label still falls back to the never-probed wording
+    // for an unrecognised state, but every state the backend can write now has
+    // its own key — which is what the guard asserts.
+    const labels: Record<string, string> = {
+      ok:                t('admin:nodes.health.ok',                { defaultValue: '健康' }),
+      unreachable:       t('admin:nodes.health.unreachable',       { defaultValue: '不可达' }),
+      inconclusive:      t('admin:nodes.health.inconclusive',      { defaultValue: '无法判定' }),
+      panel_unreachable: t('admin:nodes.health.panel_unreachable', { defaultValue: '面板不可达' }),
+      inbound_missing:   t('admin:nodes.health.inbound_missing',   { defaultValue: 'Inbound 缺失' }),
+      inbound_disabled:  t('admin:nodes.health.inbound_disabled',  { defaultValue: 'Inbound 已关闭' }),
+      '':                t('admin:nodes.health.unknown',           { defaultValue: '尚未探测' }),
     }
-    const p = palette[state] ?? palette['']
+    const p = { bg: nodeHealthColor(state, md), label: labels[state] ?? labels[''] }
     const checkedAt = n.health_checked_at ? formatDualTz(n.health_checked_at, panelTz) : t('admin:nodes.health.never', { defaultValue: '尚未运行' })
     const tooltip = (
       <Box sx={{ fontSize: 12, lineHeight: 1.5 }}>
@@ -2786,23 +2827,45 @@ export default function NodesView() {
 
   // configSyncDot renders a small SQUARE (distinct from the round health dot) for
   // the node's inbound-config snapshot state — whether PSP's locally-stored config
-  // (the render truth source since v3.5) is in sync with 3X-UI. "drift"/"pending"
-  // are the states worth noticing (reconcile re-pushes); "synced" is the steady
-  // state; "" means never captured (render live-fetches this node). Only shown for
-  // enabled real nodes — disabled nodes aren't reconciled, so their state is moot.
+  // (the render truth source since v3.5) is in sync with 3X-UI. "synced" is the
+  // steady state; "" means never captured (render live-fetches this node). Only
+  // shown for enabled real nodes — disabled nodes aren't reconciled, so their
+  // state is moot.
+  //
+  // "pending" and "failed" are both push failures and both red, but they ask
+  // different things of the reader: pending has a retry queued, failed has had
+  // its retry cancelled and will not move without the operator. Before failed
+  // existed, a node that had given up kept the pending label and went on
+  // promising a retry that had already been cancelled.
+  //
+  // "drift" is DECLARED BUT UNREACHABLE today — reconcile repairs a drift inside
+  // the same call, so no node ever rests in it. Kept because the backend
+  // constant exists and the day a writer appears the dot should already work.
+  //
+  // The palette falls back to the '' entry for anything it does not recognise,
+  // so a state added on the Go side without copy here renders under the WRONG
+  // label rather than an obvious gap. configSyncStates.test.ts pins the set.
   function configSyncDot(n: Node) {
-    const state = n.config_sync_state || ''
-    const palette: Record<string, { bg: string; label: string }> = {
-      synced:  { bg: '#22c55e',           label: t('admin:nodes.config_sync.synced',     { defaultValue: '配置已同步' }) },
-      drift:   { bg: '#f97316',           label: t('admin:nodes.config_sync.drift',      { defaultValue: '配置漂移（reconcile 将下发对齐）' }) },
-      pending: { bg: md.error,            label: t('admin:nodes.config_sync.pending',    { defaultValue: '配置下发待重试' }) },
-      '':      { bg: md.outlineVariant,   label: t('admin:nodes.config_sync.uncaptured', { defaultValue: '未捕获本地配置（渲染时回源）' }) },
+    const raw = n.config_sync_state || ''
+    const state = (CONFIG_SYNC_STATES as readonly string[]).includes(raw) ? (raw as ConfigSyncState) : ''
+    const p = {
+      bg: configSyncColor(state, md),
+      label: t(`admin:nodes.config_sync.${CONFIG_SYNC_KEY[state]}`),
     }
-    const p = palette[state] ?? palette['']
     const syncedAt = n.config_synced_at ? formatDualTz(n.config_synced_at, panelTz) : t('admin:nodes.config_sync.never', { defaultValue: '尚未捕获' })
+    // How long it has been un-converged, which is the number that says whether
+    // to wait or to go and look. Rendered only when the server sent it: a node
+    // that is fine, and a row written before the column existed, both send
+    // nothing — and "no lag" must not be drawn as "zero lag".
+    const lag = n.config_pending_since ? humanizeSince(n.config_pending_since) : ''
     const tooltip = (
       <Box sx={{ fontSize: 12, lineHeight: 1.5 }}>
         <Box sx={{ fontWeight: 600, mb: 0.25 }}>{p.label}</Box>
+        {lag && (
+          <Box sx={{ opacity: 0.85 }}>
+            {t('admin:nodes.config_sync.stuck_for', { age: lag, defaultValue: `已 ${lag} 未同步` })}
+          </Box>
+        )}
         <Box sx={{ opacity: 0.7 }}>{t('admin:nodes.config_sync.synced_at', { time: syncedAt, defaultValue: `上次捕获：${syncedAt}` })}</Box>
       </Box>
     )

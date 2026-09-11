@@ -1,13 +1,30 @@
 // Package reconcile runs the layered drift-detection job described in
-// docs/ARCHITECTURE.md §9.4. Three triggers share the same checks:
+// docs/ARCHITECTURE.md §9.4.
 //
-//   - L1 immediate post-write verification (called from SyncSvc; not yet wired)
-//   - L2 lightweight scan piggy-backed on TrafficSvc (every 5 min)
-//   - L3 full reconciliation cron (default every 15 min)
+// Of the three triggers that design names, ONE exists:
 //
-// All checks operate only on rows present in the ownership table. Clients
-// outside that table (operator's own clients and unimported users)
-// are never touched.
+//   - L1 immediate post-write verification (from SyncSvc) — not wired
+//   - L2 lightweight scan piggy-backed on TrafficSvc — not wired either, and
+//     LevelLight, the depth it would run at, is passed by nobody: both RunOnce
+//     call sites pass LevelFull
+//   - L3 full reconciliation cron (CronReconcileMinutes, default 15 min) — this
+//     is the whole job today
+//
+// Stated rather than quietly left as aspiration: a design note that reads as
+// present tense gets cited as fact long after the implementation diverged.
+//
+// TWO AXES, and they are driven by different tables:
+//
+//   - per-CLIENT checks (checkOne, checkMissingOwnerships) iterate the LEGACY
+//     ownership table, which the shared-client migration DROPs. On a migrated
+//     install they scan nothing, and Report.Scanned is permanently 0. Per-user
+//     credential and limit drift is healed by user.HealSharedClients instead,
+//     which merely shares this package's ticker (every 4th tick).
+//   - per-NODE checks (checkNodes) are driven by the nodes table and the panel
+//     prefetch, so they run on every install.
+//
+// Clients outside PSP's own bookkeeping (an operator's own clients, unimported
+// users) are never touched by either axis.
 package reconcile
 
 import (
@@ -409,8 +426,14 @@ func (s *Service) checkMissingOwnershipsWithCtx(
 		// whenever Node.Flow was blank — a broken xtls-rprx-vision connection.
 		flow := resolveFlow(protocol, n, ce)
 
-		// Quota and connection caps left zero (= unlimited); the next
-		// traffic-poll cycle pushes the real ones. Reconcile only heals drift.
+		// The connection caps ARE carried (IPLimit/DeviceLimit below); only the
+		// QUOTA is left at zero, which the panel reads as no cap. The comment
+		// here used to claim both were zero and that "the next traffic-poll
+		// cycle pushes the real ones" — the poll's floor re-push is gated on the
+		// user having moved bytes that cycle, so for an idle user it does not.
+		// This path is reached only with an EffectiveEnabled gate above it
+		// (unlike checkOne's), so Enable is genuinely known-true here rather
+		// than assumed.
 		err = s.syncer.AddClientToInbound(ctx, u.ID, n.PanelID, n.InboundID, protocol, ce.method, u.UUID, email, flow,
 			domain.UserLifecycle{Enable: true, ExpiryTime: expireTime, IPLimit: u.IPLimit, DeviceLimit: u.DeviceLimit}, 0)
 
@@ -497,7 +520,7 @@ func prefetchInbounds(ctx context.Context, pool ports.XUIPool,
 				inbound: inb,
 				clients: settings.Clients,
 				method:  settings.Method,
-				flow:    firstClientFlow(settings.Clients),
+				flow:    xrayspec.FirstClientFlow(settings.Clients),
 			}
 			cached++
 		}
@@ -539,19 +562,10 @@ func (s *Service) loadInbound(ctx context.Context, cache map[inboundCacheKey]*in
 		inbound: inb,
 		clients: settings.Clients,
 		method:  settings.Method,
-		flow:    firstClientFlow(settings.Clients),
+		flow:    xrayspec.FirstClientFlow(settings.Clients),
 	}
 	cache[key] = entry
 	return entry, nil
-}
-
-func firstClientFlow(clients []xrayspec.InboundClient) string {
-	for _, c := range clients {
-		if c.Flow != "" {
-			return c.Flow
-		}
-	}
-	return ""
 }
 
 // resolveFlow returns the VLESS flow PSP should push for a client on this
@@ -630,9 +644,16 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 
 	// Check 1: existence
 	if found == nil {
+		// desiredEnable, NOT a hardcoded true. This recreates a client that went
+		// missing, and it used to recreate it ENABLED regardless of the user's
+		// real state — so a suspended or expired account whose client vanished
+		// came back serving traffic, and stayed that way until Check 3 caught it
+		// on a LATER pass (the cron is 15 minutes by default). The entries loop
+		// here has no EffectiveEnabled gate of its own, so nothing else was
+		// holding that line.
 		if err := s.syncer.AddClientToInbound(ctx, u.ID, e.PanelID, e.InboundID,
 			protocol, ce.method, u.UUID, e.ClientEmail, desiredFlow,
-			domain.UserLifecycle{Enable: true, ExpiryTime: expireTime, IPLimit: u.IPLimit, DeviceLimit: u.DeviceLimit}, 0); err != nil {
+			domain.UserLifecycle{Enable: desiredEnable, ExpiryTime: expireTime, IPLimit: u.IPLimit, DeviceLimit: u.DeviceLimit}, 0); err != nil {
 			return &Issue{
 				PanelID:   e.PanelID,
 				PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
@@ -739,8 +760,18 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 	// on — manifested as "auto-fixed 10 issues" every single reconcile
 	// click. The drift-healing path that does fire here (expire only)
 	// reuses the existing SetOwnedClientEnable signature; we pass totalGB=0
-	// only because the helper requires it — the per-client floor is
-	// re-asserted by the very next traffic poll regardless.
+	// only because the helper requires it.
+	//
+	// This used to say the floor is "re-asserted by the very next traffic poll
+	// regardless". That is FALSE and the word did real work here: the poll's
+	// re-push is gated on the user having moved bytes this cycle
+	// (traffic.go: `if totals.deltaTotal == 0 { return nil }`). So for an IDLE
+	// user the 0 written here — which the panel reads as "no cap" — is not
+	// corrected until they next transmit. The offline safety net exists
+	// precisely for "PSP is down and the user starts consuming", so it is off
+	// during the window right before the case it was built for. Narrow (needs
+	// an expiry drift to fire at all) but real; audited 2026-09-09, see
+	// docs/adr/0025-push-pull-decision-rule.md.
 	if found.ExpiryTime != expireTime {
 		if err := s.syncer.SetOwnedClientEnable(ctx, e.PanelID, e.InboundID, e.ClientEmail,
 			protocol, ce.method, u.UUID, desiredFlow,
@@ -758,28 +789,15 @@ func (s *Service) checkOne(ctx context.Context, u *domain.User, e *domain.XUICli
 		}, true
 	}
 
-	// Check 6 (REPORT ONLY): PSP's rendered link disagrees with the flow the
-	// panel stores — see flowRenderDiverges for why that state exists. 3X-UI
-	// 3.7.0 makes it reachable without anyone touching PSP: its Vision-flow
-	// restore paths write settings.clients[].flow from flow_override, a column
-	// PSP never reads.
+	// The flow-render divergence check used to live here as "check 6". It is now
+	// reportFlowRenderDivergence, called from checkNodes.
 	//
-	// Reported, never healed, and deliberately last: healing would mean either
-	// clearing the operator's flow (the regression resolveFlow's comment
-	// documents) or writing it into Node.Flow, which is an operator decision
-	// about what PSP should render, not drift for reconcile to resolve silently.
-	// Running it after every healing check also keeps it from masking fixable
-	// drift — checkOne returns on its first issue, so anything actionable is
-	// handled first and this only fires when nothing else did.
-	if flowRenderDiverges(protocol, n, found.Flow) {
-		return &Issue{
-			PanelID:   e.PanelID,
-			PanelName: s.panelNameOf(e.PanelID), InboundID: e.InboundID, ClientEmail: e.ClientEmail,
-			Code: "flow_render_divergence",
-			Detail: fmt.Sprintf("panel stores flow %q but the node has no flow set, so PSP renders a link without one; "+
-				"set the node's flow to %q to match, or clear it in 3X-UI", found.Flow, found.Flow),
-		}, false
-	}
+	// It had to move because checkOne only ever runs over LEGACY OWNERSHIP ROWS,
+	// and the shared-client migration DROPs that table — so on any migrated
+	// install this loop iterates nothing and a per-client check here can never
+	// fire. The detector added for 3.7.0 was dead exactly where 3.7.0 made the
+	// state reachable. The datum is node-level anyway (Node.Flow versus the
+	// inbound's own flow), so checkNodes is where it belonged.
 
 	return nil, false
 }
@@ -860,8 +878,42 @@ func (s *Service) checkNodes(ctx context.Context, report *Report, cache map[inbo
 			}
 			continue
 		}
+		s.reportFlowRenderDivergence(n, entry, report)
 		s.reconcileInboundConfig(ctx, n, entry.inbound, report)
 	}
+}
+
+// reportFlowRenderDivergence surfaces the one state in which PSP pushes a flow
+// it does not render: Node.Flow blank while the inbound itself carries one.
+//
+// REPORT ONLY, and the restraint is deliberate. Healing would mean either
+// clearing the operator's flow in 3X-UI (the regression resolveFlow's comment
+// records) or writing the panel's value into Node.Flow — a decision about what
+// PSP should RENDER, which is the operator's, not drift for reconcile to
+// resolve silently across a whole fleet.
+//
+// What has changed since that call was made is the cost of leaving it: the
+// shared-client path has no panel fallback (clientplan derives from Node.Flow
+// alone), so on a migrated install this state no longer merely renders a bad
+// link — it PROVISIONS a flowless client. ImportExisting now adopts the
+// inbound's flow so new imports cannot land here; rows imported before that
+// still can, which is who this report is for.
+//
+// Runs before reconcileInboundConfig so it is not skipped by that function's
+// early returns, and per NODE rather than per client: Node.Flow is a node
+// column, so one blank produces one issue however many users are on it.
+func (s *Service) reportFlowRenderDivergence(n *domain.Node, entry *inboundCacheEntry, report *Report) {
+	if entry == nil || !flowRenderDiverges(domain.Protocol(n.Protocol), n, entry.flow) {
+		return
+	}
+	report.Issues = append(report.Issues, Issue{
+		PanelID:   n.PanelID,
+		PanelName: s.panelNameOf(n.PanelID), InboundID: n.InboundID,
+		Code: "flow_render_divergence",
+		Detail: fmt.Sprintf("node id=%d: the inbound uses flow %q but the node has none set, so PSP renders links without one "+
+			"and provisions shared clients without one; set the node's flow to %q to match, or clear it in 3X-UI",
+			n.ID, entry.flow, entry.flow),
+	})
 }
 
 // reconcileInboundConfig maintains the v3.5 axis-A invariant: PSP is the
@@ -943,7 +995,14 @@ func (s *Service) reconcileInboundConfig(ctx context.Context, n *domain.Node, li
 	if err != nil {
 		return
 	}
-	spec := inboundcfg.SpecFromNode(n)
+	spec, serr := inboundcfg.SpecFromNode(n)
+	if serr != nil {
+		// Refusing to push is the whole point: a node with no captured port is
+		// mid-backfill, and sending port 0 would break a listener that is
+		// currently working. Reported rather than skipped silently.
+		s.recordInboundConfigEvent(ctx, report, n, "inbound_config_push_skipped_no_port", serr.Error(), false)
+		return
+	}
 	// remark is operator-owned: an axis-A drift push must never overwrite a
 	// rename made directly in 3X-UI (InSync already ignores remark, so a
 	// remark-only change isn't even why we're here). Carry the live remark
@@ -1010,10 +1069,10 @@ func (s *Service) recordInboundConfigEvent(ctx context.Context, report *Report, 
 // via inboundcfg.Capture / markSynced. Best-effort: a DB failure here doesn't
 // matter — the same condition will re-trigger next cycle.
 func (s *Service) markConfigSyncStatePending(ctx context.Context, n *domain.Node) {
-	if n.ConfigSyncState == "pending" {
+	if n.ConfigSyncState == domain.ConfigSyncPending {
 		return
 	}
-	n.ConfigSyncState = "pending"
+	n.SetConfigSyncState(domain.ConfigSyncPending, time.Now())
 	_ = s.nodes.UpdateInboundConfig(ctx, n)
 }
 

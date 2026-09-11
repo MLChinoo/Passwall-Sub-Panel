@@ -84,6 +84,13 @@ type Deps struct {
 	Geo        *geo.Service
 	Async      AsyncDispatcher
 
+	// SharedClients answers, for one user, which panels hold their clients and
+	// whether each can store the connection caps. Read-only; serves the
+	// /limit-enforcement endpoint. Optional for the same reason GeoRecords is:
+	// absent, that endpoint answers 503 rather than an empty list, so "this
+	// build cannot tell you" stays distinguishable from "nothing is wrong".
+	SharedClients handler.LimitEnforcementReader
+
 	// EnrollProbe asks a candidate panel who it is, for a panel spec that is
 	// NOT yet in the pool. Node enrollment needs it: nothing may be stored
 	// until one of the node's addresses has actually answered, and a panel row
@@ -149,6 +156,12 @@ func NewRouter(d Deps) stdhttp.Handler {
 	// Referrer-Policy / CSP). Mounted early so every later handler — SPA
 	// fallback, SAML metadata, sub render — picks them up by default.
 	g.Use(middleware.SecurityHeaders())
+	// Mark /api responses uncacheable. Mounted right after SecurityHeaders and
+	// before every route so the default applies, while a handler that has
+	// thought about its own caching (/api/i18n/:lang serves no-cache + ETag)
+	// still overrides it. See NoStoreAPI for why the absence of a directive was
+	// not the same as "do not cache".
+	g.Use(middleware.NoStoreAPI())
 	// Stash the trusted-proxy decision into each request's context so handler
 	// helpers holding only an *http.Request (sub-URL inference, SAML SP entity
 	// URLs) can refuse to honour an attacker-supplied X-Forwarded-Host.
@@ -363,7 +376,8 @@ func NewRouter(d Deps) stdhttp.Handler {
 		require2FAGate,
 	)
 	{
-		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings, d.Mail, d.Async, twofaSvc, passkeySvc)
+		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings, d.Mail, d.Async, twofaSvc, passkeySvc).
+			WithLimitEnforcement(d.SharedClients, d.Repos.XUIPanel)
 		// User CRUD is the operator's bread and butter. Handler-level guard
 		// in users.Update prevents operators from creating/promoting other
 		// admins or modifying an existing admin's role.
@@ -385,6 +399,11 @@ func NewRouter(d Deps) stdhttp.Handler {
 		staffGroup.POST("/users/:id/unlink-sso", users.UnlinkSSO)
 		staffGroup.POST("/users/:id/set-enabled", users.SetEnabled)
 		staffGroup.POST("/users/:id/set-service-status", users.SetServiceStatus)
+		// adminGroup, not staffGroup: the answer names every panel the user is
+		// on and how each one is configured, which is deployment shape rather
+		// than day-to-day user work — the same line the diagnostics snapshot
+		// is held to.
+		adminGroup.GET("/users/:id/limit-enforcement", users.LimitEnforcement)
 		staffGroup.GET("/users/:id/rules", users.GetRules)
 		staffGroup.PUT("/users/:id/rules", users.PutRules)
 

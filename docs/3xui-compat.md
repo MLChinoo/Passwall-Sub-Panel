@@ -18,6 +18,14 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 | v3.4.x | 3.0.x | 3.0.x | 同上 |
 | ≤ v3.3.x | 2.x – 3.0.x | 3.0.x | 历史兼容性见 CHANGELOG |
 
+### S-UI
+
+| PSP 版本 | 最低 S-UI | 已实测通过 | 备注 |
+|---|---|---|---|
+| **v3.9.2+** | 未发布 | **1.6.0** | 实机验证（2026-09-09）。没有编译期 floor —— 与 `MinXUI` 的这个不对称是刻意的，理由见 `internal/version/compat_sui.go` |
+
+> S-UI 侧没有 `min_sui`：上限验过了，但「支持到多旧」从来没有人确立过，而 `CheckSUI` 只对**显式发布过的** floor 报 too_old。
+
 > 这张表是人看的速查；运行时真相源是 `docs/compat/v3.json`。`min_xui` 和 `max_tested_xui` 两个字段**都已接入运行时**(PSP 按需拉取并据此判 too_old / untested)。
 
 **规则**:
@@ -26,6 +34,42 @@ PSP 通过 `/panel/api/*` 对接 3X-UI 面板。本文档维护两件事：
 - 任何高于"已实测通过"的 3X-UI 版本都属于**未知风险**——升级前先在一台 panel 上小流量验证
 
 ## 历史兼容性事件
+
+### 2026-09-09 / S-UI 1.6.0 实机复核 → 已测上限 1.5.5 抬到 1.6.0
+
+**这一条是被自动发现的，不是被人想起来的。** `cmd/compatwatch` 的**第一次运行**就报了
+S-UI 上限落后：上游已发 v1.6.0，而 `max_tested_sui` 还停在 1.5.5。在此之前**从来没有任何东西
+看过 `alireza0/s-ui`** —— PSP 只为管理页的角标去拉 3X-UI 的 latest。
+
+**先做源码核，用来决定实机要盯什么**（`git diff v1.5.5..v1.6.0`，96 文件 / +5451）：
+
+- `api/`、`web/`、`middleware/` **完全未改** → `/apiv2` 路由、`Token` 头认证、
+  `{success,msg,obj}` 信封都没动。
+- `database/model/model.go`（`Client` 和 `Inbound` 都在这里，也就是 PSP 读写的全部形状）
+  **逐字节相同**；`service/inbound.go` 未改。
+- 这个版本的体量来自一整套 sing-box 1.14 迁移，作用对象是**全局 `config` 设置**
+  （dns / experimental / route）和 **TLS 对象**——两者 PSP 都不是作者。
+
+**唯一落在 PSP 写入路径上的行为变化**：`service/client.go` 新增 `validateClientName`——
+拒绝空名、拒绝与其它客户端**全局重名**（更新时豁免 `id != client.Id`）、保存前 trim。
+PSP 三条都满足：客户端名就是 PSP 的 email，非空；
+按 `uk_psp_client(panel_id, email)` 每面板唯一；不含空白（`admin_settings.go:309`
+在写入边界 trim 了 `email_domain`）；而 `UpdateClient` 先读回 model 再保存，所以行自己的
+id 在场，唯一性检查会豁免它。**净效果是变好**：一个与既有客户端赛跑的创建现在会报错，
+而不是悄悄产生一个重复行，PSP 现有的错误路径会把它排进重试。
+
+**实机验证**：从 v1.6.0 tag 用仓库自己的 `build.sh` 流程构建（Go + `s-ui-frontend` 子模块），
+起一个 scratch 面板，用 PSP **自己的适配器**跑 `TestLive_SUISurface`——
+**14 个方法、23 处断言全过**，`GetServerStatus` 报 appVersion `1.6.0`（正是兼容闸读的那个字段），
+core running。新校验的空名分支也在这个面板上确认触发
+（`save: client name must not be empty`），与重名分支同属一个函数。
+
+**未验证的（适配器本来就不实现）**：`SetInboundEnable`（S-UI 没有 per-inbound 开关）、
+IP / 设备上限（S-UI 的 client 模型两者都没有，通过能力 API 声明）。
+
+同时发布了 **S-UI 的第一条 advisory**（1.6.0，warning）：sing-box 1.14 会一次性改写管理员的
+全局配置，而且**有两处它不会替你改**——legacy DNS address 过滤器和 DNS 规则的 `strategy`
+动作，因为迁移它们要重排规则并插入 evaluate 动作、会改变解析结果，得手工转换。
 
 ### 2026-08-26 / 3X-UI 3.7.0 实机复核 → 已测上限 3.6.0 抬到 3.7.0
 
@@ -123,6 +167,14 @@ delta 虽大但没碰 PSP 的面：PSP 调用的 inbound / client / server **con
 **安全与资源边界**：扫描 API 仅 admin 可用，PSP 侧按来源 IP 限制每分钟 6 次、输入文本上限 16 KiB；3X-UI 侧继续负责 SSRF 防护、最多 32 并发、CIDR 最多 256 IP、总任务最多 512。CIDR 最坏情况可能超过普通 API 的 30 秒，PSP 只为该请求单独放宽到 75 秒。
 
 **兼容矩阵处理**：`version.MinXUI` 与 v3 compat 最新 entry 同步设为 3.4.2；另保留窄范围 `v3.9.0..v3.9.0` entry（min 3.3.0），避免篡改历史版本事实。
+
+### 2026-09-10 / xray-core 26.9.8 REALITY 强制 X25519MLKEM768
+
+**背景**: xray-core v26.9.8 合入 XTLS/REALITY `8cdf7bf` 后，REALITY 服务端要求 Client Hello 的 key share 包含 `X25519MLKEM768`，并且必须位于可选的 `X25519` 之前；不满足时连接会回落到伪装目标。Mihomo 默认会移除该 key share，需要在 `reality-opts` 中显式设置 `support-x25519mlkem768: true`。
+
+**PSP 处理**: Fingerprint 候选项收窄为 `chrome`、`firefox`、`safari`。节点表单新增“支持 X25519-MLKEM768 密钥交换”开关；该值持久化为 `realitySettings.settings.supportX25519MLKEM768`，并直接渲染为 Mihomo 的 `reality-opts.support-x25519mlkem768`。开启时在表单、Mihomo、sing-box 与 URI 渲染层统一强制 Fingerprint 为 `chrome`。
+
+**限制**: `support-x25519mlkem768` 是 Mihomo 专用字段，`vless://` 分享链接和 sing-box 配置没有对应开关；这两种输出只能通过强制 `chrome` Fingerprint 表达兼容意图。当前 Mihomo 所用 uTLS 中也只有 `chrome` 会携带所需混合 key share，因此不能仅开启布尔开关而保留其他 Fingerprint。
 
 ### 2026-07-13 / 3X-UI 3.5.0(xray-core 26.7.11)REALITY 认证回归 → minClientVer 显式设置修复
 
@@ -298,6 +350,34 @@ PSP `rawInbound` 这四个字段定义为 Go `string`,`json.Unmarshal` 一个 ob
 
 每个 PSP major 一个 JSON 文件(v3.x 都拉 `docs/compat/v3.json`,v4.x 都拉 `v4.json`)。
 这是 v3.6.0-beta.7 引入的 per-major 分文件设计,理由见 ARCHITECTURE.md。
+
+### 什么时候会有人告诉你该改了（2026-09-09 起自动化）
+
+`max_tested_xui` / `max_tested_sui` 是这个文件里**唯一一个没人动它也会过期**的事实——
+它是一句关于「上游还在发版」的断言。而它过期的表现是**单向沉默的**：PSP 会拒绝一次
+超出已测上限的面板升级（`version.MaxTestedXUI`），所以**管理员被挡住了，而能改这个
+文件的人什么都不知道**，有时要过好几个月。
+
+`.github/workflows/compat-watch.yml` 每周一跑 `cmd/compatwatch`，把两个上游的
+`/releases/latest` 跟这个文件里**最新那条 entry**（`psp_max` 最大的，与
+`TestMinXUIConstMatchesCompatJSON` 同一条选择规则）的上限比一次。
+
+三种结果，**两种是红的**：
+
+| 退出码 | 含义 | 你该做什么 |
+|---|---|---|
+| 0 | 两个上游都没超过上限 | 无 |
+| 1 | 某个上游发版超过了上限 | 走下面的复核流程，**人工**抬上限 |
+| 2 | **比不出来**（上游仓库搬家、API 变形、被限流） | 修 watcher —— 这**不是**「一切正常」 |
+
+退出码 2 也是红的，是刻意的：一个我们**读不到发布列表**的上游，和一个**什么都没发**的
+上游，在监控上长得一模一样，把两者合并就等于把一个坏掉的探测器变成一张健康证明。
+（这条规则由 `TestUnknownIsNeverAnAllClear` 和 `TestCompareCeilingNeverCallsAnUnanswerableQuestionCurrent`
+守着，两个都做过变异验证。）
+
+**这个 job 永远不会自己改这个文件。** 抬上限的全部价值就在于「有人真的验过」，
+一个自动 bump 数字的 job 恰好是在断言它没有检查过的那件事。它只负责让「该复核了」
+这件事**可见**。
 
 ### 何时改 / 改什么
 

@@ -9,6 +9,8 @@ package inboundcfg
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -115,11 +117,40 @@ func normalizeSettings(s string) string {
 	return s
 }
 
+// ErrNoPushablePort is returned by SpecFromNode when the snapshot has no usable
+// port. A node legitimately sits at port 0 for a while — a pre-v3.5 row whose
+// port was never captured, or a freshly imported one before reconcile backfills
+// it — so this is a real state, not a corruption. What must never happen is
+// PUSHING it: an inbound spec with port 0 is not a smaller change, it is a
+// broken listener on a node that was serving traffic a moment ago.
+//
+// It became reachable in practice because the health pass wrote port/protocol
+// back from a pass-start snapshot and was the only writer able to reset a port
+// to 0 (fixed alongside this guard, see nodeRepo.UpdateHealth), while the
+// reverse-push path had no check of its own — xui's specToRaw sends whatever it
+// is handed.
+var ErrNoPushablePort = errors.New("node snapshot has no port to push")
+
 // SpecFromNode builds the InboundSpec reconcile pushes to 3X-UI from the node
 // snapshot. Settings carry no clients[]; XUIClient.UpdateInbound's read-modify-
 // write re-merges whatever clients are live, preserving PSP-managed and
 // manually-created clients alike.
-func SpecFromNode(n *domain.Node) ports.InboundSpec {
+//
+// It returns an error rather than exposing a Validate helper on purpose: every
+// caller has to hold the result to use it, so the check cannot be forgotten by
+// a new push path. "Remember to validate" is the mechanism that fails; a type
+// that will not compile without handling it is the one that does not.
+func SpecFromNode(n *domain.Node) (ports.InboundSpec, error) {
+	if n.Port <= 0 {
+		return ports.InboundSpec{}, fmt.Errorf("%w: node id=%d port=%d", ErrNoPushablePort, n.ID, n.Port)
+	}
+	return specFromNodeUnchecked(n), nil
+}
+
+// specFromNodeUnchecked is the assembly half, split out so SpecFromNode's guard
+// cannot be bypassed by a caller reaching for a "raw" variant — it is
+// unexported and has no other callers.
+func specFromNodeUnchecked(n *domain.Node) ports.InboundSpec {
 	return ports.InboundSpec{
 		Remark:         n.InboundRemark,
 		Enable:         n.Enabled,
@@ -195,14 +226,22 @@ func stripRealityFinalmaskTCP(streamSettings string) string {
 // edit form and reconcile never disagree on which nodes are PSP-owned.
 //
 // False for never-captured nodes (ConfigSyncedAt nil: pre-v3.5 rows, or freshly
-// imported before reconcile backfills) and for any non-"synced" state a future
-// writer might set to gate reads off (today only "" / "synced" are written).
+// imported before reconcile backfills). Every OTHER state gates reads off,
+// because in each of them PSP's stored intent is not what the node is running:
+// "pending" and "failed" are both failed pushes, and "drift" means the node
+// disagrees by definition. Serving the snapshot there would hand users a
+// config the node does not have.
+//
+// This comment used to say only the empty value and "synced" were ever
+// written. That stopped being true once "pending" gained four write sites, and
+// a stale comment on the arm that silently governs render is how a live path
+// gets read as dead code.
 func HasLocalConfig(n *domain.Node) bool {
 	if n == nil || n.ConfigSyncedAt == nil {
 		return false
 	}
 	switch n.ConfigSyncState {
-	case "", "synced":
+	case domain.ConfigSyncNeverCaptured, domain.ConfigSyncSynced:
 		return true
 	default:
 		return false
@@ -278,7 +317,7 @@ func InSync(n *domain.Node, live *ports.Inbound) bool {
 func markSynced(n *domain.Node) {
 	now := time.Now()
 	n.ConfigSyncedAt = &now
-	n.ConfigSyncState = "synced"
+	n.SetConfigSyncState(domain.ConfigSyncSynced, now)
 }
 
 // jsonEqual compares two JSON strings semantically: key ordering and whitespace
