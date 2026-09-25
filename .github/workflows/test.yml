@@ -1,4 +1,4 @@
-name: Test
+name: Test and Build Artifacts
 
 # Runs the Go test suite, the SPA type/build check, and a cross-platform compile
 # check. The build job cross-compiles the deployable binary for every release
@@ -8,7 +8,8 @@ name: Test
 # detector. PostgreSQL and MySQL run the DB-adapter package separately; those
 # server dialects reuse an initialized schema for ordinary repository tests
 # while migration/DDL tests retain fresh databases. Every Go test invocation
-# bypasses the Go result cache and uploads output on failure.
+# bypasses the Go result cache and uploads output on failure. Successful runs
+# also publish production-SPA-embedded binaries for every release target.
 #
 # A PR AND A MAIN PUSH ARE NOT THE SAME RUN, in the one place where the
 # difference buys something: a job whose verdict cannot change because of THIS
@@ -19,7 +20,7 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [github-actions]
   pull_request:
   workflow_dispatch:
 
@@ -660,6 +661,13 @@ jobs:
       - name: unit tests
         working-directory: web-react
         run: npm run test
+      - name: upload web bundle for release-target builds
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: internal/web/dist
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
@@ -683,6 +691,7 @@ jobs:
     name: build (cross-compile release targets)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: web
     steps:
       - uses: actions/checkout@v7
       # THE GO BUILD CACHE IS NOT WHAT `cache: true` RESTORES. That input covers
@@ -728,12 +737,15 @@ jobs:
           test -n "$build_toolchain"
           test "$(go env GOVERSION)" = "$build_toolchain"
           test "$(go tool compile -V | awk '{ print $3 }')" = "$build_toolchain"
+      - name: download production web bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: internal/web/dist
       # Cross-compile the deployable binary for every release GOOS/GOARCH. The
-      # binary is pure Go (CGO_ENABLED=0), so this needs no C toolchain. The
-      # committed internal/web/dist/.gitkeep satisfies //go:embed all:dist, so no
-      # SPA build is required just to confirm the Go binary links — the web job
-      # covers the SPA build separately. Output is discarded (-o /dev/null); we
-      # only care that each target compiles.
+      # binary is pure Go (CGO_ENABLED=0), so this needs no C toolchain. The web
+      # job supplies the production SPA so every uploaded binary is directly
+      # runnable rather than embedding the committed empty dist placeholder.
       #
       # NO `set -e`, AND THAT IS THE WHOLE POINT OF THE LOOP'S SHAPE: one target's
       # failure must not end the step for the others. `-u` and `pipefail` stay,
@@ -742,12 +754,22 @@ jobs:
         run: |
           set -uo pipefail
           failed=0
+          mkdir -p out
+          build_date="$(date -u +%FT%TZ)"
+          short_sha="${GITHUB_SHA:0:7}"
+          ldflags="-s -w"
+          ldflags+=" -X github.com/KazuhaHub/passwall-sub-panel/internal/version.Version=dev-${short_sha}"
+          ldflags+=" -X github.com/KazuhaHub/passwall-sub-panel/internal/version.Commit=${short_sha}"
+          ldflags+=" -X github.com/KazuhaHub/passwall-sub-panel/internal/version.BuildDate=${build_date}"
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
           do
             goos=${target%%/*}
             goarch=${target##*/}
+            ext=""
+            if [ "$goos" = windows ]; then ext=".exe"; fi
+            output="out/psp-${goos}-${goarch}${ext}"
             if GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/panel
+              go build -trimpath -ldflags="$ldflags" -o "$output" ./cmd/panel
             then
               echo "ok   $goos/$goarch"
             else
@@ -756,6 +778,48 @@ jobs:
             fi
           done
           exit "$failed"
+      - name: upload linux amd64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-linux-amd64
+          path: out/psp-linux-amd64
+          if-no-files-found: error
+          retention-days: 14
+      - name: upload linux arm64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-linux-arm64
+          path: out/psp-linux-arm64
+          if-no-files-found: error
+          retention-days: 14
+      - name: upload darwin amd64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-darwin-amd64
+          path: out/psp-darwin-amd64
+          if-no-files-found: error
+          retention-days: 14
+      - name: upload darwin arm64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-darwin-arm64
+          path: out/psp-darwin-arm64
+          if-no-files-found: error
+          retention-days: 14
+      - name: upload windows amd64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-windows-amd64
+          path: out/psp-windows-amd64.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: upload windows arm64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: psp-windows-arm64
+          path: out/psp-windows-arm64.exe
+          if-no-files-found: error
+          retention-days: 14
       # SAVED ONLY FROM THE DEFAULT BRANCH, and only by a run that succeeded: a
       # key cannot be overwritten once written, so letting a partially populated
       # cache claim it would freeze the cache below what this job needs — for good.

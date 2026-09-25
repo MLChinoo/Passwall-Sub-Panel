@@ -12,7 +12,7 @@ import { test } from 'node:test'
 // The workflow is read as text rather than parsed as YAML, matching the release
 // guard, so these assertions keep working on a machine that has no YAML library.
 
-const workflow = readFileSync(new URL('../.github/workflows/test.yml', import.meta.url), 'utf8')
+const workflow = readFileSync(new URL('../.github/workflows/test.yml', import.meta.url), 'utf8').replaceAll('\r\n', '\n')
 
 function job(name) {
   const marker = `  ${name}:\n`
@@ -179,6 +179,29 @@ test('the build job compiles every release target, and reports all of them', () 
   assert(!/set -euo pipefail/.test(build), 'set -e in the cross-compile loop aborts before the remaining targets are tried')
   assert(build.includes('failed=1'), 'a failing target must be recorded rather than ending the step')
   assert(build.includes('exit "$failed"'), 'the step must report the failures it collected')
+})
+
+test('downloadable builds embed the production web bundle and publish every target', () => {
+  const web = job('web')
+  const build = job('build')
+  assert(web.includes('name: web-dist'), 'the web job must upload its production dist for the binary build')
+  assert(web.includes('path: internal/web/dist'), 'the uploaded web artifact must be the production dist directory')
+  assert(/^    needs: web$/m.test(build), 'release-target builds must wait for the tested production web bundle')
+  assert(build.includes('uses: actions/download-artifact@v8'), 'the build job must download the production web bundle')
+  assert(build.includes('name: web-dist'), 'the build job must download the web-dist artifact')
+  assert(build.includes('path: internal/web/dist'), 'the web bundle must be restored where go:embed reads it')
+  for (const target of [
+    'linux-amd64',
+    'linux-arm64',
+    'darwin-amd64',
+    'darwin-arm64',
+    'windows-amd64',
+    'windows-arm64',
+  ]) {
+    assert(build.includes(`name: psp-${target}`), `the build job must publish the psp-${target} artifact`)
+    const extension = target.startsWith('windows-') ? '.exe' : ''
+    assert(build.includes(`path: out/psp-${target}${extension}`), `the psp-${target} artifact must contain its compiled binary`)
+  }
 })
 
 // ONE PACKAGE IS HALF THE RACE SUITE, AND PACKAGES CANNOT BALANCE IT.
