@@ -390,6 +390,29 @@ test('go_static\'s build cache key names every tool the job compiles, at its pin
   }
 })
 
+test('downloadable builds embed the production web bundle and publish every target', () => {
+  const web = job('web')
+  const build = job('build')
+  assert(web.includes('name: web-dist'), 'the web job must upload its production dist for the binary build')
+  assert(web.includes('path: internal/web/dist'), 'the uploaded web artifact must be the production dist directory')
+  assert(/^    needs: web$/m.test(build), 'release-target builds must wait for the tested production web bundle')
+  assert(build.includes('uses: actions/download-artifact@v8'), 'the build job must download the production web bundle')
+  assert(build.includes('name: web-dist'), 'the build job must download the web-dist artifact')
+  assert(build.includes('path: internal/web/dist'), 'the web bundle must be restored where go:embed reads it')
+  for (const target of [
+    'linux-amd64',
+    'linux-arm64',
+    'darwin-amd64',
+    'darwin-arm64',
+    'windows-amd64',
+    'windows-arm64',
+  ]) {
+    assert(build.includes(`name: psp-${target}`), `the build job must publish the psp-${target} artifact`)
+    const extension = target.startsWith('windows-') ? '.exe' : ''
+    assert(build.includes(`path: out/psp-${target}${extension}`), `the psp-${target} artifact must contain its compiled binary`)
+  }
+})
+
 // ONE PACKAGE IS HALF THE RACE SUITE, AND PACKAGES CANNOT BALANCE IT.
 //
 // internal/adapters/sqlstore is 174s of the roughly 320s the weights file records,
