@@ -3,6 +3,7 @@ import type { AuthEventFilter } from '@/api/authEvents'
 import type { EmailLogFilter } from '@/api/emailLogs'
 import type { GroupListParams } from '@/api/groups'
 import type { NodeListParams } from '@/api/nodes'
+import type { ConnectionHistoryParams, FlagRecordParams, LiveParams, QueueParams } from '@/api/riskCenter'
 import type { RuleSetListParams } from '@/api/rules'
 import type { ServerListParams } from '@/api/servers'
 import type { SubLogFilter } from '@/api/subLogs'
@@ -36,6 +37,10 @@ export const userKeys = {
   all: (s: QueryScope) => [...privateRoot(s), 'users'] as const,
   lists: (s: QueryScope) => [...userKeys.all(s), 'list'] as const,
   list: (s: QueryScope, params: UserListParams) => [...userKeys.lists(s), params] as const,
+  /** One account, by id (the user picker's name for a picked account).
+   *  Under `all`, so a write that invalidates the users invalidates this
+   *  too. */
+  detail: (s: QueryScope, userId: number) => [...userKeys.all(s), 'detail', userId] as const,
 }
 
 export const trafficKeys = {
@@ -49,6 +54,8 @@ export const trafficKeys = {
   userNodes: (s: QueryScope, userId: number) => [...trafficKeys.all(s), 'user', userId, 'nodes'] as const,
   /** One user's per-server usage breakdown. */
   userServers: (s: QueryScope, userId: number) => [...trafficKeys.all(s), 'user', userId, 'servers'] as const,
+  /** One user's lifetime / period / today totals. */
+  userUsage: (s: QueryScope, userId: number) => [...trafficKeys.all(s), 'user', userId, 'usage'] as const,
 }
 
 export const dashboardKeys = {
@@ -82,6 +89,8 @@ export const groupKeys = {
   all: (s: QueryScope) => [...privateRoot(s), 'groups'] as const,
   lists: (s: QueryScope) => [...groupKeys.all(s), 'list'] as const,
   list: (s: QueryScope, params: GroupListParams) => [...groupKeys.lists(s), params] as const,
+  /** Every group, every page (listAllGroups): for a picker, not a table. */
+  catalogue: (s: QueryScope) => [...groupKeys.all(s), 'catalogue'] as const,
 }
 
 /**
@@ -95,6 +104,11 @@ export const settingsKeys = {
   mail: (s: QueryScope) => [...settingsKeys.all(s), 'mail'] as const,
   saml: (s: QueryScope) => [...settingsKeys.all(s), 'saml'] as const,
   oidc: (s: QueryScope) => [...settingsKeys.all(s), 'oidc'] as const,
+  /** The offline location databases and which one is active. Read by the
+   *  risk center's database notices (the queue, the drawer's location row);
+   *  the settings page keeps its own copy in local state because it polls it
+   *  tightly while an update downloads. */
+  geoIPStatus: (s: QueryScope) => [...settingsKeys.all(s), 'geoip-status'] as const,
 }
 
 /** YAML-backed rule sets (`<ConfigDir>/rulesets/`). */
@@ -154,13 +168,41 @@ export const meKeys = {
   usage: (s: QueryScope) => [...meKeys.all(s), 'usage'] as const,
 }
 
-/** Concurrent-location verdicts, as shown on the Geo anomalies tab. */
-export const geoAnomalyKeys = {
-  all: (s: QueryScope) => [...privateRoot(s), 'geo-anomalies'] as const,
+/**
+ * The risk center's own reads. `lives` is the prefix of every live-view page
+ * (each filter set is its own entry), so a refresh invalidates them all: the
+ * snapshot behind every page has changed. `queues` is the prefix of every
+ * queue page, for the same reason after a review action or a policy save.
+ * Every action invalidates `all`: an account's summary, its queue row, the
+ * Users column and its records all move together.
+ */
+export const riskCenterKeys = {
+  all: (s: QueryScope) => [...privateRoot(s), 'risk-center'] as const,
+  lives: (s: QueryScope) => [...riskCenterKeys.all(s), 'live'] as const,
+  live: (s: QueryScope, params: LiveParams) => [...riskCenterKeys.lives(s), params] as const,
+  history: (s: QueryScope, params: ConnectionHistoryParams) => [...riskCenterKeys.all(s), 'history', params] as const,
+  flags: (s: QueryScope, params: FlagRecordParams) => [...riskCenterKeys.all(s), 'flags', params] as const,
+  queues: (s: QueryScope) => [...riskCenterKeys.all(s), 'queue'] as const,
+  queue: (s: QueryScope, params: QueueParams) => [...riskCenterKeys.queues(s), params] as const,
+  /** One account's drawer summary. */
+  user: (s: QueryScope, userId: number) => [...riskCenterKeys.all(s), 'user', userId] as const,
+  /** The Users page's risk column: one read for the whole list. */
+  levels: (s: QueryScope) => [...riskCenterKeys.all(s), 'levels'] as const,
+  /** The policy tab: the 48 keys with their defaults and values in effect. */
+  policy: (s: QueryScope) => [...riskCenterKeys.all(s), 'policy'] as const,
 }
 
 /** The upstream sync-task queue, as shown on the Sync tasks page. */
 export const syncTaskKeys = {
   all: (s: QueryScope) => [...privateRoot(s), 'sync-tasks'] as const,
   list: (s: QueryScope, params: SyncTaskListParams) => [...syncTaskKeys.all(s), 'list', params] as const,
+}
+
+/**
+ * The admin diagnostics page's registry read. One entry: the response is the
+ * whole registry, and the reset writes through it (invalidated after a clear).
+ */
+export const diagnosticsKeys = {
+  all: (s: QueryScope) => [...privateRoot(s), 'diagnostics'] as const,
+  metrics: (s: QueryScope) => [...diagnosticsKeys.all(s), 'metrics'] as const,
 }

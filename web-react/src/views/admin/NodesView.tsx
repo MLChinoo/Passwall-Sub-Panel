@@ -36,6 +36,7 @@ import EditIcon from '@mui/icons-material/EditOutlined'
 import LinkOffIcon from '@mui/icons-material/LinkOff'
 import CloudSyncIcon from '@mui/icons-material/CloudSync'
 import { useTranslation } from 'react-i18next'
+import { AsyncIconButton } from '@/components/AsyncButton'
 import { useCan } from '@/utils/permissions'
 import { formatDualTz } from '@/utils/datetime'
 import { allSettledLimited } from '@/utils/promises'
@@ -71,7 +72,10 @@ import { nodeKeys } from '@/query/keys'
 import { useNodesList, useSeparators, useUnmanagedInbounds } from '@/query/nodes'
 import { useServersList } from '@/query/servers'
 import { useQueryScope } from '@/query/useQueryScope'
+import { useVlessRouteDraft } from '@/query/vlessRoute'
+import VlessRouteLinesEditor from './VlessRouteLinesEditor'
 import { useQueryClient } from '@tanstack/react-query'
+import { xrayRequiresMLKEMFirst } from '@/utils/xrayReality'
 
 /** The managed-tab read always covers the whole set, so its key is a constant. */
 const NODES_PARAMS = { page: 1, page_size: 500 } as const
@@ -1103,6 +1107,7 @@ interface FieldsProps {
   setForm: Dispatch<SetStateAction<InboundFormState>>
   showMetadata: boolean
   servers?: Server[]
+  server?: Server
   onGenKeys: () => void | Promise<void>
   onGenSSPassword: () => void
   genKeysBusy: boolean
@@ -1124,7 +1129,7 @@ interface FieldsProps {
   allowRealityScan?: boolean
 }
 
-function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced, allTags, scanSourceName, panelType, allowRealityScan }: FieldsProps) {
+function InboundFormFields({ form, setForm, showMetadata, servers, server, onGenKeys, onGenSSPassword, genKeysBusy, protocolReadonly, advanced, onSetAdvanced, allTags, scanSourceName, panelType, allowRealityScan }: FieldsProps) {
   const theme = useTheme()
   const md = theme.palette.md
   const { t } = useTranslation(['admin', 'common'])
@@ -1143,8 +1148,14 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
   const [managedCerts, setManagedCerts] = useState<Cert[]>([])
   const [fetchingPanelCert, setFetchingPanelCert] = useState(false)
   const [realityScannerOpen, setRealityScannerOpen] = useState(false)
-  const selectedServer = servers?.find(s => s.id === form.panel_id)
+  const selectedServer = servers?.find(s => s.id === form.panel_id) ?? server
   const effectivePanelType = panelType ?? selectedServer?.panel_type ?? '3xui'
+  const selectedXrayVersion = effectivePanelType === '3xui'
+    ? selectedServer?.xray_version
+    : effectivePanelType === 'psp' && selectedServer?.core_engine === 'xray'
+      ? selectedServer.core_version ?? selectedServer.xray_version
+      : undefined
+  const realityFingerprintLocked = xrayRequiresMLKEMFirst(selectedXrayVersion)
   const protocolOptions = effectivePanelType === 'sui'
     ? PROTOCOL_OPTIONS
     : PROTOCOL_OPTIONS.filter(option => !SUI_ONLY_PROTOCOLS.has(option.value))
@@ -1153,6 +1164,10 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
   useEffect(() => {
     listCerts().then(setManagedCerts).catch(() => {})
   }, [])
+  useEffect(() => {
+    if (!realityFingerprintLocked) return
+    setForm(prev => prev.reality_fingerprint === 'chrome' ? prev : { ...prev, reality_fingerprint: 'chrome' })
+  }, [realityFingerprintLocked, setForm])
 
   async function fetchFromPanel() {
     if (!form.panel_id) {
@@ -1716,7 +1731,9 @@ function InboundFormFields({ form, setForm, showMetadata, servers, onGenKeys, on
                 <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
                   <TextField select size="small" label={t('admin:nodes.create_dialog.reality_fingerprint')}
                     value={form.reality_fingerprint}
+                    disabled={realityFingerprintLocked}
                     onChange={e => update('reality_fingerprint', e.target.value)}
+                    helperText={realityFingerprintLocked ? t('admin:nodes.create_dialog.reality_fingerprint_mlkem_locked') : undefined}
                     sx={{ flex: '1 1 180px', minWidth: 140 }}>
                     {FINGERPRINTS.map(fp => <MenuItem key={fp} value={fp}>{fp}</MenuItem>)}
                   </TextField>
@@ -2314,6 +2331,9 @@ export default function NodesView() {
   const [editBusy, setEditBusy] = useState(false)
   const [editing, setEditing] = useState<Node | null>(null)
   const [editForm, setEditForm] = useState<MetaForm>(EMPTY_META)
+  const [lineTab, setLineTab] = useState<'relay' | 'route'>('relay')
+  const [lineSession, setLineSession] = useState(0)
+  const routeDraft = useVlessRouteDraft(qScope, editing?.id || 0, lineSession, editOpen && lineTab === 'route')
   type MetaField = 'display_name' | 'server_address' | 'region'
   const [editMetaErr, setEditMetaErr] = useState<FieldErrors<MetaField>>({})
 
@@ -2394,6 +2414,11 @@ export default function NodesView() {
   const [claimOpen, setClaimOpen] = useState(false)
   const [claimBusy, setClaimBusy] = useState(false)
   const [claimUsers, setClaimUsers] = useState<User[]>([])
+  // The dialog opens before listUsers resolves (see startClaim), so an empty
+  // claimUsers is ambiguous between "no users on the panel" and "still
+  // loading" without this — and the empty case renders as the same disabled
+  // placeholder Select either way.
+  const [claimUsersLoading, setClaimUsersLoading] = useState(false)
   const [claimForm, setClaimForm] = useState({
     panel_id: 0, panel_name: '', inbound_id: 0,
     user_id: 0,
@@ -2488,6 +2513,8 @@ export default function NodesView() {
   }
 
   function openEdit(n: Node) {
+    setLineTab('relay')
+    setLineSession(previous => previous + 1)
     setEditing(n)
     setEditForm({
       display_name: n.display_name,
@@ -2520,6 +2547,7 @@ export default function NodesView() {
     const firstKey = firstError(errs)
     if (firstKey) { pushSnack(t(`admin:${firstKey}`), 'warning'); return }
     setEditBusy(true)
+    let metadataSaved = false
     try {
       const saved = await updateNodeMetadata(editing.id, {
         display_name: editForm.display_name,
@@ -2539,8 +2567,20 @@ export default function NodesView() {
         show_relay_status: editForm.hide_direct || editForm.show_relay_status,
       })
       mutateManaged(prev => prev.map(node => node.id === saved.id ? saved : node))
+      metadataSaved = true
+      setEditing(saved)
+      const routed = await routeDraft.save()
+      if (routed) {
+        mutateManaged(prev => prev.map(node => node.id === saved.id ? { ...saved, route_state: routed.state } : node))
+        if (routed.state.status !== 'applied') {
+          pushSnack(t('admin:nodes.vless_route.partial_failure'), 'warning')
+          return
+        }
+      }
       pushSnack(t('admin:nodes.toast.saved'), 'success')
       setEditOpen(false)
+    } catch {
+      if (metadataSaved) pushSnack(t('admin:nodes.vless_route.partial_failure'), 'warning')
     } finally { setEditBusy(false) }
   }
 
@@ -3136,10 +3176,12 @@ export default function NodesView() {
       user_id: 0, client_email: '', client_uuid: '',
     })
     setClaimOpen(true)
+    setClaimUsersLoading(true)
     try {
       const res = await listUsers({ page: 1, page_size: 200 })
       setClaimUsers(res.items)
     } catch { /* toasted */ }
+    finally { setClaimUsersLoading(false) }
   }
 
   async function submitClaim(e: FormEvent) {
@@ -3430,10 +3472,19 @@ export default function NodesView() {
                                 <EditIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
+                            {/* AsyncIconButton, wrapped in a span so Tooltip
+                                gets a DOM ref to anchor to (AsyncIconButton
+                                is a plain function component and does not
+                                forward one itself): delete awaits the
+                                confirm dialog AND the request, and until this
+                                showed its own wait the icon stayed clickable
+                                through the whole round trip. */}
                             <Tooltip title={t('admin:nodes.action.delete')}>
-                              <IconButton size="small" onClick={() => confirmDelete(n)} sx={{ color: md.error }}>
-                                <DeleteIcon fontSize="small" />
-                              </IconButton>
+                              <span>
+                                <AsyncIconButton size="small" onClick={() => confirmDelete(n)} sx={{ color: md.error }}>
+                                  <DeleteIcon fontSize="small" />
+                                </AsyncIconButton>
+                              </span>
                             </Tooltip>
                           </>)
                         ) : (
@@ -3446,20 +3497,30 @@ export default function NodesView() {
                                 <KeyIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
+                            {/* Same AsyncIconButton-in-a-span reasoning as the
+                                delete icon below: recreate-inbound and detach
+                                are also requests the operator waits on, not
+                                instant local edits. */}
                             <Tooltip title={t('admin:nodes.action.recreate_inbound', { defaultValue: '在服务器上重建 inbound' })}>
-                              <IconButton size="small" onClick={() => confirmRecreateInbound(n)} disabled={!canRecreateInbound}>
-                                <CloudSyncIcon fontSize="small" />
-                              </IconButton>
+                              <span>
+                                <AsyncIconButton size="small" onClick={() => confirmRecreateInbound(n)} disabled={!canRecreateInbound}>
+                                  <CloudSyncIcon fontSize="small" />
+                                </AsyncIconButton>
+                              </span>
                             </Tooltip>
                             <Tooltip title={t('admin:nodes.action.detach')}>
-                              <IconButton size="small" onClick={() => confirmDetach(n)} sx={{ color: md.tertiary }}>
-                                <LinkOffIcon fontSize="small" />
-                              </IconButton>
+                              <span>
+                                <AsyncIconButton size="small" onClick={() => confirmDetach(n)} sx={{ color: md.tertiary }}>
+                                  <LinkOffIcon fontSize="small" />
+                                </AsyncIconButton>
+                              </span>
                             </Tooltip>
                             <Tooltip title={t('admin:nodes.action.delete')}>
-                              <IconButton size="small" onClick={() => confirmDelete(n)} disabled={!canDeleteInbound} sx={{ color: md.error }}>
-                                <DeleteIcon fontSize="small" />
-                              </IconButton>
+                              <span>
+                                <AsyncIconButton size="small" onClick={() => confirmDelete(n)} disabled={!canDeleteInbound} sx={{ color: md.error }}>
+                                  <DeleteIcon fontSize="small" />
+                                </AsyncIconButton>
+                              </span>
                             </Tooltip>
                           </>
                         ))}
@@ -3662,6 +3723,7 @@ export default function NodesView() {
               </Typography>}
               <InboundFormFields form={editInboundForm} setForm={setEditInboundForm}
                 showMetadata={false}
+                server={servers.find(s => s.id === editingInboundNode?.panel_id)}
                 scanSourceName={editingInboundNode?.panel_name}
                 onGenKeys={genKeysForEdit}
                 onGenSSPassword={genSSPasswordEdit}
@@ -3699,9 +3761,12 @@ export default function NodesView() {
           </Typography>
           <Box component="form" id="claim-form" onSubmit={submitClaim} sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
             <Select required size="small" fullWidth value={claimForm.user_id || ''} displayEmpty
+              disabled={claimUsersLoading}
               error={!!claimErr.user_id}
               onChange={e => setClaimForm({ ...claimForm, user_id: Number(e.target.value) })}>
-              <MenuItem value="" disabled>{t('admin:nodes.claim_dialog.user')}</MenuItem>
+              <MenuItem value="" disabled>
+                {claimUsersLoading ? t('common:status.loading') : t('admin:nodes.claim_dialog.user')}
+              </MenuItem>
               {claimUsers.map(u => (
                 <MenuItem key={u.id} value={u.id}>
                   {u.display_name ? `${u.display_name} (${u.upn})` : u.upn}
@@ -3824,7 +3889,11 @@ export default function NodesView() {
                 relay fronts. Server-side forwarding (realm/gost/iptables) is
                 set up outside the panel; here we only record each front's
                 address/port (+ optional CDN SNI/Host). */}
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Tabs value={lineTab} onChange={(_, value: 'relay' | 'route') => setLineTab(value)} aria-label={t('admin:nodes.vless_route.tabs')}>
+              <Tab value="relay" label={t('admin:nodes.relay.title')} />
+              <Tab value="route" label={t('admin:nodes.vless_route.title')} />
+            </Tabs>
+            <Box hidden={lineTab !== 'relay'} sx={{ display: lineTab === 'relay' ? 'flex' : 'none', flexDirection: 'column', gap: 1 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Typography sx={{ fontSize: 14, fontWeight: 600 }}>{t('admin:nodes.relay.title')}</Typography>
                 <Button size="small" startIcon={<AddIcon />}
@@ -3882,12 +3951,13 @@ export default function NodesView() {
                 </Box>
               )}
             </Box>
+            {lineTab === 'route' && <VlessRouteLinesEditor draft={routeDraft} busy={editBusy} hiddenDirect={editForm.hide_direct && editForm.relays.some(line => line.enabled)} />}
             <Box sx={{ display: 'none' }}>{alpha(md.error, 0.5)}</Box>
           </Box>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditOpen(false)} disabled={editBusy} variant="text">{t('common:actions.cancel')}</Button>
-          <Button type="submit" form="node-form" variant="contained" disabled={editBusy}
+          <Button type="submit" form="node-form" variant="contained" disabled={editBusy || routeDraft.loading}
             startIcon={editBusy ? <CircularProgress size={16} color="inherit" /> : null}>
             {t('common:actions.ok')}
           </Button>

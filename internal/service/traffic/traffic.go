@@ -69,6 +69,60 @@ type Service struct {
 	geo        GeoResolver
 	geoPolicy  domain.GeoAnomalyPolicy
 	geoStreaks GeoStreakStore
+	// geoSuspender and audit back the optional automatic suspension
+	// (geoenforce.go), also late-bound. Without the suspender a due ban is
+	// only counted (skipped_unwired); without the audit log the transitions
+	// still happen and are logged, but leave no audit row.
+	geoSuspender GeoSuspender
+	audit        ports.AuditRepo
+	// infra is PSP's own node and relay addresses (infraaddr.go), refreshed
+	// by the app's loop and only read here. Created in New; nil on a bare
+	// &Service{}, where it simply excludes nothing.
+	infra *infraAddressSet
+	// liveRefs is each upstream node's newest last-seen timestamp from the
+	// previous observation, which is what makes "this node was rescanned
+	// since" decidable (domain.FreshLiveIPs). Guarded by its own mutex
+	// because the scheduled poll and the staff "poll now" run PollOnce
+	// concurrently with nothing else serialising them. Lazily initialised:
+	// tests build &Service{} directly.
+	liveRefsMu sync.Mutex
+	liveRefs   map[domain.NodeRef]int64
+	// liveRefsAdvancedAt is when a poll last moved a reference forward
+	// (freshLiveIPs), under liveRefsMu with the map it describes. It is
+	// what holds a refresh off right after a poll (RefreshLiveConnections):
+	// the fact that matters is that these references are newer than any
+	// rescan since, which the snapshot on display cannot tell — a refresh
+	// that finished after the poll replaces the poll's snapshot, and a poll
+	// merges its references before it stores its snapshot. Zero until the
+	// first advance.
+	liveRefsAdvancedAt time.Time
+	// liveSnap is the latest live-connection snapshot (liveconn.go): what
+	// the risk center shows by default. Memory only, replaced whole by each
+	// newer reading and never mutated once stored, so readers share the
+	// pointer under the read lock. nil until the first poll.
+	liveSnapMu sync.RWMutex
+	liveSnap   *domain.LiveConnSnapshot
+	// geoJudgeMu makes one observation's streak load, judging and streak
+	// save a single step (judgeLiveIPs), so overlapping polls never judge
+	// the same accounts from the same stored state. Only that step: the
+	// panel reads and liveRefsMu's merge happen before it, and the history
+	// write after it.
+	geoJudgeMu sync.Mutex
+	// trusted lists the accounts an admin trusts (risk_reviews), whose
+	// location the poll does not judge (trust.go); late-bound, nil trusts
+	// nobody. Read once per judging step, before geoJudgeMu and never under
+	// it. trustedLast is the last set read successfully, what a failed read
+	// answers with; guarded by trustedMu, a leaf lock held only for the swap.
+	trusted     TrustedLister
+	trustedMu   sync.Mutex
+	trustedLast map[int64]bool
+	// connRec is the connection history (connection_history) the poll
+	// records each judged sample into; late-bound, nil records nothing.
+	connRec ConnectionRecorder
+	// flagRec is the flag history (flag_records) the poll appends each
+	// change of geo attention and each geo_auto transition to; late-bound,
+	// nil records nothing. Append-only by type (FlagRecorder).
+	flagRec FlagRecorder
 	// configPusher is wired lazily (user.Service is the implementor and
 	// is created before traffic.Service). nil = skip floor refresh on poll.
 	configPusher UserConfigPusher
@@ -130,6 +184,10 @@ func (s *Service) SetConfigPusher(p UserConfigPusher) {
 // repo is wired the shared-client metering pass runs (no-op pre-migration).
 func (s *Service) SetPSPClientRepo(r ports.PSPClientRepo) { s.pspClient = r }
 
+// errPanelNotRead marks a panel whose fetch produced no result at all this
+// cycle, so its users count as unread rather than as idle.
+var errPanelNotRead = errors.New("panel was not read this cycle")
+
 type inboundKey struct {
 	panelID   int64
 	inboundID int
@@ -161,10 +219,20 @@ func New(users ports.UserRepo, ownership ports.OwnershipRepo, traffic ports.Traf
 		// Service-scoped semaphore for async floor pushes — see Service.pushSem doc.
 		// Sized to the same default (8) as paneltz.ResolveMaxPanelConcurrency(0).
 		pushSem: make(chan struct{}, capacity),
+		// Empty until the app's refresh loop first runs. That loop refreshes
+		// at start, well before the first scheduled poll; only a poll that
+		// beats it (a manual one right after boot) judges with no
+		// infrastructure excluded.
+		infra: newInfraAddressSet(),
 	}
 	// Published so a snapshot is self-contained: "peak in-flight 8" only
-	// means saturation if the reader also knows the capacity is 8, and
-	// that value comes from a setting the operator can change.
+	// means saturation if the reader also knows the capacity is 8. The
+	// capacity is FIXED at paneltz.ResolveMaxPanelConcurrency(0), the
+	// default of 8: it is resolved here, before WithSettings attaches the
+	// settings, and never re-read, so the admin's MaxPanelConcurrency does
+	// not move it. The gauge's help states that number and the diagnostics
+	// page shows the help verbatim, so TestNew_PushSemCapacityHelpStates-
+	// TheCapacityNewPublishes holds the two together.
 	metrics.PushSemCapacity.Set(int64(capacity))
 	return svc
 }
@@ -393,10 +461,12 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 	// last_online, nor node traffic update at all. Fetch the shared clients ONCE here
 	// (reused by the shared-metering pass below) and add their panels to the set.
 	var sharedClients []*domain.PSPClient
+	// sharedErr travels on to Phase 1b, which must tell "the list failed"
+	// from "the list is empty": only the second is a live view of nobody.
+	var sharedErr error
 	if s.pspClient != nil {
-		var serr error
-		if sharedClients, serr = s.pspClient.ListAll(ctx); serr != nil {
-			log.Warn("traffic poll shared-client list failed; shared metering skipped this cycle", "err", serr)
+		if sharedClients, sharedErr = s.pspClient.ListAll(ctx); sharedErr != nil {
+			log.Warn("traffic poll shared-client list failed; shared metering skipped this cycle", "err", sharedErr)
 			sharedClients = nil
 		}
 	}
@@ -443,7 +513,12 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 		// different things downstream — err drops the panel's numbers,
 		// liveErr only makes the per-user IP total a floor.
 		liveIPs map[string][]string
-		liveErr error
+		// liveSightings is the same answer from a detail reader, with each
+		// address's node and last-seen time kept; nil from a plain reader.
+		// Only it can tell an address connected now from one the upstream
+		// merely still remembers.
+		liveSightings map[string][]domain.LiveIPSighting
+		liveErr       error
 	}
 	panelData := make(map[int64]panelListResult, len(panelsToFetch))
 	var panelMu sync.Mutex
@@ -458,8 +533,12 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 			defer func() { <-panelSem }()
 			c, err := s.pool.Get(pid)
 			if err != nil {
+				// No client means no live-IP read either. Recording the
+				// error on BOTH halves is what makes this panel's users
+				// read as unread (a floor) rather than as a panel that
+				// answered and had nobody online.
 				panelMu.Lock()
-				panelData[pid] = panelListResult{err: err}
+				panelData[pid] = panelListResult{err: err, liveErr: err}
 				panelMu.Unlock()
 				return
 			}
@@ -481,27 +560,22 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 			// talking to, and the by-guid endpoint returns the whole panel
 			// in that one call regardless of user count.
 			//
-			// Optional capability. An adapter that does not implement it
-			// (S-UI has no equivalent) leaves liveIPs nil with no error,
-			// and the aggregate counts its users as unread — never as
-			// zero, which would read as "nobody is connected".
-			var live map[string][]string
-			var liveErr error
-			if reader, ok := c.(ports.LiveIPReader); ok {
-				live, liveErr = reader.ListLiveClientIPs(ctx)
-				if liveErr != nil {
-					// Warn, do not fail the panel: the traffic numbers
-					// above are good and are what this poll exists for.
-					log.Warn("traffic poll: live client IPs unavailable for this panel",
-						"panel_id", pid, "err", liveErr)
-				}
-			} else {
-				liveErr = ports.ErrPanelCapabilityUnsupported
+			// Best reader first, through the one reader the risk center's
+			// refresh uses too (readPanelLiveIPs, liveconn.go). An adapter
+			// with no live read (S-UI) answers
+			// ErrPanelCapabilityUnsupported and is counted as unread —
+			// never as zero, which would read as "nobody is connected".
+			live, sightings, liveErr := readPanelLiveIPs(ctx, c)
+			if liveReadFailed(liveErr) {
+				// Warn, do not fail the panel: the traffic numbers
+				// above are good and are what this poll exists for.
+				log.Warn("traffic poll: live client IPs unavailable for this panel",
+					"panel_id", pid, "err", liveErr)
 			}
 			panelMu.Lock()
 			panelData[pid] = panelListResult{
 				stats: stats, counters: counters, err: lerr,
-				liveIPs: live, liveErr: liveErr,
+				liveIPs: live, liveSightings: sightings, liveErr: liveErr,
 			}
 			panelMu.Unlock()
 		}(panelID)
@@ -514,15 +588,59 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 	metrics.PollPanels.Observe(float64(len(panelsToFetch)))
 	mark("panel_fetch", "Phase 1 parallel ListInboundsSlim")
 
-	// Phase 1b — fold the live-IP reads into one row per USER.
+	// Phase 1b — fold the live-IP reads into one row per USER and judge it.
 	//
-	// Pure in-memory: the reads already happened above, inside the slot each
-	// panel goroutine held. Observation only for now; nothing here changes a
-	// user's state or writes to a panel.
-	s.observeLiveIPs(ctx, users, sharedClients, func(pid int64) (map[string][]string, error) {
-		d := panelData[pid]
-		return d.liveIPs, d.liveErr
-	}, panelsToFetch)
+	// No panel I/O: the reads already happened above, inside the slot each
+	// panel goroutine held. What runs here is in memory plus one streak load
+	// and one save (and, per group, a settings read). Only concurrent
+	// addresses that are not infrastructure are judged, and a user judged
+	// less than half an interval ago is not judged again (see
+	// observeLiveIPs). Nothing here changes a user's state or writes to a
+	// panel: the automatic suspensions due this cycle (only where a group
+	// armed them) come back as bans, applied in Phase 4 below.
+	//
+	// minSpacing is half the configured interval: scheduled polls a whole
+	// interval apart count, while a manual poll landing right after one does
+	// not. The check is elapsed time only, so a SCHEDULED poll is skipped too
+	// whenever it lands under half an interval after the last judgement:
+	// the tick right after a manual poll that judged, or the first tick
+	// after the interval is raised to more than twice its old value
+	// (pollCfg is loaded at the top of every PollOnce, while runTrafficLoop
+	// resets its ticker only after that tick fired on the old cadence).
+	// Either one only delays a judgement. It is 0 only when no settings are
+	// wired (the loader defaults the interval to 5 minutes), which disables
+	// it.
+	//
+	// pc outlives this phase on purpose: Phase 4 reads each user's
+	// suspension duration through the same per-group resolution, and the
+	// lift cap from the same fleet-wide runtime. That runtime (freshness
+	// window, shared-exit threshold, per-poll caps) is global only, so it is
+	// resolved once here from the settings this poll loaded; a poll with no
+	// settings wired, or a failed load with nothing cached, runs on the
+	// shipped defaults (GeoRuntimeFromSettings reads 0 as unset).
+	pc := s.newGeoPolicyCache(ctx, users)
+	pc.rt = domain.GeoRuntimeFromSettings(pollCfg.GeoRuntimeSettings())
+	bans := s.observeLiveIPs(ctx, liveIPInput{
+		users:      users,
+		clients:    sharedClients,
+		clientsErr: sharedErr,
+		panelIDs:   panelsToFetch,
+		read: func(pid int64) domain.PanelLiveIPs {
+			d, ok := panelData[pid]
+			if !ok {
+				// The fetch goroutine ended without writing a result, so
+				// nothing was read. Its zero value has no error and would
+				// read exactly like a panel that answered "nobody online".
+				return domain.PanelLiveIPs{PanelID: pid, Err: errPanelNotRead}
+			}
+			// Shaped as the refresh shapes its own reads (liveAnswer), so
+			// the two cannot flatten a panel's answer differently.
+			return liveAnswer(pid, d.liveIPs, d.liveSightings, d.liveErr)
+		},
+		ignore:     pollCfg.GeoAnomalyIgnoreAddresses,
+		policies:   pc,
+		minSpacing: time.Duration(pollCfg.CronTrafficPullMinutes) * time.Minute / 2,
+	})
 	mark("live_ips", "Phase 1b per-user live-IP aggregation")
 
 	// Phase 2 — per-panel sequential processing. ListInbounds results are
@@ -870,6 +988,17 @@ func (s *Service) PollOnce(ctx context.Context) (err error) {
 		}
 	}
 	mark("sink_flush", "6 batches")
+
+	// Phase 4 — the automatic location suspension: lift the suspensions
+	// whose time is up, then apply the bans Phase 1b found due. Last, after
+	// the flush, because both push to the panels inline and wait on the
+	// per-user lock a membership resync may hold; neither may delay
+	// persisting the cycle's metering. Every cycle, even one that read no
+	// live-IP data, because a lift depends only on the clock. Nothing
+	// between Phase 1b and here returns early, so a consumed ban always
+	// reaches it.
+	s.enforceGeo(ctx, users, bans, pc, time.Now())
+	mark("geo_enforce", "Phase 4 geo auto-suspension lift/apply")
 	return nil
 }
 
@@ -1403,7 +1532,15 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 		// If their service was traffic-suspended (including an active emergency
 		// access window), the new period gives them quota back without touching
 		// panel login state.
-		if u.ServiceDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledTrafficExceeded {
+		//
+		// Never over a hard hold. The legacy account-axis marker alone used to
+		// satisfy this condition, so a user carrying a stale
+		// AutoDisabledReason=traffic_exceeded next to an admin pause, a
+		// blocked-client hold or a geo suspension was resumed by the month
+		// turning over: ResumeServiceAndSync clears the service reason whatever
+		// it is. Quota handed back is not the hold's condition clearing.
+		if (u.ServiceDisabledReason == domain.DisabledTrafficExceeded || u.AutoDisabledReason == domain.DisabledTrafficExceeded) &&
+			!domain.HardServiceHold(u.ServiceDisabledReason) {
 			if err := s.disabler.ResumeServiceAndSync(ctx, u.ID); err != nil {
 				log.Warn("traffic service resume", "user_id", u.ID, "err", err)
 			} else {
@@ -1471,10 +1608,27 @@ func (s *Service) recordAndEnforceWith(ctx context.Context, u *domain.User, tota
 		return err
 	}
 	if periodUsed >= u.TrafficLimitBytes {
+		// A hard hold already cuts service, and it outranks quota: replacing it
+		// with traffic_exceeded would hand it to the rollover above, which
+		// resumes quota suspensions — the admin pause (or geo suspension) would
+		// evaporate at the next period start. Leave it, and skip the floor push
+		// below too: the held user's upstream client is already disabled.
+		if domain.HardServiceHold(u.ServiceDisabledReason) {
+			return nil
+		}
 		if u.ServiceDisabledReason == domain.DisabledTrafficExceeded && !clearedEmergencyThisCycle {
 			return nil
 		}
 		if err := s.disabler.SetServiceSuspendedAndSync(ctx, u.ID, domain.DisabledTrafficExceeded, "traffic limit exceeded"); err != nil {
+			// ErrConflict: the FRESH row carries a hard hold this cycle's
+			// snapshot predates. Service is already cut under a reason quota
+			// must not replace, so this is "held", not a failed poll. Leave the
+			// in-memory copy alone: claiming traffic_exceeded here would have
+			// the rest of this cycle act on a reason the row does not carry.
+			if errors.Is(err, domain.ErrConflict) {
+				log.Info("quota suspension skipped: service already held", "user_id", u.ID, "err", err)
+				return nil
+			}
 			return fmt.Errorf("auto-suspend service: %w", err)
 		}
 		u.ServiceDisabledReason = domain.DisabledTrafficExceeded
@@ -2563,8 +2717,19 @@ func (s *Service) SetPeriodUsage(ctx context.Context, userID int64, usedBytes in
 	if u.TrafficLimitBytes <= 0 {
 		return nil
 	}
-	if usedBytes >= u.TrafficLimitBytes && u.Enabled && u.ServiceDisabledReason != domain.DisabledTrafficExceeded {
-		return s.disabler.SetServiceSuspendedAndSync(ctx, u.ID, domain.DisabledTrafficExceeded, "traffic limit exceeded")
+	// Same rule as the poll: a hard hold is never replaced by the quota reason
+	// (see recordAndEnforceWith). The usage above is saved either way. The
+	// resume branch below is already safe: it matches traffic_exceeded exactly.
+	if usedBytes >= u.TrafficLimitBytes && u.Enabled && u.ServiceDisabledReason != domain.DisabledTrafficExceeded &&
+		!domain.HardServiceHold(u.ServiceDisabledReason) {
+		err := s.disabler.SetServiceSuspendedAndSync(ctx, u.ID, domain.DisabledTrafficExceeded, "traffic limit exceeded")
+		// ErrConflict: a hold landed after the read above. The usage edit is
+		// already saved and the user is held, so the request succeeded.
+		if errors.Is(err, domain.ErrConflict) {
+			log.Info("quota suspension skipped: service already held", "user_id", u.ID, "err", err)
+			return nil
+		}
+		return err
 	}
 	if usedBytes < u.TrafficLimitBytes && u.ServiceDisabledReason == domain.DisabledTrafficExceeded {
 		return s.disabler.ResumeServiceAndSync(ctx, u.ID)

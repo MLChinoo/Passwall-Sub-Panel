@@ -217,6 +217,9 @@
 │  ├─ 运维：ReconcileSvc（周期对账，轴 A + 轴 B）、AuditSvc、      │
 │  │   MailerSvc（到期/停用/公告）、CertSvc（ACME 证书自动化）、   │
 │  │   GeoIPSvc（IP 归属地库自动更新）                             │
+│  ├─ 风控：RiskCenterSvc（riskcenter，只读：待处理队列、用户      │
+│  │   抽屉、风控等级、通知铃计数、在线快照与刷新）、              │
+│  │   RiskReviewSvc（riskreview，忽略 / 信任，写 risk_reviews）   │
 └──────┬─────────────────────────────────────┬────────────────┘
        ▼                                     ▼
 ┌─────────────────────┐              ┌─────────────────────┐
@@ -814,7 +817,7 @@ rules:
 | 页面 | 分区 | 列表显示 | 操作 |
 |---|---|---|---|
 | **总览 (Dashboard)** | Dashboard | 统计概览 + 告警 | - |
-| **用户管理** | Directory | UPN / 显示名 / 分组 / 到期 / 配额 / 已用 / 账号状态 / 服务状态 | 新增、编辑、改组、改到期、改配额、重置 UUID、启用/禁用账号(含原因)、暂停/恢复服务(含原因)、重置 sub_token、重置密码、重置 2FA、管理 passkey、解绑 SSO、删除、批量延期、批量改组 |
+| **用户管理** | Directory | UPN / 显示名 / 分组 / 到期 / 配额 / 已用 / 账号状态 / 服务状态 / 风控（仅管理员） | 新增、编辑、改组、改到期、改配额、重置 UUID、启用/禁用账号(含原因)、暂停/恢复服务(含原因)、重置 sub_token、重置密码、重置 2FA、管理 passkey、解绑 SSO、删除、批量延期、批量改组、风控详情（仅管理员，就地打开风控中心的用户抽屉） |
 | **分组** | Directory | 分组名 / slug / 成员数 | 新增、编辑、编辑 layout（Node access）、编辑覆盖设置（Policies，见 §6.3）、删除 |
 | **服务器** | Infrastructure | 3X-UI 面板列表 + 版本感知 | 新增、编辑、删除、连接测试、升级 3X-UI / Xray |
 | **节点管理** | Infrastructure | 显示名 / 协议 / 端口 / region / tags / 启用 / 健康状态 / 配置同步状态 | 新增 inbound、编辑（连接配置本地优先）、改 region/tag/sort、启用/禁用、删除、导入未纳管 inbound、认领 client、生成 Reality 密钥对、管理分隔符 |
@@ -825,6 +828,7 @@ rules:
 | **流量统计** | Reporting | Top-N 排行 / 用户维度 / 节点维度 | 查看详情、手动设置用量、手动触发轮询 |
 | **日志管理** | Reporting | 订阅日志 / 审计日志 / 认证事件 / 邮件日志 / 证书事件 | 查看详情、清空、按策略清理 |
 | **同步任务** | Reporting | 任务列表 | 重试、取消、清理已完成 |
+| **风控中心**（仅管理员） | 独立一项（Reporting 之后） | 待处理（一人一行）/ 在线 / 记录 / 策略，加一个用户抽屉，用户管理页也能打开（2026-09-28 改版；2026-09-27 是实时连接 / 异地并发 / 风险信号 / 标记记录 / 用户查询五个标签） | 忽略 / 取消忽略、信任 / 取消信任；在抽屉里暂停 / 恢复代理服务（用户管理页同一个接口）；立即刷新在线快照（每块面板读一次在线地址，全机队共用冷却）；编辑异地并发与风险信号的策略和分组例外（见 [connection-limits.md](connection-limits.md) §14） |
 | **系统设置** | Settings | - | 基本设置、账户安全（scope 轨，见 §6.3）、站点品牌、订阅策略（scope 轨）、邮件提醒、SSO 认证、运行时与数据（cron/留存/GeoIP/JWT） |
 
 ### 6.2 用户自助页 (role=user)
@@ -1006,6 +1010,10 @@ user.ResyncMembership(ctx, userID)：
 
 ### 7.6 节点编辑
 
+VLESS 路由线路（V2）在原中转区域提供两个标签页，只读取已有出站并管理 PSP 自有的末尾规则。“按节点选择”仍是动态线路集合，新增“按线路选择”稳定引用用于精确选择。历史中转补充 ID，不转换旧代理组引用；详细边界与验收进度见 [ADR 0039](adr/0039-vless-route-lines-v2.md) 和 [专题说明](vlessroute-v2.md)。
+
+线路目标及确认状态存于 `nodes.route_state`，`route_revision` 负责 CAS；普通节点写入不能覆盖该状态。`vless_route_leases` 按后端协调模板写入，`ports.VlessRouteAdapter` 为可选适配接口，不扩大其他后端的必选契约。`service/vlessroute` 负责规则编译、同步与只读漂移检查；render 只读本地确认状态及已应用凭据。删除、解绑、重建和端口/协议变更的破坏性步骤前先清理登记规则，失败时保留可重试状态。
+
 ```
 UI: 节点详情 → 改 region 或协议参数
 
@@ -1060,6 +1068,8 @@ TrafficSvc cron 每 N 分钟（默认 5）:
   4. 算当前计费周期已用量:
        周期内已用 = users.lifetime_total_bytes - users.period_baseline_bytes（O(1) 内存计算）
   5. 若 user.traffic_limit_bytes > 0 且 已用 > limit:
+       - 服务已被硬性暂停（service_manual / blocked_client / geo_anomaly / geo_auto）→ 跳过，
+         配额原因从不替换它们（见 §11.3）
        - 调 user.SetServiceSuspendedAndSync(userID, reason=DisabledTrafficExceeded)
        - 内部：写 users.service_disabled_reason（不动 users.enabled，账号仍可登录查看原因）
        - 对该用户所有 psp_client 调 SharedClientSvc.SyncLifecycle(enable=false)
@@ -1159,7 +1169,7 @@ GET /{sub_path}/abc123 (UA: mihomo)
 | GET/PUT/DELETE | `/users/:id` | 详情 / 更新 / 删除 |
 | POST | `/users/:id/reset-credentials` \| `/reset-password` \| `/reset-emergency-usage` | 重置类操作 |
 | POST | `/users/:id/set-enabled` | 账号状态（登录权限） |
-| POST | `/users/:id/set-service-status` | 服务状态（代理/订阅可用性，v3.9.0） |
+| POST | `/users/:id/set-service-status` | 服务状态（代理/订阅可用性，v3.9.0）；恢复时可带 `expect_reason`，只解除仍是这个原因的暂停，否则 409 `reason_changed`（2026-09-28） |
 | POST | `/users/:id/reset-2fa` \| `/2fa/recovery/regenerate` | 管理员重置用户 2FA |
 | GET/DELETE | `/users/:id/passkeys[/:pkid]` | 管理员查看/撤销用户 passkey |
 | POST | `/users/:id/unlink-sso` | 解绑 SSO |
@@ -1222,6 +1232,7 @@ GET /{sub_path}/abc123 (UA: mihomo)
 | GET | `/auth-events` | 认证事件日志（v3.7.0） |
 | POST | `/sub-logs/purge` \| `/email-logs/purge` | 按策略清理 |
 | GET | `/dashboard/summary` \| `/alerts` | 仪表盘摘要 / 告警 |
+| GET/POST/DELETE | `/risk-center/*` | 风控中心（仅管理员）：待处理、用户抽屉、风控等级、忽略 / 信任、在线与刷新、连接历史、记录——全表见 [connection-limits.md](connection-limits.md) §14.13 |
 | GET/POST | `/sync-tasks[/:id/retry\|/cancel]` \| POST `/sync-tasks/purge` | 同步任务管理 |
 | POST | `/reconcile/run` | 手动触发对账 |
 
@@ -1229,7 +1240,8 @@ GET /{sub_path}/abc123 (UA: mihomo)
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET/PUT | `/settings/ui` | 全局 UI 设置（含 §6.3 的可覆盖字段） |
+| GET/PUT | `/settings/ui` | 全局 UI 设置（含 §6.3 的可覆盖字段）。异地并发与风险信号的 48 个键 `GET` 仍返回，`PUT` 不改（2026-09-28 起归 `/risk-center/policy`） |
+| GET/PUT | `/risk-center/policy` | 异地并发与风险信号策略（仅管理员；`PUT` 只合并送来的键，与 `/settings/ui` 共用一把写锁） |
 | GET/PUT | `/settings/mail` \| PUT `/settings/mail/templates/:kind` | 邮件设置 / 模板 |
 | POST | `/settings/mail/templates/:kind/preview` \| `/reset` \| `/test` \| `/announcement` | 模板预览/重置、测试邮件、群发公告 |
 | GET/PUT | `/settings/saml` \| `/settings/oidc` | SSO 配置 |
@@ -1253,21 +1265,23 @@ GET /{sub_path}/abc123 (UA: mihomo)
 | `@tag:reality` | tags 含 reality 的节点名 |
 | `@region:TW+tag:reality` | AND 组合 |
 
-规则集内的 `proxy_group_order` 是 mihomo `proxy-groups` 和 sing-box selector outbounds 的展示顺序。字段留空时使用项目内置默认顺序：`🚀 节点选择` → `⚡ QUIC控制` → `🎮 UDP控制` → `🇨🇳 中国大陆` → `💬 Ai平台` → `📹 油管视频` → `🎥 奈飞视频` → `📺 巴哈姆特` → `🌍 国外媒体` → `🎮 游戏平台` → `📲 电报消息` → `Ⓜ️ 微软Bing` → `📢 谷歌FCM` → `🌏 国内媒体` → `📺 哔哩哔哩` → `Ⓜ️ 微软云盘` → `Ⓜ️ 微软服务` → `🍎 苹果服务` → `🎶 网易音乐` → `🎯 全球直连` → `🛑 广告拦截` → `🍃 应用净化` → `🐟 漏网之鱼`；不在默认或自定义列表中的代理组，按主规则中的首次出现顺序放在列表末尾（保持既有订阅的展示位置，避免部分自定义顺序打乱未列出的组）。模板负责声明使用哪些规则集；规则集负责声明自定义代理组顺序和主规则。
+规则集内的 `proxy_group_order` 是 mihomo `proxy-groups` 和 sing-box selector outbounds 的展示顺序。字段留空时使用项目内置默认顺序：`🚀 节点选择` → `🎮 UDP控制` → `⚡ QUIC控制` → `🇨🇳 中国大陆` → `💬 Ai平台` → `📹 油管视频` → `🎥 奈飞视频` → `📺 巴哈姆特` → `🌍 国外媒体` → `🎮 游戏平台` → `📲 电报消息` → `Ⓜ️ 微软Bing` → `📢 谷歌FCM` → `🌏 国内媒体` → `📺 哔哩哔哩` → `Ⓜ️ 微软云盘` → `Ⓜ️ 微软服务` → `🍎 苹果服务` → `🎶 网易音乐` → `🎯 全球直连` → `🛑 广告拦截` → `🍃 应用净化` → `🐟 漏网之鱼`；不在默认或自定义列表中的代理组，按主规则中的首次出现顺序放在列表末尾（保持既有订阅的展示位置，避免部分自定义顺序打乱未列出的组）。模板负责声明使用哪些规则集；规则集负责声明自定义代理组顺序和主规则。
 
-HTTP/3 常见的 `UDP/443` 与其他 UDP 分开控制：`⚡ QUIC控制` 默认委托给 `🎮 UDP控制`，也可在客户端单独选择节点、`DIRECT` 或 `REJECT`。规则不包含国家/地区假设，因此海外用户和回国代理使用同一套配置。详见 [ADR 0030](adr/0030-separate-quic-and-udp-controls.md)。
+HTTP/3 常见的 `UDP/443` 与其他 UDP 分开控制：`🎮 UDP控制` 默认 `DIRECT`（允许 UDP、走本地出口，出口 IP 可能与 TCP 代理出口不同），`⚡ QUIC控制` 全局默认 `REJECT`，让浏览器回退到 TCP；两组都可在客户端单独选择节点、`DIRECT` 或 `REJECT`，QUIC 还可显式跟随 `🎮 UDP控制`。`🎮 UDP控制` 另有 `PASS`（仅 Mihomo），让 UDP 继续按服务规则分流；sing-box 没有 `PASS` 出站，渲染时去掉该成员，其余选项不变。规则匹配先 QUIC 后普通 UDP，展示顺序则是 UDP 在前。规则不包含国家/地区假设，因此海外用户和回国代理使用同一套配置。详见 [ADR 0030](adr/0030-separate-quic-and-udp-controls.md)。
 
-`proxy_group_members` 可选地覆盖单个代理组内部的成员顺序，Mihomo 与 sing-box 共用。支持具体节点（稳定 `node_id`）、内置出口、其他代理组以及 `remaining` / `region:XX` / `tag:name` 动态节点集合；Mihomo 还支持 `kind: rematch` 引用同一规则集声明的 Rematch 出站。展开后按首次出现去重。字段缺失时继续使用内置的名称匹配默认顺序。后台入口为「规则库 → 编辑规则集 → 代理组成员」。
+默认规则在私网直连和全局 QUIC 控制之后、普通 UDP 控制之前，将 `clau.de`、`claude.ai`、`claude.com`、`anthropic.com`、`claudeusercontent.com` 及其子域名，以及官方服务地址段 `160.79.104.0/23`、`2607:6bc0::/48` 分配给 `💬 Ai平台`。Claude 的 `UDP/443` 与其他互联网流量一样先遵守全局 QUIC 控制，默认禁用；回退后的 TCP 进入 AI 分组。这里使用的是 [Anthropic 官方入站地址段](https://platform.claude.com/docs/en/api/ip-addresses)，不包含其向外发起请求的 `/21` 地址段。个人规则仍排在共用规则之前。启动迁移只更新与旧官方默认内容完全一致的规则集（支持 LF/CRLF），保留自定义规则和模板。
+
+`proxy_group_members` 可选地覆盖单个代理组内部的成员顺序，Mihomo 与 sing-box 共用。支持按节点选择（稳定 `node_id`）、内置出站、其他代理组以及 `remaining` / `region:XX` / `tag:name` 动态节点集合；Mihomo 还支持 `kind: rematch` 引用同一规则集声明的 Rematch 出站。展开后按首次出现去重。字段缺失时继续使用内置的名称匹配默认顺序。后台入口为「规则库 → 编辑规则集 → 代理组成员」。
 
 主规则（加上渲染器自动补充的必要依赖组）是代理组存在性的真相源。删除主规则中某个代理组后，后台保存前会列出并确认级联删除该组的 `proxy_group_order`、`proxy_group_members` 与 `proxy_group_options` 项；保存接口也会执行相同规范化并返回实际落盘实体，确保直接 API 调用不会留下不可见的孤立配置。仅删除以该组为键的顶层配置；其它存活组若仍把它作为成员引用，继续按 `missing_group` 拦截，不能静默改变存活组的路由语义。已有孤立配置不做启动时批量迁移，在下一次保存该规则集时清理。
 
 > **跨规则集引用限制**：`proxy_group` 成员的校验以单个规则集为单位——被引用的组必须出现在**当前规则集自身**的主规则中，否则保存时按 `missing_group` 拦截（编辑器预览同样如此，反馈一致）。渲染时多个规则集会拼接，因此已保存的跨规则集引用能正常解析；但保存阶段暂不支持引用只在其它规则集里定义的组。若需要跨规则集引用，请把相关组定义在同一规则集内。
 
-`proxy_group_options` 可选地覆盖单个代理组的类型，支持 `select`、`url-test`、`fallback`、`load-balance`。三个自动类型共用 `url`、`interval`、`lazy`、`timeout`；`url-test` 额外支持 `tolerance`，`load-balance` 额外支持 `round-robin` / `consistent-hashing` / `sticky-sessions`。Mihomo 使用全部配置；sing-box 将 `url-test` 生成原生 `urltest`，映射 `url`、`interval` 和 `tolerance`，并静默丢弃其不支持的字段。`interval: 0` 会输出为 `0s`，sing-box 将其规范化为默认间隔 3 分钟。`fallback` 和 `load-balance` 在 sing-box 中仍生成手动 `selector`。自动类型（`url-test` / `fallback` / `load-balance`）的成员必须是真实出口（具体节点或其它代理组），不能包含 `DIRECT` / `REJECT` 等内置出口或 Rematch 出站——保存校验会直接拦截，Mihomo 自动组和 sing-box `urltest` 在渲染时也会剥离这类成员；若某用户可授权节点与配置成员没有交集导致成员为空，该组会安全降级为 `select`（避免生成把全部流量导向 `DIRECT` 的伪自动组）。模板绑定多个规则集且同名组重复配置时，members 与 options 分别按规则集顺序取第一个配置。
+`proxy_group_options` 可选地覆盖单个代理组的类型，支持 `select`、`url-test`、`fallback`、`load-balance`。三个自动类型共用 `url`、`interval`、`lazy`、`timeout`；`url-test` 额外支持 `tolerance`，`load-balance` 额外支持 `round-robin` / `consistent-hashing` / `sticky-sessions`。Mihomo 使用全部配置；sing-box 将 `url-test` 生成原生 `urltest`，映射 `url`、`interval` 和 `tolerance`，并静默丢弃其不支持的字段。`interval: 0` 会输出为 `0s`，sing-box 将其规范化为默认间隔 3 分钟。`fallback` 和 `load-balance` 在 sing-box 中仍生成手动 `selector`。自动类型（`url-test` / `fallback` / `load-balance`）的成员必须是真实出口（按节点选择或其它代理组），不能包含 `DIRECT` / `REJECT` 等内置出站或 Rematch 出站——保存校验会直接拦截，Mihomo 自动组和 sing-box `urltest` 在渲染时也会剥离这类成员；若某用户可授权节点与配置成员没有交集导致成员为空，该组会安全降级为 `select`（避免生成把全部流量导向 `DIRECT` 的伪自动组）。模板绑定多个规则集且同名组重复配置时，members 与 options 分别按规则集顺序取第一个配置。
 
 PSP 主规则遵守以下编译约定：模板中的规则集顺序决定合并顺序，每个规则集只有一份主规则；Mihomo 保持原始行序，sing-box 跳过无法转换的 Mihomo 专属类型。`SUB-RULE` 只能引用当前规则集声明的子规则，子规则禁止继续嵌套 `SUB-RULE`，并建议以 `MATCH` 兜底。只设置 `target-rematch-name` 的 Rematch 出站，其对应 `REMATCH-NAME` 处理规则必须位于触发该出站的规则之前，以避免重复匹配循环；也可以设置 `target-sub-rule` 直接进入子规则。
 
-同一 Mihomo 模板绑定的所有启用规则集中，子规则名和 Rematch 出站名必须分别保持唯一；出站名也不能与内置出口、代理组、节点重名。规则集保存和模板保存都会执行这组交叉校验。Mihomo 模板通过 `{{ sub_rules }}` 输出子规则映射内容，占位符本身不包含顶层 `sub-rules:` 键；缺少该占位符时不报错，子规则会被静默丢弃。默认模板在末尾显式定义 `sub-rules:` 并在其下内置该占位符。
+同一 Mihomo 模板绑定的所有启用规则集中，子规则名和 Rematch 出站名必须分别保持唯一；出站名也不能与内置出站、代理组、节点重名。规则集保存和模板保存都会执行这组交叉校验。Mihomo 模板通过 `{{ sub_rules }}` 输出子规则映射内容，占位符本身不包含顶层 `sub-rules:` 键；缺少该占位符时不报错，子规则会被静默丢弃。默认模板在末尾显式定义 `sub-rules:` 并在其下内置该占位符。
 
 ### 9.2 分组级 layout
 
@@ -1508,6 +1522,8 @@ func (c *Client) UpgradeXray(ctx, tag string) error
 | 管理员手动恢复服务 | 清 `service_disabled_reason`，推 `enable=true` |
 
 **永远不删 client**，只是暂停服务；且**从不锁账号登录**——详见 §7.9 的账号状态/服务状态拆分。
+
+**硬性暂停优先于配额**（2026-09-25）：服务已被 `service_manual` / `blocked_client` / `geo_anomaly` / `geo_auto` 暂停的用户，超限时不会被改写成 `traffic_exceeded`，周期滚动也不会恢复他们，期间紧急访问不可用——否则管理员的暂停会在下一个周期起点蒸发。详见 [connection-limits.md](connection-limits.md) §12.5.3。
 
 ### 11.4 看板聚合查询
 

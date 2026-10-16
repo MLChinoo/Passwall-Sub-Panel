@@ -55,6 +55,23 @@ var (
 // (§1.2 predicts ~0 for active users) and "how many clients does a user
 // have?" (P in the cost model).
 // ---------------------------------------------------------------------
+
+// The label values of the two lifecycle failure breakdowns declared below.
+// Fixed sets, like the node host outcomes further down: the diagnostics page
+// labels each one and its test reads these constants, so a new step is added
+// here or nowhere.
+const (
+	LifecycleErrorStagePoolGet           = "pool_get"
+	LifecycleErrorStageUpdate            = "update"
+	LifecycleErrorStageConfirmRead       = "confirm_read"
+	LifecycleErrorStageConfirmMismatch   = "confirm_mismatch"
+	LifecycleErrorStageRecordCredentials = "record_credentials"
+
+	// The kind label is the panel's normalised domain.PanelKind, or this when
+	// the pool cannot name one (the panel is not registered).
+	LifecycleErrorPanelKindUnknown = "unknown"
+)
+
 var (
 	LifecycleTotal = NewCounter(
 		"psp_lifecycle_sync_total",
@@ -84,6 +101,29 @@ var (
 	LifecycleErrorTotal = NewCounter(
 		"psp_lifecycle_sync_error_total",
 		"SyncLifecycle calls that failed.",
+	)
+	// The same failures broken down two ways, because the total alone
+	// cannot tell an operator where to look: a native node whose agent is
+	// offline fails the read-back after the write, a panel that rejects the
+	// write fails the write itself, and a panel deleted from PSP fails before
+	// either. Each failure counted in LifecycleErrorTotal increments exactly
+	// one child of EACH family below, so the children of either family sum
+	// to that total, which is left unlabelled and unchanged so its history
+	// stays comparable.
+	//
+	// Two single-label families rather than one with two labels, because a
+	// Vec here carries one label (vec.go). Neither carries the panel id: that
+	// would grow the label space with the deployment, so the id goes to the
+	// per-client Warn in sharedclient.SyncUserLifecycle instead.
+	LifecycleErrorStageTotal = NewCounterVec(
+		"psp_lifecycle_sync_error_stage_total",
+		"Failed SyncLifecycle calls by the step that failed: pool_get (panel not registered), update (the write), confirm_read (reading the client back after the write), confirm_mismatch (the read-back differs from what was written), record_credentials (saving the confirmed credentials). Sums to psp_lifecycle_sync_error_total.",
+		"stage",
+	)
+	LifecycleErrorPanelKindTotal = NewCounterVec(
+		"psp_lifecycle_sync_error_panel_kind_total",
+		"Failed SyncLifecycle calls by the kind of panel the client is on: 3xui, sui, psp; unknown when the panel is not registered. Sums to psp_lifecycle_sync_error_total.",
+		"kind",
 	)
 	// The gap between this and the quota floor's true value is the
 	// staleness a Phase 1 deadband would introduce, so measuring the
@@ -198,7 +238,157 @@ var (
 	// means psp_user_live_ips understates, and so does anything drawn from it.
 	LiveIPUsersIncompleteTotal = NewCounter(
 		"psp_live_ip_users_incomplete_total",
-		"Users whose fleet-wide live-IP count was a floor this poll because a panel could not be read.",
+		"User-poll occurrences where a panel holding the user's clients could not be live-read, so that user's live-IP count was a floor. The same user counts again every poll; an S-UI panel is always unread.",
+	)
+	// What the detector actually JUDGED, as opposed to what the upstream
+	// remembered. psp_user_live_ips is the 30-minute window; this is the
+	// sources live at poll time and left after every exclusion. The gap
+	// between the two is how much of the old number was memory and relays.
+	UserConcurrentIPs = NewHistogram(
+		"psp_user_concurrent_ips",
+		"Concurrent, non-excluded sources per judged user per traffic poll (IPv6 folded by /64). The number the location verdict is drawn from.",
+		"ips", CountBuckets,
+	)
+	// Window addresses that were not live at poll time. A large, steady
+	// value is the commuter effect the freshness rule exists to remove. A
+	// busy 3X-UI fleet reading zero here for hours is worth a look: it is
+	// what a fleet whose timestamps stopped arriving looks like, with every
+	// remembered address judged as live again.
+	LiveIPStaleTotal = NewCounter(
+		"psp_live_ip_stale_total",
+		"Live-IP window addresses judged stale (not seen within the freshness window of their node's newest scan), summed over judged users.",
+	)
+	// Sources set aside before judging, by rule: shared, listed, infra,
+	// internal. Labelled so an operator can tell a relay that is not
+	// registered (shared climbing) from a working exclusion (infra), and
+	// notice an ignore list that has grown to swallow real users (listed).
+	LiveIPExcludedTotal = NewCounterVec(
+		"psp_live_ip_excluded_total",
+		"Live sources excluded from location judging, by reason: shared, listed, infra, internal.",
+		"reason",
+	)
+	// Over-samples by the coarsest tier that was over. The dial for the
+	// default's sensitivity: a fleet whose region line dwarfs the country
+	// one is mostly home-router-plus-phone, and a region tolerance of 2 is
+	// the one-number fix.
+	GeoOverTierTotal = NewCounterVec(
+		"psp_geo_over_tier_total",
+		"Judged samples over the flag tolerances, by the coarsest tier over: country, region, city.",
+		"tier",
+	)
+	// Concurrent-source distance per judged user with ≥ 2 located sources below
+	// the country, by verdict state. The distribution that informs whether an
+	// impossible-travel detector is worth building (none exists, deliberately;
+	// the geo evidence keeps only each user's latest poll, so this is the one
+	// aggregate record of it). Aggregate only: no user id and no coordinate.
+	// Like every metric here it counts from process start or the last
+	// diagnostics reset, so read it before a restart.
+	GeoSpreadKm = NewHistogramVec("psp_geo_spread_km",
+		"Farthest pair of a judged user's concurrent sources placed below the country, in km after subtracting both accuracy radii, rounded to 10; sampled per traffic poll for users with at least two such sources.",
+		"km", "state", DistanceBucketsKm)
+	// Users NOT re-judged because their last judgement was less than half a
+	// poll interval ago. The guard measures elapsed time only, not who
+	// started the poll, so a manual "poll now" is not the only source: a
+	// scheduled poll that follows a manual one by less than half an
+	// interval counts here, and so does the first scheduled poll after
+	// cron_traffic_pull_minutes is raised to more than twice its old value
+	// (the ticker still fires on the old cadence while the spacing is
+	// already half the new one). A rise is therefore not proof that someone
+	// is pressing "poll now"; a count that keeps climbing with no interval
+	// change and no clock step is the shape of repeated clicks, which is
+	// exactly the acceleration this guard refuses to count.
+	GeoSamplesSpacedTotal = NewCounter(
+		"psp_geo_samples_spaced_total",
+		"Users skipped by the location detector because they were judged less than half a traffic interval ago.",
+	)
+	// The optional automatic suspension (geo_auto), by outcome. Two lines
+	// matter most. lifted_admin against suspended is the false-positive
+	// rate: every geo_auto an admin resumes by hand is one the detector got
+	// wrong or one a person overruled. lift_error / suspend_error are the
+	// failures that otherwise show only as Warn logs. deferred and
+	// lift_deferred climbing mean the per-poll caps are being hit — a mass
+	// event, or a broken location database with suspension on. A poll
+	// cancelled before Phase 4 finishes (a closed "Poll now" tab, a
+	// shutdown) defers what it had not started and counts it here too;
+	// that shows as a sporadic bump, not a climb. lift_deferred also counts
+	// the suspensions of a group whose settings could not be read that
+	// poll: their duration is unknown, so they are not timed until it is.
+	GeoAutoSuspensionTotal = NewCounterVec(
+		"psp_geo_auto_suspension_total",
+		"Automatic location suspensions by outcome: suspended, skipped_held, skipped_unwired, deferred, suspend_error, lifted_expiry, lifted_admin, lift_skipped, lift_deferred, lift_error.",
+		"outcome",
+	)
+	// PSP's own node and relay addresses, excluded as infrastructure. A
+	// drop to zero with nodes configured means the refresh is failing or
+	// every hostname stopped resolving.
+	InfraAddresses = NewGauge(
+		"psp_infra_addresses",
+		"Distinct node and relay addresses currently excluded from location judging as PSP infrastructure.",
+	)
+	InfraAddressResolveFailuresTotal = NewCounter(
+		"psp_infra_address_resolve_failures_total",
+		"Node or relay hostnames that failed to resolve during an infrastructure-address refresh. The previous addresses are kept.",
+	)
+	// Connections in the latest live-connection snapshot, the risk
+	// center's default view: one per account, panel node and source,
+	// capped per account. Set whenever a snapshot is stored, so it is the
+	// size of what an admin is shown. Not a detector sample — nothing
+	// judges on it — and it carries no address.
+	LiveConnections = NewGauge(
+		"psp_live_connections",
+		"Live connections (account, panel node, source) in the latest stored live-connection snapshot.",
+	)
+	// The risk center's on-demand live-connection refreshes (立即刷新), by
+	// outcome. ok and partial read every panel (partial: at least one read
+	// failed, so the view is missing connections; a panel with no live read
+	// at all, S-UI, is never partial). just_polled answered with the poll's
+	// snapshot and read nothing; cooldown and in_progress were refused and
+	// read nothing; error means the refresh could not run (the shared
+	// clients were unreadable, or it timed out). A refresh is never a
+	// detector sample, so none of this moves a verdict — this is the cost
+	// admins' clicks put on the panels.
+	LiveConnRefreshTotal = NewCounterVec(
+		"psp_live_conn_refresh_total",
+		"Risk-center live-connection refreshes by outcome: ok, partial (a panel read failed), just_polled (answered with the poll's snapshot), cooldown, in_progress (refused), error.",
+		"outcome",
+	)
+	// Polls whose judged connections could not be recorded into the
+	// connection history (connection_history). The poll carries on —
+	// metering is its job — so without this a history that has stopped
+	// growing shows only as a Warn. Any steady climb means the history
+	// holds less than it appears to: the samples of those polls are not in
+	// it and are never written later.
+	ConnectionHistoryWriteErrorsTotal = NewCounter(
+		"psp_connection_history_write_errors_total",
+		"Traffic polls whose judged connections could not be recorded into the connection history. The poll itself is unaffected.",
+	)
+	// Flag-record writes (flag_records) that failed on the paths that do
+	// not fail with them: the traffic poll's geo attention changes and
+	// geo_auto transitions, and the user service's staff resume and
+	// replacement of a geo_auto. Each has already happened when its record
+	// is written, so the poll or the request carries on and the record is
+	// lost; without this that shows only as a Warn. One per failed write,
+	// which may carry several records. The risk signals' records are not
+	// counted here: they are written in the transaction of the upsert that
+	// caused them, and fail it.
+	FlagRecordWriteErrorsTotal = NewCounter(
+		"psp_flag_record_write_errors_total",
+		"Flag-record writes of the location detector and its automatic suspension that failed; the transitions they describe happened and are not undone.",
+	)
+	// Risk-signal refreshes (hourly by default, risk.refresh_interval_minutes),
+	// by outcome. The signals are observe-only and a failed run keeps the
+	// previous rows, so nothing else shows a worker that has quietly stopped
+	// judging: ok means every signal was recomputed and saved; partial means
+	// a source failed (a group's settings, a traffic read, the fetch log) and
+	// the kinds or accounts it feeds kept their previous rows; infra_pending
+	// means the place signals were skipped because PSP's own node and relay
+	// addresses had not been collected yet; error means nothing was written
+	// at all. A fleet reading partial or infra_pending for hours is judging
+	// from stale rows.
+	RiskRefreshTotal = NewCounterVec(
+		"psp_risk_refresh_total",
+		"Risk-signal refreshes by outcome: ok; partial (a source failed and what it feeds kept its previous rows); infra_pending (place signals skipped: infrastructure addresses not loaded yet); error (nothing written).",
+		"outcome",
 	)
 	// P in the cost model.
 	UserClientCount = NewHistogram(
@@ -208,7 +398,7 @@ var (
 	)
 	SyncUserDuration = NewHistogram(
 		"psp_sync_user_lifecycle_ms",
-		"Wall time for one user's full lifecycle fan-out across all their clients. P x 2 serial round trips today.",
+		"Wall time for one user's full lifecycle fan-out across all their clients. Clients are handled in parallel, so this is roughly the slowest panel's read, write and confirm.",
 		"ms", LatencyBucketsMS,
 	)
 )
@@ -240,7 +430,7 @@ var (
 var (
 	PushSemCapacity = NewGauge(
 		"psp_push_sem_capacity",
-		"Configured push-semaphore capacity. Set once at construction.",
+		"Push-semaphore capacity, fixed at construction (8). Zero means the traffic service was never built.",
 	)
 	PushSemInflight = NewGauge(
 		"psp_push_sem_inflight",
@@ -412,6 +602,16 @@ var (
 		"psp_node_host_pruned_rows_total",
 		"Node host telemetry rows removed by retention, by table.",
 		"table",
+	)
+	// The FIRST result counter on /v1/node/sync, and it counts the half that was
+	// invisible. A refused report produced no row, no audit entry and no log line
+	// carrying an agent id, so a node reporting a generation this panel does not
+	// admit was indistinguishable from one that was switched off. The log line is
+	// throttled per agent; this is not, because it is the durable record.
+	NodeSyncRefusedTotal = NewCounterVec(
+		"psp_node_sync_refused_total",
+		"Authenticated node reports refused at the wire boundary, by reason.",
+		"reason",
 	)
 )
 

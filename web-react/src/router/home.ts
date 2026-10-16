@@ -13,9 +13,20 @@ export function isAdminPath(path: string): boolean {
 // Admin-only routes that operators must not see in the sidebar and
 // shouldn't be able to navigate to directly. Mirrors the backend's
 // adminGroup vs staffGroup split — keep them in sync.
+//
+// The risk center is the third of the three gates that must name it: the
+// `risk.view` capability (utils/permissions.ts) and the nav item's adminOnly
+// flag (AdminLayout) are the other two. Without it here an operator who typed
+// the URL would land on a page whose every read is a 403.
+//
+// The diagnostics page is the second page held by all three gates the same
+// way: `diagnostics.view`, its nav item's adminOnly flag, and this entry.
+// Every read and the clear behind it are adminGroup endpoints.
 const ADMIN_ONLY_ROUTES = [
   '/admin/servers',
   '/admin/settings',
+  '/admin/risk',
+  '/admin/diagnostics',
 ]
 
 export function isAdminOnlyPath(path: string): boolean {

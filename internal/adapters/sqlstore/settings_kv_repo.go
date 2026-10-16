@@ -440,15 +440,89 @@ func settingDescriptors(s *ports.UISettings) []settingDescriptor {
 		intField("notify", "traffic_remain_percent", &s.TrafficRemainPercent),
 
 		// geo_anomaly --- concurrent-location anomaly policy (traffic poll).
-		// Per-group overridable; see ports.OverridableScopeKeys and
-		// docs/connection-limits.md §12.3.
+		// Per-group overridable except ignore_addresses, which is global only;
+		// see ports.OverridableScopeKeys and docs/connection-limits.md §12.3.
+		// Every int here stores 0 for "never configured" and is NOT defaulted
+		// in applyUISettingsDefaults: domain.GeoPolicyFromSettings owns that
+		// rule, and a group override of 0 must mean the same thing.
 		strField("geo_anomaly", "scope", &s.GeoAnomalyScope),
 		intField("geo_anomaly", "max_places", &s.GeoAnomalyMaxPlaces),
+		intField("geo_anomaly", "max_regions", &s.GeoAnomalyMaxRegions),
+		intField("geo_anomaly", "max_cities", &s.GeoAnomalyMaxCities),
 		intField("geo_anomaly", "flag_after_polls", &s.GeoAnomalyFlagAfterPolls),
 		intField("geo_anomaly", "clear_after_polls", &s.GeoAnomalyClearAfterPolls),
 		floatField("geo_anomaly", "min_placed_ratio", &s.GeoAnomalyMinPlacedRatio),
 		strField("geo_anomaly", "co_travel", &s.GeoAnomalyCoTravel),
 		boolField("geo_anomaly", "allow_anywhere", &s.GeoAnomalyAllowAnywhere),
+		strField("geo_anomaly", "ignore_addresses", &s.GeoAnomalyIgnoreAddresses),
+		// geo_anomaly --- automatic temporary suspension (off by default).
+		boolField("geo_anomaly", "ban_enabled", &s.GeoAnomalyBanEnabled),
+		intField("geo_anomaly", "ban_max_countries", &s.GeoAnomalyBanMaxCountries),
+		intField("geo_anomaly", "ban_max_regions", &s.GeoAnomalyBanMaxRegions),
+		intField("geo_anomaly", "ban_max_cities", &s.GeoAnomalyBanMaxCities),
+		intField("geo_anomaly", "ban_after_polls", &s.GeoAnomalyBanAfterPolls),
+		intField("geo_anomaly", "ban_duration_minutes", &s.GeoAnomalyBanDurationMinutes),
+		// geo_anomaly --- the detector's fleet-wide runtime (the former
+		// constants). GLOBAL only (absent from ports.OverridableScopeKeys),
+		// and, like the knobs above, 0 is "never configured":
+		// domain.GeoRuntimeFromSettings owns both that and the clamps.
+		intField("geo_anomaly", "fresh_window_seconds", &s.GeoAnomalyFreshWindowSeconds),
+		intField("geo_anomaly", "shared_exit_min_users", &s.GeoAnomalySharedExitMinUsers),
+		intField("geo_anomaly", "ban_max_per_poll", &s.GeoAnomalyBanMaxPerPoll),
+		intField("geo_anomaly", "lift_max_per_poll", &s.GeoAnomalyLiftMaxPerPoll),
+		intField("geo_anomaly", "infra_refresh_minutes", &s.GeoAnomalyInfraRefreshMinutes),
+		intField("geo_anomaly", "infra_host_ttl_minutes", &s.GeoAnomalyInfraHostTTLMinutes),
+
+		// risk --- risk signals (observe only). The judging policy below is
+		// per-group overridable; hwid_capture_off is GLOBAL only (absent
+		// from ports.OverridableScopeKeys): /sub reads it from the global
+		// settings it already loaded.
+		//
+		// None of them is defaulted in applyUISettingsDefaults. The switches
+		// are negative, so false (signal on, capture on) already is the
+		// default; each number stores 0 for "never configured", and
+		// domain.RiskPolicyFromSettings owns what 0 means — a group override
+		// of 0 has to mean the same thing, which a filled-in global default
+		// would break.
+		boolField("risk", "sub_spread_off", &s.RiskSubSpreadOff),
+		boolField("risk", "devices_off", &s.RiskDevicesOff),
+		boolField("risk", "usage_shift_off", &s.RiskUsageShiftOff),
+		boolField("risk", "login_country_off", &s.RiskLoginCountryOff),
+		intField("risk", "min_days", &s.RiskMinDays),
+		intField("risk", "max_devices", &s.RiskMaxDevices),
+		floatField("risk", "usage_ratio", &s.RiskUsageRatio),
+		intField("risk", "usage_floor_gb", &s.RiskUsageFloorGB),
+		intField("risk", "login_warmup_logins", &s.RiskLoginWarmupLogins),
+		intField("risk", "login_hold_days", &s.RiskLoginHoldDays),
+		intField("risk", "usage_warmup_days", &s.RiskUsageWarmupDays),
+		intField("risk", "usage_flag_days", &s.RiskUsageFlagDays),
+		intField("risk", "usage_suspect_days", &s.RiskUsageSuspectDays),
+		boolField("risk", "hwid_capture_off", &s.RiskHWIDCaptureOff),
+		// risk --- the worker's fleet-wide runtime (the former constants of
+		// the loop, the fetch window, the login read, the bell and
+		// usage_shift's series). GLOBAL only (absent from
+		// ports.OverridableScopeKeys), and 0 is "never configured":
+		// domain.RiskRuntimeFromSettings owns both that and the clamps.
+		intField("risk", "refresh_interval_minutes", &s.RiskRefreshIntervalMinutes),
+		intField("risk", "first_delay_minutes", &s.RiskFirstDelayMinutes),
+		intField("risk", "alert_freshness_hours", &s.RiskAlertFreshnessHours),
+		intField("risk", "window_days", &s.RiskWindowDays),
+		intField("risk", "login_lookback_days", &s.RiskLoginLookbackDays),
+		intField("risk", "usage_baseline_days", &s.RiskUsageBaselineDays),
+		intField("risk", "usage_recent_days", &s.RiskUsageRecentDays),
+		// connection_history's retention. Global like the runtime above,
+		// and deliberately NOT given the key-presence default the other
+		// retentions get in Load: 0 is the default week here, never "keep
+		// forever" (domain.RiskRuntimeFromSettings).
+		intField("risk", "connection_retention_days", &s.RiskConnectionRetentionDays),
+		// flag_records' retention, the same way: global, no key-presence
+		// default, 0 is the shipped 90 days and never "keep forever".
+		intField("risk", "flag_record_retention_days", &s.RiskFlagRecordRetentionDays),
+		// The risk center's live view: its staleness warning, the refresh
+		// cooldown and the device-inference window. Global, 0 = default.
+		intField("risk", "live_snapshot_stale_minutes", &s.RiskLiveSnapshotStaleMinutes),
+		intField("risk", "live_refresh_cooldown_seconds", &s.RiskLiveRefreshCooldownSeconds),
+		intField("risk", "device_infer_hours", &s.RiskDeviceInferHours),
 
 		// geo --- IP geolocation for access-log region display (offline .mmdb)
 		boolField("geo", "geo_ip_enabled", &s.GeoIPEnabled),

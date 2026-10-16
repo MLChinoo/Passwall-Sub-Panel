@@ -24,4 +24,21 @@ describe('route access helpers', () => {
     expect(isAdminOnlyPath('/admin/users')).toBe(false)
     expect(isAdminOnlyPath('/admin/settings-extra')).toBe(false)
   })
+
+  // The risk center reads adminGroup endpoints only (its tabs are what the
+  // Logs page used to gate per tab), so the whole page is admin-only at the
+  // route, the same way servers and settings are.
+  it('keeps the risk center and anything under it admin-only', () => {
+    expect(isAdminOnlyPath('/admin/risk')).toBe(true)
+    expect(isAdminOnlyPath('/admin/risk/x')).toBe(true)
+    expect(isAdminOnlyPath('/admin/risky')).toBe(false)
+  })
+
+  // The diagnostics page reads and clears the metrics registry through
+  // adminGroup endpoints only, so an operator is turned away at the route.
+  it('keeps diagnostics and anything under it admin-only', () => {
+    expect(isAdminOnlyPath('/admin/diagnostics')).toBe(true)
+    expect(isAdminOnlyPath('/admin/diagnostics/x')).toBe(true)
+    expect(isAdminOnlyPath('/admin/diagnosticsx')).toBe(false)
+  })
 })

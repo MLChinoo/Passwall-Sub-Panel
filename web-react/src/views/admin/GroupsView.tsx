@@ -34,9 +34,11 @@ import SearchIcon from '@mui/icons-material/Search'
 import DeleteIcon from '@mui/icons-material/DeleteOutlined'
 import EditIcon from '@mui/icons-material/EditOutlined'
 import { useTranslation } from 'react-i18next'
+import { Link as RouterLink } from 'react-router'
 import { deviceCapIsInert } from '@/utils/capabilities'
 import { useCan } from '@/utils/permissions'
 import { allSettledLimited } from '@/utils/promises'
+import { AsyncIconButton } from '@/components/AsyncButton'
 
 import { createGroup, deleteGroup, updateGroup } from '@/api/groups'
 import type { ListResponse } from '@/api/types'
@@ -644,14 +646,21 @@ export default function GroupsView() {
                         <IconButton size="small" onClick={() => openEdit(g)} aria-label={t('admin:groups.action.edit')}>
                           <EditIcon fontSize="small" />
                         </IconButton>
-                        <IconButton
+                        {/* Unlike batchDeleteGroups (which has batchBusy + a
+                            spinner), this row action awaited its request with
+                            no busy state at all — on a slow link the icon sat
+                            unchanged for the whole round trip and invited a
+                            second, duplicate delete. AsyncIconButton needs the
+                            handler to RETURN the promise, which confirmDelete
+                            already does as an async function. */}
+                        <AsyncIconButton
                           size="small"
                           onClick={() => confirmDelete(g)}
                           aria-label={t('admin:groups.action.delete')}
                           sx={{ color: md.error, '&.Mui-disabled': { color: alpha(md.error, 0.4) } }}
                         >
                           <DeleteIcon fontSize="small" />
-                        </IconButton>
+                        </AsyncIconButton>
                       </>}
                     </TableCell>
                   </TableRow>
@@ -812,7 +821,26 @@ export default function GroupsView() {
                       <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
                         {t('admin:groups.scope.title', { defaultValue: '按组覆盖（否则继承全局）' })}
                       </Typography>
-                      <ScopeOverridesEditor scope={scope} onChange={setScope} />
+                      {/* The detector exceptions (locations, auto-suspension,
+                          risk signals) are edited on the risk center's policy
+                          page, beside the global values they override. The
+                          link opens a new tab: this dialog tracks no unsaved
+                          state, so leaving this tab would drop the admin's
+                          group edits without a word. Keys left out here are
+                          untouched by this save (saveScopeState writes only
+                          what changed). */}
+                      <ScopeOverridesEditor scope={scope} onChange={setScope}
+                        categories={['2fa', 'notify', 'emergency', 'login', 'sub']} />
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 1.5 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ flex: '1 1 220px' }}>
+                          {t('admin:groups.scope.policy_pointer')}
+                        </Typography>
+                        <Button size="small" variant="text" component={RouterLink}
+                          to={`/admin/risk?tab=policy&group=${editing.id}`}
+                          target="_blank" rel="noopener">
+                          {t('admin:groups.scope.open_policy')}
+                        </Button>
+                      </Box>
                     </Box>
                   ) : (
                     <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>

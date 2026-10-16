@@ -34,22 +34,23 @@ import (
 // (v3.6.0-beta.3) to write audit-trail rows and to schedule the post-upgrade
 // smoke probe; they're optional for the CRUD/Test flows.
 type AdminServersHandler struct {
-	repo             ports.XUIPanelRepo
-	pool             ports.XUIPool
-	nodes            ports.NodeRepo
-	audit            ports.AuditRepo
-	async            AsyncDispatcher
-	invalidateRender func()
-	native           ports.NativeAgentProvisioningRepo
-	agents           ports.NodeAgentRepo
-	nodeSettings     ports.SettingsRepo
-	nativeUpgrade    NativeAgentUpgradeService
-	nodeDiagnostics  NodeDiagnosticsService
-	nodeReleases     ports.NodeReleaseCatalog
-	nodeInstall      ports.NodeInstallTemplate
-	coreCatalog      ports.CoreCatalog
-	serverMigration  ServerMigrationPreviewer
-	nodeMetrics      ports.NodeHostMetricRepo
+	repo              ports.XUIPanelRepo
+	pool              ports.XUIPool
+	nodes             ports.NodeRepo
+	audit             ports.AuditRepo
+	async             AsyncDispatcher
+	invalidateRender  func()
+	realityNormalizer RealityFingerprintNormalizer
+	native            ports.NativeAgentProvisioningRepo
+	agents            ports.NodeAgentRepo
+	nodeSettings      ports.SettingsRepo
+	nativeUpgrade     NativeAgentUpgradeService
+	nodeDiagnostics   NodeDiagnosticsService
+	nodeReleases      ports.NodeReleaseCatalog
+	nodeInstall       ports.NodeInstallTemplate
+	coreCatalog       ports.CoreCatalog
+	serverMigration   ServerMigrationPreviewer
+	nodeMetrics       ports.NodeHostMetricRepo
 
 	// startedAt is when THIS PSP process began listening. It exists because a
 	// node's silence during the panel's own downtime is not evidence about the
@@ -58,6 +59,14 @@ type AdminServersHandler struct {
 	// reads as "up long enough", which keeps the pre-existing verdict for any
 	// handler built without the constructor.
 	startedAt time.Time
+}
+
+// RealityFingerprintNormalizer converges PSP-owned inbound snapshots after a
+// trusted Xray version observation. It is intentionally idempotent: callers
+// invoke it for every 26.9.8+ observation so failed or previously missed
+// migrations are retried instead of depending on a one-shot version change.
+type RealityFingerprintNormalizer interface {
+	NormalizeRealityFingerprintsForPanel(context.Context, int64, string) (int, error)
 }
 
 func (h *AdminServersHandler) WithNativeAgentProvisioning(repo ports.NativeAgentProvisioningRepo) *AdminServersHandler {
@@ -80,6 +89,26 @@ func (h *AdminServersHandler) WithNodeInstallTemplate(template ports.NodeInstall
 func (h *AdminServersHandler) WithCoreCatalog(catalog ports.CoreCatalog) *AdminServersHandler {
 	h.coreCatalog = catalog
 	return h
+}
+
+func (h *AdminServersHandler) WithRealityFingerprintNormalizer(normalizer RealityFingerprintNormalizer) *AdminServersHandler {
+	h.realityNormalizer = normalizer
+	return h
+}
+
+func (h *AdminServersHandler) normalizeRealityFingerprints(ctx context.Context, panelID int64, xrayVersion, source string) {
+	if h.realityNormalizer == nil {
+		return
+	}
+	changed, err := h.realityNormalizer.NormalizeRealityFingerprintsForPanel(ctx, panelID, xrayVersion)
+	if err != nil {
+		// The periodic probe and later observations retry this idempotently. Do
+		// not report a completed core installation as failed after the core has
+		// already switched merely because one inbound could not be converged yet.
+		log.Warn(source+": normalize REALITY fingerprints", "panel_id", panelID, "changed", changed, "err", err)
+	} else if changed > 0 {
+		log.Info("normalized REALITY fingerprints for observed Xray version", "source", source, "panel_id", panelID, "nodes", changed)
+	}
 }
 
 func (h *AdminServersHandler) WithNodeAgents(repo ports.NodeAgentRepo) *AdminServersHandler {
@@ -174,6 +203,22 @@ type serverDTO struct {
 	NodeUpgradeReady        bool       `json:"node_upgrade_ready,omitempty"`
 	NodeMissingCapabilities []string   `json:"node_missing_capabilities,omitempty"`
 	NodeProtocolObservedAt  *time.Time `json:"node_protocol_observed_at,omitempty"`
+	// NodeRefused* describe a report this panel is currently REFUSING. They are
+	// separate from the observation fields above, and that separation is the
+	// point: NodeProtocolVersion keeps meaning "the last generation that was
+	// ACCEPTED", so an operator can be shown both halves — last verified
+	// generation 1, now reporting 2 and refused since a given time. compat-policy
+	// 3.2's rule that a network failure must not erase the last valid observation
+	// becomes visible here for the first time rather than only being true.
+	NodeRefusedProtocolVersion *int       `json:"node_refused_protocol_version,omitempty"`
+	NodeRefusedSince           *time.Time `json:"node_refused_since,omitempty"`
+	NodeRefusedAt              *time.Time `json:"node_refused_at,omitempty"`
+	// NodeReviewedProtocolMin/Max are the generations THIS PANEL declares it
+	// speaks. They ride on the row so a refusal can be explained without a second
+	// request: "reports 2, this panel reviewed 1..1" is the whole story, and an
+	// operator should not have to know where else to look for the other half.
+	NodeReviewedProtocolMin *int       `json:"node_reviewed_protocol_min,omitempty"`
+	NodeReviewedProtocolMax *int       `json:"node_reviewed_protocol_max,omitempty"`
 	VersionCheckedAt        *time.Time `json:"version_checked_at,omitempty"`
 	CompatStatus            string     `json:"compat_status,omitempty"`  // "supported" | "too_old" | "untested" | "unknown"
 	CompatMessage           string     `json:"compat_message,omitempty"` // human-readable, for tooltip / banner
@@ -802,8 +847,13 @@ func (h *AdminServersHandler) Test(c *gin.Context) {
 		now := time.Now()
 		if uerr := h.repo.UpdateVersion(c.Request.Context(), req.ID, status.PanelVersion, status.XrayVersion, &now); uerr != nil {
 			log.Warn("admin test: write version", "panel_id", req.ID, "err", uerr)
-		} else if h.invalidateRender != nil {
-			h.invalidateRender()
+		} else {
+			if isXUI {
+				h.normalizeRealityFingerprints(c.Request.Context(), req.ID, status.XrayVersion, "admin test")
+			}
+			if h.invalidateRender != nil {
+				h.invalidateRender()
+			}
 		}
 		if isXUI {
 			compatStatus := version.CheckXUI(status.PanelVersion)
@@ -1421,8 +1471,11 @@ func (h *AdminServersHandler) UpgradeXray(c *gin.Context) {
 	now := time.Now()
 	if err := h.repo.UpdateVersion(c.Request.Context(), id, status.PanelVersion, status.XrayVersion, &now); err != nil {
 		log.Warn("xray upgrade: write version", "panel_id", id, "err", err)
-	} else if h.invalidateRender != nil {
-		h.invalidateRender()
+	} else {
+		h.normalizeRealityFingerprints(c.Request.Context(), id, status.XrayVersion, "xray upgrade")
+		if h.invalidateRender != nil {
+			h.invalidateRender()
+		}
 	}
 
 	if req.Version == "latest" {
@@ -1566,8 +1619,11 @@ func (h *AdminServersHandler) runPostUpgradeSmoke(ctx context.Context, panelID i
 		now := time.Now()
 		if err := h.repo.UpdateVersion(ctx, panelID, status.PanelVersion, status.XrayVersion, &now); err != nil {
 			log.Warn("post-upgrade smoke: write version", "panel_id", panelID, "err", err)
-		} else if h.invalidateRender != nil {
-			h.invalidateRender()
+		} else {
+			h.normalizeRealityFingerprints(ctx, panelID, status.XrayVersion, "post-upgrade smoke")
+			if h.invalidateRender != nil {
+				h.invalidateRender()
+			}
 		}
 		h.writeSmokeAudit(ctx, "panel_upgrade_succeeded", panelID, panelName, targetVersion,
 			"panel back online at "+status.PanelVersion+" (xray "+status.XrayVersion+"), inbounds decode ok")
@@ -1860,20 +1916,37 @@ func (h *AdminServersHandler) toServerDTOWithAgent(p *domain.Panel, agent *domai
 				dto.NodeCapabilities = append([]string(nil), agent.ObservedCapabilities...)
 				dto.NodeProtocolObservedAt = agent.ProtocolObservedAt
 				dto.NodeMissingCapabilities = append([]string(nil), compatibility.MissingAgentUpgrade...)
-				// THE VERDICT COMES FROM THE SAME FUNCTION THE ADMISSION PATH
-				// USES. The raw protocol fields above are a projection of the
-				// observation, not a decision; this is the decision, so the list
-				// and the upgrade action cannot disagree about what is eligible.
-				decision := nodecompat.Decide(agent, compatadmission.OperationUpgradeEligibility, time.Now().UTC(), policy)
-				dto.NodeCompatibility = nodeCompatibilityState(decision)
-				dto.NodeCompatibilityReason = string(decision.Reason)
-				// ONE ANSWER, NOT TWO. This used to require a separately reviewed
-				// from→to edge on top of the decision, so a row read "compatible"
-				// while the upgrade action was disabled — and the only remedy was
-				// a document edit nobody had asked for. The decision IS the
-				// answer: a peer PSP's own judgement accepts is upgradeable.
-				dto.NodeUpgradeReady = decision.Allowed
 			}
+			if agent.CurrentlyRefused() {
+				dto.NodeRefusedProtocolVersion = agent.RefusedProtocolVersion
+				dto.NodeRefusedSince = agent.RefusedFirstAt
+				dto.NodeRefusedAt = agent.RefusedAt
+			}
+			// THE VERDICT COMES FROM THE SAME FUNCTION THE ADMISSION PATH USES.
+			// The raw protocol fields above are a projection of the observation,
+			// not a decision; this is the decision, so the list and the upgrade
+			// action cannot disagree about what is eligible.
+			//
+			// IT IS TAKEN FOR EVERY AGENT, not only one with an accepted
+			// observation. It used to sit inside that branch, which made the most
+			// important case unreachable: a node whose reports this panel refuses
+			// has no accepted observation to offer, so the row fell through to the
+			// "unknown" default and told an operator to wait for a check-in that
+			// was already happening and already being refused. That is also the
+			// bucket a never-installed node sits in, so the two were identical on
+			// screen.
+			generations := domain.SupportedNodeProtocolGenerations()
+			dto.NodeReviewedProtocolMin = &generations.Min
+			dto.NodeReviewedProtocolMax = &generations.Max
+			decision := nodecompat.Decide(agent, compatadmission.OperationUpgradeEligibility, time.Now().UTC(), policy)
+			dto.NodeCompatibility = nodeCompatibilityState(decision)
+			dto.NodeCompatibilityReason = string(decision.Reason)
+			// ONE ANSWER, NOT TWO. This used to require a separately reviewed
+			// from→to edge on top of the decision, so a row read "compatible"
+			// while the upgrade action was disabled — and the only remedy was a
+			// document edit nobody had asked for. The decision IS the answer: a
+			// peer PSP's own judgement accepts is upgradeable.
+			dto.NodeUpgradeReady = decision.Allowed
 		}
 	}
 	client, err := h.pool.Get(p.ID)

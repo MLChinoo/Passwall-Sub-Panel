@@ -63,6 +63,12 @@ type AuditFilter struct {
 	Search string
 	Since  *time.Time
 	Until  *time.Time
+	// ExcludeTargetPrefixes leaves out every row whose target starts with
+	// one of these (literally: no wildcards), from the page and from the
+	// total alike. The audit read sets it for any caller who is not an
+	// administrator, so the rows only an administrator may read never
+	// reach an operator; empty = no exclusion.
+	ExcludeTargetPrefixes []string
 }
 
 // AuthEventFilter scopes a query over the authentication-event log.
@@ -75,6 +81,14 @@ type AuthEventFilter struct {
 	Until   *time.Time
 	// Search is a case-insensitive substring matched across upn / ip / ua / reason.
 	Search string
+	// AfterID, when positive, keeps only the events with id > AfterID. With
+	// SortBy "id" ascending and Page 1 it is a keyset cursor: pass the last
+	// id of the previous page. Offset paging (Page n) is not stable while
+	// the hourly retention prune deletes the oldest rows between two pages
+	// — every later row moves up past the page boundary and is never read —
+	// and a cursor on the primary key is. Internal readers only; the admin
+	// API does not expose it.
+	AfterID int64
 }
 
 type SubLogFilter struct {
@@ -86,6 +100,60 @@ type SubLogFilter struct {
 	Since  *time.Time
 	Until  *time.Time
 }
+
+// ConnectionHistoryFilter narrows the admin's connection_history read. Every
+// field is optional; the zero value lists every visible row, newest last
+// sighting first. Sortable by last_seen (the default, newest first),
+// first_seen, count, ip and user_id; an unknown sort falls back to the
+// default.
+type ConnectionHistoryFilter struct {
+	Pagination
+	UserID, PanelID *int64
+	// Exclusion: "" any source; ConnExclusionKept the sources the detector
+	// judged; ConnExclusionExcluded the ones it set aside; or one reason
+	// (domain.AddressExcludedInternal, Listed, Infra or Shared). Anything
+	// else is a domain.ErrValidation, never an empty answer.
+	Exclusion string
+	// Since and Until bound the LAST sighting, both inclusive.
+	Since, Until *time.Time
+	// Search: case-insensitive substring across the address, the source,
+	// the country code, the region, the city and the account's upn.
+	Search string
+}
+
+// The two exclusion filters that are not a reason: every judged source, and
+// every source set aside for any reason.
+const (
+	ConnExclusionKept     = "kept"
+	ConnExclusionExcluded = "excluded"
+)
+
+// FlagRecordFilter narrows the admin's flag_records read. Every field is
+// optional; the zero value lists every visible record, newest first. The
+// order is fixed (at_ms, then id, both descending): a history reads in time
+// order, and the id breaks a tie in the order the records were written.
+// Pagination's SortBy, SortDir and Keyword are not consulted. A source, level
+// or event the store does not know is a domain.ErrValidation, never an empty
+// answer: a typo must not read as "nothing ever happened".
+type FlagRecordFilter struct {
+	Pagination
+	UserID *int64
+	// Source: "" any, or one of domain.FlagSources().
+	Source string
+	// Level: "" any; "flagged", "suspect" or "suspended", the level a
+	// record moved TO; or FlagLevelCleared, the records that moved to no
+	// attention at all (every leave and every lift — never a review record,
+	// whose level is "" because an admin's action moves no level).
+	Level string
+	// Event: "" any, or one of domain.FlagEvents().
+	Event string
+	// Since and Until bound the record's time, both inclusive.
+	Since, Until *time.Time
+}
+
+// FlagLevelCleared is the level filter for records whose new level is none:
+// domain.FlagLevelNone is the empty string, which as a filter means "any".
+const FlagLevelCleared = "cleared"
 
 type SyncTaskFilter struct {
 	Pagination
@@ -151,6 +219,24 @@ type UserRepo interface {
 	// UpdateServiceState writes the service-level suspension fields without
 	// touching account login state. reason="" means service is active.
 	UpdateServiceState(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string, disabledAt *time.Time) error
+	// SetServiceStateIfClear writes reason/detail/at ONLY while the row carries
+	// no service reason ('' or NULL) and reports whether it wrote. The location
+	// detector's automatic suspension goes through here so it can never replace
+	// a hold someone else put there, even one written after the caller's read.
+	// reason must be non-empty (ErrValidation otherwise), so the reason column
+	// always changes and "wrote" is exact on every dialect — MySQL reports
+	// CHANGED rows, which an unchanged value would read as a lost race.
+	//
+	// It never writes geo_auto for an account an admin trusts (risk_reviews),
+	// even one a poll judged before the trust committed: the refusal is part
+	// of the same conditional UPDATE, so it is atomic on every dialect and
+	// needs no lock. Test fakes do not emulate this.
+	SetServiceStateIfClear(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string, at time.Time) (bool, error)
+	// ClearServiceStateIfReason clears reason/detail/at ONLY while the row
+	// still carries reason (non-empty, ErrValidation otherwise) and reports
+	// whether it wrote. The automatic lift's second guard: a row an admin
+	// resumed or re-suspended under another reason is left alone.
+	ClearServiceStateIfReason(ctx context.Context, userID int64, reason domain.AutoDisabledReason) (bool, error)
 	// BatchUpdateTrafficState runs N UpdateTrafficState writes in one
 	// transaction. The traffic poll calls it ONCE at end-of-cycle instead
 	// of issuing N inline UPDATEs while it walks the user list. On SQLite
@@ -192,6 +278,18 @@ type UserRepo interface {
 	GetBySubToken(ctx context.Context, token string) (*domain.User, error)
 	List(ctx context.Context, filter UserFilter) (items []*domain.User, total int64, err error)
 	ListByGroup(ctx context.Context, groupID int64) ([]*domain.User, error)
+	// ListByIDs returns the accounts among ids that exist, resolved like
+	// GetByID, in id order, each once. Missing ids are simply absent (the
+	// account was deleted since the ids were gathered). Read in IN lists of
+	// 500, so a fleet-sized list never meets a dialect's parameter limit.
+	ListByIDs(ctx context.Context, ids []int64) ([]*domain.User, error)
+	// ListServiceHolds returns every account whose service axis carries
+	// exactly reason (non-empty, ErrValidation otherwise), with the time the
+	// hold was written — service_disabled_at read the way GetByID reads it,
+	// 0 when NULL — ascending by id. The risk center's geo_auto source: the
+	// hold is state of the users row, so it is read from there, exactly,
+	// rather than from best-effort records.
+	ListServiceHolds(ctx context.Context, reason domain.AutoDisabledReason) ([]ServiceHold, error)
 
 	// ---- 2FA / TOTP (column-scoped; secret encrypted at rest, codes hashed) ----
 	// SetTOTP writes the secret + enabled flag + recovery-code hashes.
@@ -269,11 +367,11 @@ type NodeRepo interface {
 	// Its narrow value type cannot carry desired values, making the
 	// desired/observed ownership boundary enforceable by the compiler.
 	UpdateObservedEndpoint(ctx context.Context, nodeID int64, observed domain.NodeObservedEndpoint) error
-	// ConfirmAppliedConfig is for a validated full native receipt of the current
-	// minted config. Under a row lock it compares the PSP-owned expected intent
-	// with the current node, then writes only the observed endpoint and config
-	// confirmation state (synced, no pending age). Deleted/rebound/edited nodes
-	// are a no-op; storage errors must propagate so the receipt can be retried.
+	// ConfirmAppliedConfig is for a validated full native receipt or a successful
+	// synchronous inbound push. Under a row lock it compares the PSP-owned expected
+	// intent with the current node, then writes only the observed endpoint and
+	// config confirmation state (synced, no pending age). Deleted/rebound/edited
+	// nodes are a no-op; storage errors must propagate so confirmation can retry.
 	// The expected intent is a guard, not a desired snapshot to persist.
 	// changed is false for an already-confirmed receipt as well as a no-op,
 	// allowing subscription invalidation only when this write changes state.
@@ -307,6 +405,15 @@ type NodeRepo interface {
 	// insensitive substring). SortBy recognizes "id" / "display_name" /
 	// "sort_order" / "created_at" / "panel_id"; default "sort_order".
 	ListPaged(ctx context.Context, p Pagination) (items []*domain.Node, total int64, err error)
+}
+
+// RealityFingerprintCASRepo is the narrow migration writer for an existing
+// REALITY snapshot. It changes only stream_settings and marks sync pending
+// if the node still has the stream settings observed by the caller. A concurrent
+// admin edit makes changed false, so the next version observation can retry
+// against the new snapshot without overwriting any of its other fields.
+type RealityFingerprintCASRepo interface {
+	CompareAndSwapRealityStream(ctx context.Context, panelID, nodeID int64, observedStream, normalizedStream string) (changed bool, err error)
 }
 
 // NodeSortUpdate is one (node_id, sort_order) pair for BatchUpdateSortOrder.
@@ -441,6 +548,10 @@ type NodeAgentRepo interface {
 	UpdateCoreSelection(ctx context.Context, agentID string, engine domain.NodeCoreEngine, version string, allowRestrictedReality bool) error
 	UpdateCoreObservation(ctx context.Context, agentID string, engine domain.NodeCoreEngine) error
 	UpdateProtocolObservation(ctx context.Context, agentID string, protocolVersion int, capabilities []string, observedAt time.Time) error
+	// RecordProtocolRefusal records an authenticated report this panel refused at
+	// the wire boundary. It writes columns disjoint from the observation and does
+	// not touch last_seen; an accepted report clears them.
+	RecordProtocolRefusal(ctx context.Context, agentID string, protocolVersion int, reason string, refusedAt time.Time) error
 	TouchLastSeen(ctx context.Context, agentID string, seenAt time.Time) error
 	GetStream(ctx context.Context, agentID string, stream domain.NodeAgentStreamName) (*domain.NodeAgentStream, error)
 	ListStreams(ctx context.Context, agentID string) ([]*domain.NodeAgentStream, error)
@@ -806,7 +917,28 @@ type SubLogRepo interface {
 	List(ctx context.Context, filter SubLogFilter) (items []*domain.SubLog, total int64, err error)
 	Clear(ctx context.Context) error
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// ScanSince calls fn with every row accessed at or after since, in id order,
+	// batch rows at a time (batch<=0 → 5000). fn must not retain the slice; a fn
+	// error stops the scan and is returned. fn is never called with an empty
+	// slice. Rows carry no user join (UserUPN/UserDisplay/UserGroupID are zero):
+	// this is the window read for background aggregation, which holds a whole
+	// week of fetches in one pass and must not hold it in memory at once.
+	ScanSince(ctx context.Context, since time.Time, batch int, fn func([]domain.SubLog) error) error
+	// RecentForUsers returns the given accounts' fetches accessed at or
+	// after since, newest first, at most limit rows (limit <= 0 means
+	// SubLogRecentMaxRows), without the users join. It serves the risk
+	// center's device inference, which reads one page of accounts at a
+	// time: more than SubLogRecentMaxUsers ids is a domain.ErrValidation,
+	// never a fleet-wide scan. No ids is no rows.
+	RecentForUsers(ctx context.Context, userIDs []int64, since time.Time, limit int) ([]domain.SubLog, error)
 }
+
+// RecentForUsers' bounds: one page of accounts (the admin lists' page-size
+// cap) and the rows one read may hold.
+const (
+	SubLogRecentMaxUsers = 200
+	SubLogRecentMaxRows  = 20000
+)
 
 type SyncTaskRepo interface {
 	Create(ctx context.Context, task *domain.SyncTask) error
@@ -1241,19 +1373,42 @@ type UISettings struct {
 	// misjudged, and the two failure directions are not symmetric — a false
 	// flag accuses somebody who did nothing.
 	//
-	// All of these are per-group overridable (see OverridableScopeKeys), so a
-	// group of travelling staff can be exempted without loosening the fleet.
+	// Every knob here except GeoAnomalyIgnoreAddresses and the fleet-wide
+	// runtime block below is per-group overridable (see
+	// OverridableScopeKeys), so a group of travelling staff can be exempted,
+	// or automatic suspension armed for one group, without changing the
+	// fleet. A group value REPLACES the global one whole, and a stored 0
+	// means "the shipped default" — not "inherit", and not "zero tolerance"
+	// (domain.GeoPolicyFromSettings is the one place that reads it).
 	//
-	// GeoAnomalyScope is the granularity at which two observations count as
-	// different places: "off", "country" (default), "region", "city".
-	// Two CITIES is a commute or a carrier NAT pool and fires constantly in a
-	// general fleet, which is why country is the default and city is not.
+	// GeoAnomalyScope names the FINEST tier judged; every coarser tier is
+	// judged too, each against its own tolerance: "city" (the default:
+	// countries, regions and cities), "region" (countries and regions),
+	// "country", or "off". Empty means the default. Any other value judges
+	// countries only — with the finest tier as the default, "unrecognised
+	// keeps the default" would make a typo the most sensitive setting.
 	GeoAnomalyScope string `json:"geo_anomaly_scope"`
-	// GeoAnomalyMaxPlaces is how many places may be occupied concurrently
-	// before a sample is over tolerance. 1 means "two at once is over".
-	// A second location is often entirely legitimate — a work VPN, a second
-	// home, family abroad — so this is a number rather than a hardcoded 2.
+	// GeoAnomalyMaxPlaces is the COUNTRY tolerance: how many countries may be
+	// occupied at once before a sample is over. 1 means "two at once is
+	// over". The name predates the tiers and is kept so a stored value, and
+	// every group override of it, keeps meaning what it meant at country
+	// scope. A second country is often entirely legitimate — a work VPN,
+	// family abroad — so this is a number rather than a hardcoded 2.
 	GeoAnomalyMaxPlaces int `json:"geo_anomaly_max_places"`
+	// GeoAnomalyMaxRegions is the REGION (province / state) tolerance,
+	// counted inside the widest country and never summed across countries.
+	// Default 1: two provinces at once is the signal operators in large
+	// countries ask about, and one that country scope cannot see. A home
+	// router left on plus a phone in another province trips it too, which is
+	// why it is a number an admin can raise rather than a fixed rule.
+	GeoAnomalyMaxRegions int `json:"geo_anomaly_max_regions"`
+	// GeoAnomalyMaxCities is the CITY tolerance inside the widest country.
+	// Default 2, one above the region tolerance: home broadband and a phone
+	// carrier routinely exit in two different cities of one province, and a
+	// city threshold of 1 fired on every such subscriber (why v1 kept city
+	// scope off the default). An address the database places only to a
+	// country never counts as a city.
+	GeoAnomalyMaxCities int `json:"geo_anomaly_max_cities"`
 	// GeoAnomalyFlagAfterPolls is how many CONSECUTIVE over-tolerance samples
 	// are required before the state becomes flagged; below it the state is
 	// "suspect" and is never acted on. This is the knob that stops the
@@ -1269,10 +1424,12 @@ type UISettings struct {
 	// is "unknown". Without it a stale or partial database reads as a fleet
 	// where nobody is sharing.
 	GeoAnomalyMinPlacedRatio float64 `json:"geo_anomaly_min_placed_ratio"`
-	// GeoAnomalyCoTravel names place sets that do not count as separate from
-	// each other: one set per LINE, members comma-separated (e.g. "JP,TW").
-	// For a genuine dual presence this is more honest than raising their
-	// tolerance, because it stays specific: a THIRD place still flags.
+	// GeoAnomalyCoTravel names COUNTRY sets that do not count as separate
+	// from each other: one set per LINE, members comma-separated (e.g.
+	// "JP,TW", any case). For a genuine dual presence this is more honest
+	// than raising their tolerance, because it stays specific: a THIRD
+	// country still flags. Countries only — regions and cities are never
+	// folded across a border — so a "CC/Region" token is dropped on read.
 	//
 	// A single newline-separated string rather than a list because the
 	// settings store has scalar descriptors only, and because a textarea is
@@ -1283,6 +1440,264 @@ type UISettings struct {
 	// cleaner than raising a threshold, which would loosen detection for
 	// people who are not travelling.
 	GeoAnomalyAllowAnywhere bool `json:"geo_anomaly_allow_anywhere"`
+	// GeoAnomalyIgnoreAddresses lists source addresses the judgement never
+	// counts: IPs and CIDRs, one per line or comma-separated, text after '#'
+	// is a comment, at most domain.GeoIgnoreListMaxEntries entries. It is for
+	// the relays, CDNs and office exits the panel cannot know about; PSP's
+	// own node and relay addresses, internal ranges and exits held by several
+	// accounts at once are set aside without an entry.
+	//
+	// GLOBAL ONLY — deliberately absent from OverridableScopeKeys. Whether an
+	// address is somebody's infrastructure does not depend on which group is
+	// looking, and a per-group copy would let one group's edit leave every
+	// other group judging the same relay as a place.
+	//
+	// It is also the one value in this block the admin form VALIDATES: a
+	// typo here fails OPEN — the entry silently matches nothing and the relay
+	// keeps accusing people — and, unlike a nonsense tolerance, nothing
+	// downstream can repair it toward not accusing. So a save naming a bad
+	// entry is refused, with the entry named.
+	GeoAnomalyIgnoreAddresses string `json:"geo_anomaly_ignore_addresses"`
+
+	// ---- Concurrent locations: automatic temporary suspension ----
+	// Suspicion is not proof, so the default response to a flag is a bell
+	// entry for an admin and nothing else. These arm the one automatic
+	// response, OFF unless a scope turns it on: pausing the account's proxy
+	// SERVICE — never its panel login — for a fixed time, lifted again
+	// without an admin. It never replaces a suspension held for any other
+	// reason, and never fires on an account that is expired, over quota or
+	// inside an emergency window.
+	//
+	// GeoAnomalyBanEnabled arms it. Per-group so it can be armed for one
+	// group, or disarmed for a group holding confirmed false positives —
+	// there is no per-user switch, so that group is the remedy.
+	GeoAnomalyBanEnabled bool `json:"geo_anomaly_ban_enabled"`
+	// GeoAnomalyBanMaxCountries / BanMaxRegions / BanMaxCities are the
+	// suspension's own tolerances, with the same meaning as the flag
+	// tolerances above. Defaults 1 / 2 / 3: looser than the flag's 1 / 1 / 2
+	// below the country tier, because cutting somebody's service needs a
+	// wider spread than raising a bell entry. Each is raised to at least the
+	// flag tolerance of its tier when read, so a suspension can never fire on
+	// a sample the flag itself calls within tolerance.
+	GeoAnomalyBanMaxCountries int `json:"geo_anomaly_ban_max_countries"`
+	GeoAnomalyBanMaxRegions   int `json:"geo_anomaly_ban_max_regions"`
+	GeoAnomalyBanMaxCities    int `json:"geo_anomaly_ban_max_cities"`
+	// GeoAnomalyBanAfterPolls is how many CONSECUTIVE samples over the
+	// suspension tolerances an already-flagged account needs. Default 6
+	// (about 30 minutes at a 5-minute poll). A nonsense value repairs to 6,
+	// never to 1: a single sample must never cost somebody their service.
+	GeoAnomalyBanAfterPolls int `json:"geo_anomaly_ban_after_polls"`
+	// GeoAnomalyBanDurationMinutes is how long a suspension lasts before it
+	// lifts itself. Default 60, clamped to 1..10080 (a week): the time box is
+	// what lets a false positive heal without an admin, and a value long
+	// enough to be permanent in practice would defeat it.
+	GeoAnomalyBanDurationMinutes int `json:"geo_anomaly_ban_duration_minutes"`
+
+	// ---- Concurrent locations: the detector's fleet-wide runtime ----
+	// What used to be constants in the poll, the enforcement and the
+	// infrastructure refresh. Each stores 0 for "never configured", which
+	// means the former constant, and each is clamped to a safety bound when
+	// read; domain.GeoRuntimeFromSettings is the one place either rule
+	// lives, and nothing here is validated on save.
+	//
+	// GLOBAL ONLY — all six are deliberately absent from
+	// OverridableScopeKeys. Freshness is judged per NODE before any user is
+	// known, the shared-exit rule counts accounts across the whole fleet,
+	// the caps bound one poll and the infrastructure cadences one loop; a
+	// group value would be stored, shown and never read.
+	//
+	// GeoAnomalyFreshWindowSeconds is how far behind its node's newest scan
+	// an address may be and still count as connected now. Default 120 (12
+	// of 3X-UI's 10-second scans), clamped to 20..900: under two scans a
+	// live stream reads stale between scans, and past half the upstream's
+	// 30-minute memory "remembered" reads as "now".
+	GeoAnomalyFreshWindowSeconds int `json:"geo_anomaly_fresh_window_seconds"`
+	// GeoAnomalySharedExitMinUsers is how many accounts on one source at
+	// once make it a shared exit (an office, a carrier NAT) rather than a
+	// place. Default 3, clamped to 2..20. The risk worker's fetch window
+	// reads the same knob, so the two checks agree about what an exit is.
+	GeoAnomalySharedExitMinUsers int `json:"geo_anomaly_shared_exit_min_users"`
+	// GeoAnomalyBanMaxPerPoll / GeoAnomalyLiftMaxPerPoll cap the automatic
+	// suspensions applied, and the due ones lifted, in one poll. Default 20
+	// each, clamped to 1..200: every transition is an inline push to each
+	// panel the account is on, so the cap bounds one poll's latency. Nothing
+	// over a cap is lost — the rest wait for the next poll.
+	GeoAnomalyBanMaxPerPoll  int `json:"geo_anomaly_ban_max_per_poll"`
+	GeoAnomalyLiftMaxPerPoll int `json:"geo_anomaly_lift_max_per_poll"`
+	// GeoAnomalyInfraRefreshMinutes is how often PSP's own node and relay
+	// addresses are rebuilt for exclusion; re-read every cycle, so an edit
+	// lands after the current wait. Default 5, clamped to 1..60.
+	GeoAnomalyInfraRefreshMinutes int `json:"geo_anomaly_infra_refresh_minutes"`
+	// GeoAnomalyInfraHostTTLMinutes is how long a node or relay hostname's
+	// DNS answer is reused. Default 10, clamped to 1..1440: shorter for
+	// relays on dynamic DNS, longer for stable hosts.
+	GeoAnomalyInfraHostTTLMinutes int `json:"geo_anomaly_infra_host_ttl_minutes"`
+
+	// ---- Risk signals (observe only) ----
+	// Nothing in this block suspends, blocks or notifies an account holder:
+	// the signals are for an admin to read, next to the concurrent-location
+	// verdict, and each is judged on its own.
+	//
+	// RiskHWIDCaptureOff stops recording the device a subscription client
+	// declares about itself (the x-hwid header and its OS/model companions).
+	// The zero value is capture ON, so an install that never saved the form
+	// captures. What is kept is never the raw header: a keyed per-account
+	// digest and a sanitized label, both expiring with sub_logs, and neither
+	// ever affects the response (see handler.SubHandler.declaredDevice).
+	// Turning it off stops new captures; rows already written age out with
+	// sub_log_retention_days.
+	//
+	// GLOBAL ONLY — deliberately absent from OverridableScopeKeys. It is read
+	// on the public /sub path from the global settings that request already
+	// loaded, and whether the panel records a device identifier at all is a
+	// panel-wide privacy decision, not a group's policy.
+	RiskHWIDCaptureOff bool `json:"risk_hwid_capture_off"`
+	// The four signal switches. NEGATIVE on purpose: the zero value is what
+	// an install that never saved the form stores, and it must mean "observe"
+	// — a positive "enabled" flag would leave every signal off until an admin
+	// found the form. Per-group, so a group whose members legitimately trip
+	// one signal (a team credential fetched from several provinces, staff who
+	// sign in from abroad) can have that signal alone switched off without
+	// losing the other three. A switched-off signal is stored as "disabled",
+	// never as clean.
+	RiskSubSpreadOff    bool `json:"risk_sub_spread_off"`
+	RiskDevicesOff      bool `json:"risk_devices_off"`
+	RiskUsageShiftOff   bool `json:"risk_usage_shift_off"`
+	RiskLoginCountryOff bool `json:"risk_login_country_off"`
+	// RiskMinDays is how many distinct panel-local days of the fetch window a
+	// place or a device must be seen on before it counts as established: a
+	// province or device seen on fewer days can make a signal suspect, never
+	// flagged, and a country seen on fewer days does not yet count as one the
+	// account's panel logins may come from. It plays the "sustained, not a
+	// one-off" role that FlagAfterPolls plays for the live verdict, measured
+	// in days because the evidence is a week of fetch logs. Default 3,
+	// clamped to 1..risk.window_days when read: a pattern cannot recur on
+	// more days than the window holds.
+	RiskMinDays int `json:"risk_min_days"`
+	// RiskMaxDevices is how many distinct declared devices an account may
+	// fetch from before the devices signal speaks. Default 3 — a phone, a
+	// laptop and one more. Only clients that send a device header are
+	// counted, so an account whose apps declare nothing is never over.
+	RiskMaxDevices int `json:"risk_max_devices"`
+	// RiskUsageRatio is how many times its own median day an account's daily
+	// traffic must reach, on several recent days, to count as a sustained
+	// change. Default 3.0. Raised to 1.5 when read: a lower ratio accuses
+	// more accounts, and a misconfiguration must degrade toward silence.
+	RiskUsageRatio float64 `json:"risk_usage_ratio"`
+	// RiskUsageFloorGB is the daily traffic, in GiB, below which a day never
+	// counts as over whatever the ratio says — so a light account going from
+	// 10 MB to 50 MB is not a "fivefold surge". Default 3.
+	RiskUsageFloorGB int `json:"risk_usage_floor_gb"`
+	// RiskLoginWarmupLogins is how many earlier placed panel logins an
+	// account needs before login_country judges a login at all — before
+	// that there is nothing to call a country new against. Default 3,
+	// clamped to 1..50 when read: past 50 a signal that expects rare logins
+	// never finishes learning.
+	RiskLoginWarmupLogins int `json:"risk_login_warmup_logins"`
+	// RiskLoginHoldDays is how many days one login from a new country keeps
+	// the account flagged, and so which logins count as recent. Default 7,
+	// clamped to 1..risk.login_lookback_days when read: a login cannot stay
+	// recent longer than the log is read.
+	RiskLoginHoldDays int `json:"risk_login_hold_days"`
+	// RiskUsageWarmupDays is how many days of its own history (from its
+	// first day of use, inside the baseline) an account needs before
+	// usage_shift judges it. Default 14, raised to 7 when read — under a
+	// week the median is taken over setup — and held to
+	// risk.usage_baseline_days: a longer warm-up would never end.
+	RiskUsageWarmupDays int `json:"risk_usage_warmup_days"`
+	// RiskUsageFlagDays and RiskUsageSuspectDays are on how many of the
+	// judged days (risk.usage_recent_days) an account must be over to read
+	// flagged, or suspect. Defaults 4 and 2, each raised to 2 when read (one
+	// day over is a download) and held to the judged days; suspect is held
+	// to flag on top — equal to it means no suspect stage.
+	RiskUsageFlagDays    int `json:"risk_usage_flag_days"`
+	RiskUsageSuspectDays int `json:"risk_usage_suspect_days"`
+
+	// ---- Risk signals: the worker's fleet-wide runtime ----
+	// What used to be constants in the worker loop, the fetch window, the
+	// login read, the bell and usage_shift's series. Each stores 0 for
+	// "never configured", which means the former constant, and each is
+	// clamped to a safety bound when read; domain.RiskRuntimeFromSettings is
+	// the one place either rule lives, and nothing here is validated on
+	// save.
+	//
+	// GLOBAL ONLY — all twelve are deliberately absent from
+	// OverridableScopeKeys. The loop runs once for the fleet, the fetch
+	// window and the login log are each read once per run for every account
+	// together, the bell counts the fleet, usage_shift reads ONE fleet
+	// series that every account's fleet factor is taken from, so every
+	// account's series has the same days, one hourly pass prunes every
+	// account's connection history and flag records, and the risk center
+	// holds one live snapshot for the fleet; a group value would be stored,
+	// shown and never read.
+	//
+	// RiskRefreshIntervalMinutes is how often the signals are recomputed.
+	// Default 60, clamped to 10..1440: each run streams a week of fetches
+	// and weeks of hourly traffic per account, and a day is as stale as a
+	// flag may get. Re-read after every run, so an edit lands one run late.
+	RiskRefreshIntervalMinutes int `json:"risk_refresh_interval_minutes"`
+	// RiskFirstDelayMinutes is how long after start the first run waits, so
+	// it does not compete with the boot probes and the first infrastructure
+	// refresh. Default 2, clamped to 1..60. Read once when the loop starts:
+	// a change takes effect on the next restart.
+	RiskFirstDelayMinutes int `json:"risk_first_delay_minutes"`
+	// RiskAlertFreshnessHours is how long a flag nobody re-judged keeps the
+	// notification bell lit, for both the concurrent-location and the risk
+	// entry. Default 24, clamped to 1..720, and raised to two worker
+	// refreshes (and, for the concurrent-location entry, to two traffic
+	// polls) so a latched flag never flickers off the bell between two
+	// judgements.
+	RiskAlertFreshnessHours int `json:"risk_alert_freshness_hours"`
+	// RiskWindowDays is the fetch window the place and device signals read,
+	// in panel-local days. Default 7, clamped to 1..7 (every day mask is a
+	// uint8). A shorter sub-log retention still shortens the window where
+	// the logs are read — and a group's min_days is bounded by THIS value,
+	// not by the retention, so a too-short retention reads retention_short.
+	RiskWindowDays int `json:"risk_window_days"`
+	// RiskLoginLookbackDays is how far back login_country reads the login
+	// log. Default 90, clamped to 7..365; a shorter auth-event retention
+	// still shortens it where the log is read.
+	RiskLoginLookbackDays int `json:"risk_login_lookback_days"`
+	// RiskUsageBaselineDays is how many days before the judged ones an
+	// account's usage median is taken over. Default 28, clamped to 14..56:
+	// two of every weekday at least, and a bound on the hourly rows one run
+	// reads per account.
+	RiskUsageBaselineDays int `json:"risk_usage_baseline_days"`
+	// RiskUsageRecentDays is how many of the latest whole days usage_shift
+	// judges. Default 7, clamped to 3..14. The series is the two together,
+	// so traffic_history_days must be longer than their sum or the verdict
+	// reads retention_short.
+	RiskUsageRecentDays int `json:"risk_usage_recent_days"`
+	// RiskConnectionRetentionDays is how many days connection_history keeps
+	// a source after its LAST sighting. Default 7, clamped to 1..90 when
+	// read. That table holds IP addresses — the one place the detector's
+	// data does — so 0 and a negative value mean the default week, NEVER
+	// "keep forever" as they do for sub_log_retention_days: an IP-bearing
+	// table must always age out, and the 90-day ceiling is a privacy bound.
+	// Pruned by the hourly cleanup, which also deletes a deleted account's
+	// rows whatever their age.
+	RiskConnectionRetentionDays int `json:"risk_connection_retention_days"`
+	// RiskFlagRecordRetentionDays is how many days flag_records keeps an
+	// attention change. Default 90, clamped to 1..3650 when read; 0 and a
+	// negative value mean the default, never "keep forever", like the
+	// connection history's. The records hold no address, so the ceiling
+	// bounds growth, not a privacy promise. Pruned by the hourly cleanup,
+	// which also deletes a deleted account's records whatever their age.
+	RiskFlagRecordRetentionDays int `json:"risk_flag_record_retention_days"`
+	// The risk center's live view (实时连接). RiskLiveSnapshotStaleMinutes
+	// is how old its snapshot may get before the view warns: default 15,
+	// clamped to 1..1440, and never less than two traffic polls where it is
+	// read, since a poll snapshot is only replaced by the next poll.
+	// RiskLiveRefreshCooldownSeconds is how long one on-demand refresh holds
+	// off the next, for every admin at once (a refresh reads every panel):
+	// default 30, clamped to 5..3600. RiskDeviceInferHours is how far back
+	// the view reads the fetch log to infer a connection's device: default
+	// 24, clamped to 1..168, and shortened by sub_log_retention_days where
+	// the log is read. Global like the rest of this block: there is one
+	// snapshot and one refresh for the whole fleet.
+	RiskLiveSnapshotStaleMinutes   int `json:"risk_live_snapshot_stale_minutes"`
+	RiskLiveRefreshCooldownSeconds int `json:"risk_live_refresh_cooldown_seconds"`
+	RiskDeviceInferHours           int `json:"risk_device_infer_hours"`
 
 	// ---- IP geolocation (access-log region display, offline .mmdb) ----
 	// Resolution is fully offline against a local .mmdb in <ConfigDir>/geoip/;
@@ -1584,13 +1999,59 @@ var OverridableScopeKeys = map[string]bool{
 	// so a team that genuinely works across borders can be exempted or
 	// loosened without weakening detection for everyone else. See
 	// docs/connection-limits.md §12.3.
+	//
+	// geo_anomaly.ignore_addresses is deliberately NOT here, and its absence
+	// is the whole global-only mechanism: whether an address is somebody's
+	// relay or office exit does not depend on which group is looking. The
+	// detector's fleet-wide runtime (fresh_window_seconds,
+	// shared_exit_min_users, ban_max_per_poll, lift_max_per_poll,
+	// infra_refresh_minutes, infra_host_ttl_minutes) is absent for the same
+	// kind of reason: see UISettings.
 	"geo_anomaly.scope":             true,
 	"geo_anomaly.max_places":        true,
+	"geo_anomaly.max_regions":       true,
+	"geo_anomaly.max_cities":        true,
 	"geo_anomaly.flag_after_polls":  true,
 	"geo_anomaly.clear_after_polls": true,
 	"geo_anomaly.min_placed_ratio":  true,
 	"geo_anomaly.co_travel":         true,
 	"geo_anomaly.allow_anywhere":    true,
+	// Automatic temporary suspension — per-group like sub_block_auto_disable
+	// below: it can be armed for one group, and a group holding confirmed
+	// false positives can disarm it (there is no per-user switch).
+	"geo_anomaly.ban_enabled":          true,
+	"geo_anomaly.ban_max_countries":    true,
+	"geo_anomaly.ban_max_regions":      true,
+	"geo_anomaly.ban_max_cities":       true,
+	"geo_anomaly.ban_after_polls":      true,
+	"geo_anomaly.ban_duration_minutes": true,
+	// Risk signals — risk.Service; observation only. Per-group so a group
+	// whose members legitimately trip one signal can have that signal alone
+	// switched off, or its tolerance raised, without loosening the fleet.
+	//
+	// risk.hwid_capture_off is deliberately NOT here: /sub reads it from the
+	// global settings it has already loaded, and whether the panel records a
+	// device identifier at all is a panel-wide privacy decision. The
+	// worker's fleet-wide runtime (refresh_interval_minutes,
+	// first_delay_minutes, alert_freshness_hours, window_days,
+	// login_lookback_days, usage_baseline_days, usage_recent_days,
+	// connection_retention_days, flag_record_retention_days,
+	// live_snapshot_stale_minutes, live_refresh_cooldown_seconds,
+	// device_infer_hours) is absent for the same kind of reason: see
+	// UISettings.
+	"risk.sub_spread_off":      true,
+	"risk.devices_off":         true,
+	"risk.usage_shift_off":     true,
+	"risk.login_country_off":   true,
+	"risk.min_days":            true,
+	"risk.max_devices":         true,
+	"risk.usage_ratio":         true,
+	"risk.usage_floor_gb":      true,
+	"risk.login_warmup_logins": true,
+	"risk.login_hold_days":     true,
+	"risk.usage_warmup_days":   true,
+	"risk.usage_flag_days":     true,
+	"risk.usage_suspect_days":  true,
 	// 2FA methods (login / enroll) — auth_local / twofa / passkey / login2fa.
 	"security.totp_enabled":      true,
 	"security.passkey_enabled":   true,
@@ -1753,6 +2214,7 @@ type Repos struct {
 	User                    UserRepo
 	Group                   GroupRepo
 	Node                    NodeRepo
+	NodeRoute               NodeRouteStore
 	Separator               SeparatorRepo
 	Ownership               OwnershipRepo
 	PSPClient               PSPClientRepo

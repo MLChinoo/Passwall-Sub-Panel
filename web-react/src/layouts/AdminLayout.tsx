@@ -40,6 +40,7 @@ import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 import SyncIcon from '@mui/icons-material/Sync'
 import ReportProblemIcon from '@mui/icons-material/ReportProblemOutlined'
 import MonitorHeartIcon from '@mui/icons-material/MonitorHeart'
+import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined'
 import SettingsIcon from '@mui/icons-material/Settings'
 import TranslateIcon from '@mui/icons-material/Translate'
 import LogoutIcon from '@mui/icons-material/Logout'
@@ -55,6 +56,7 @@ import { useAppearanceStore } from '@/stores/appearance'
 import { setLanguage, currentLanguage } from '@/i18n'
 import { DEFAULT_PRESET_HEX, type AppLanguage } from '@/theme'
 import { getVersion, type VersionInfo } from '@/api/version'
+import { prefetchView, prefetchViewsWhenIdle } from '@/router/prefetch'
 
 // Sidebar width is fixed regardless of density: the compact setting tightens
 // page content (tables, forms, dialogs) but the nav rail keeps its full width
@@ -115,6 +117,15 @@ const ADMIN_NAV: NavSection[] = [
     { to: '/admin/sync-tasks', labelKey: 'nav:admin.sync_tasks', Icon: SyncIcon },
     { to: '/admin/node-issues', labelKey: 'nav:admin.node_issues', Icon: ReportProblemIcon },
     { to: '/admin/diagnostics', labelKey: 'nav:admin.diagnostics', Icon: MonitorHeartIcon, adminOnly: true },
+  ] },
+  // A standalone entry rather than one more reporting item: it is where an
+  // admin goes to look at people (who is connected, who is flagged, one
+  // account in full), not at the fleet's plumbing. Admin-only everywhere it is
+  // named — here, ADMIN_ONLY_ROUTES and the risk.view capability — because
+  // every read behind it is adminGroup. The shield is the one the bell's
+  // location and risk alerts carry, so the alert and its page look alike.
+  { items: [
+    { to: '/admin/risk', labelKey: 'nav:admin.risk_center', Icon: ShieldOutlinedIcon, adminOnly: true },
   ] },
   { items: [
     { to: '/admin/language-packs', labelKey: 'nav:admin.language_packs', Icon: TranslateIcon, adminOnly: true },
@@ -198,6 +209,16 @@ export default function AdminLayout() {
       useAppearanceStore.getState().setSystemColor(siteThemeColor || DEFAULT_PRESET_HEX)
     }
   }, [siteLoaded, siteThemeColor])
+
+  // WARM THE VIEWS THIS ROLE CAN OPEN while the browser is idle, one chunk at a
+  // time, so a later click renders at once instead of waiting on the network.
+  // The items under the pointer or focus are warmed immediately (see the nav
+  // buttons below); this covers the ones nobody has pointed at yet.
+  useEffect(() => prefetchViewsWhenIdle(
+    ADMIN_NAV.flatMap(section => section.items)
+      .filter(item => !item.adminOnly || role === 'admin')
+      .map(item => item.to),
+  ), [role])
 
   function handleNav(to: string) {
     navigate(to)
@@ -288,6 +309,11 @@ export default function AdminLayout() {
                   <ListItemButton
                     key={item.to}
                     onClick={() => handleNav(item.to)}
+                    // Intent precedes the click by a few hundred milliseconds;
+                    // start fetching the view's chunk then.
+                    onMouseEnter={() => prefetchView(item.to)}
+                    onFocus={() => prefetchView(item.to)}
+                    onTouchStart={() => prefetchView(item.to)}
                     sx={{
                       borderRadius: railCollapsed ? 2 : 9999,
                       minHeight: 44,

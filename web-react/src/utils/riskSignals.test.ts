@@ -1,0 +1,227 @@
+import { describe, expect, it, vi } from 'vitest'
+
+// RISK_CODES lives beside the wire types, in a module that imports the shared
+// axios client, which reads the document at import time. These are pure
+// function tests in a node environment; nothing here makes a request.
+vi.mock('@/api/client', () => ({ client: {} }))
+
+import zh from '@/locales/zh-CN/admin.json'
+import en from '@/locales/en-US/admin.json'
+import { RISK_CODES, RISK_KINDS, type RiskKind, type RiskSignal } from '@/api/riskSignals'
+import { flatten, type Nested } from '@/i18n/options'
+import type { Translate } from './geoAnomaly'
+import {
+  dayBits, dayLabels, formatGB, placeLabel, riskCodeText,
+} from './riskSignals'
+
+// A stand-in for i18next's t over one shipped bundle: the admin namespace
+// flattened the way the SPA registers it, `{{name}}` interpolation, and the
+// defaultValue only when the key is absent. Backed by the REAL locale files,
+// so these tests also prove every placeholder a string uses is one
+// riskCodeText supplies.
+function translator(bundle: Nested): Translate {
+  const dict = flatten(bundle)
+  return (key, opts = {}) => {
+    const flat = key.startsWith('admin:') ? key.slice('admin:'.length) : key
+    const raw = dict[flat] ?? (typeof opts.defaultValue === 'string' ? opts.defaultValue : key)
+    return raw.replace(/\{\{(\w+)\}\}/g, (m, name: string) => (name in opts ? String(opts[name]) : m))
+  }
+}
+
+const zhT = translator(zh as Nested)
+const enT = translator(en as Nested)
+
+function sig(kind: string, state: RiskSignal['state'], over: Partial<RiskSignal> = {}): RiskSignal {
+  return { kind: kind as RiskKind, state, code: 'within', evidence: null, updated_at_ms: 1, ...over }
+}
+
+// One evidence body per kind, carrying every field a code's sentence reads.
+const evidence: Record<RiskKind, object> = {
+  sub_spread: {
+    v: 1, window_days: 2, window_start: '2026-09-18', retention_days: 2, min_days: 3, min_placed_pct: 50,
+    tolerance: 1, country: 'CN', groups: 2, groups_all: 3, provinces: [], identities: [], foreign: [],
+    excluded: { shared: 1, listed: 0, infra: 2, internal: 1 },
+    coverage: { sources: 5, placed: 2, region_known: 1 },
+  },
+  devices: {
+    v: 1, window_days: 2, window_start: '2026-09-18', retention_days: 2, min_days: 3, max_devices: 3,
+    recurrent: 4, distinct: 5, devices: [], fetches_with_hwid: 9, fetches_without: 1, clients: [],
+  },
+  usage_shift: {
+    v: 1, end_date: '2026-09-24', history_retention_days: 35, series: [], history_days: 9, median: 0,
+    ratio: 3, floor: 3 * 2 ** 30, thresholds: [], over: [], over_days: 4, fleet_factors: [],
+  },
+  login_country: {
+    v: 1, lookback_days: 90, hold_days: 7, warmup: 3, logins: 5, recent: 2, judged: 2,
+    skipped: { infra: 0, internal: 0, listed: 0, node_country: 0, unplaced: 0 }, known: ['CN'],
+    events: [{ cc: 'JP', at_ms: 3, method: 'local' }, { cc: 'US', at_ms: 2, method: 'oidc' }, { cc: 'JP', at_ms: 1, method: 'local' }],
+  },
+}
+
+describe('riskCodeText', () => {
+  const text = (kind: RiskKind, code: string, t = zhT) => riskCodeText(sig(kind, 'unknown', { code, evidence: evidence[kind] }), t)
+
+  it('holds the same codes the shipped bundles carry', () => {
+    // The Go side holds the bundles to domain.AllRiskCodes() in both
+    // directions (TestRiskCodesHaveLocaleKeys); this holds this copy to the
+    // bundles, so the copy cannot drift from the server either.
+    const bundleKeys = Object.keys(flatten(zh as Nested)).filter(k => k.startsWith('risk_signals.code.')).sort()
+    const copyKeys = RISK_KINDS.flatMap(k => RISK_CODES[k].map(c => `risk_signals.code.${k}.${c}`)).sort()
+    expect(copyKeys).toEqual(bundleKeys)
+    expect(Object.keys(RISK_CODES)).toEqual([...RISK_KINDS])
+  })
+
+  it.each(RISK_KINDS.flatMap(k => RISK_CODES[k].map(c => [k, c] as const)))(
+    'fills every placeholder of %s.%s in both languages', (kind, code) => {
+      for (const t of [zhT, enT]) {
+        const got = text(kind, code, t)
+        expect(got).not.toMatch(/\{\{|\}\}/)
+        expect(got).not.toBe(code)
+      }
+    })
+
+  it('reads each sentence\'s numbers from the stored evidence', () => {
+    expect(text('sub_spread', 'retention_short')).toBe('订阅日志只保留 2 天，少于判断所需的 3 天')
+    expect(text('sub_spread', 'all_excluded'))
+      .toBe('全部 4 个拉取来源都已排除（共享出口 1、忽略名单 0、本机节点 / 中转 2、内网 1）')
+    expect(text('sub_spread', 'low_placed')).toBe('5 个来源中只有 2 个能定位（至少需要 50%）')
+    // A flag counts the groups holding a RECURRING province; the ramp and
+    // the clean verdict count every group — the numbers each was judged on.
+    expect(text('sub_spread', 'spread')).toBe('CN 有 2 组互不相连的常驻省份（容错 1）')
+    expect(text('sub_spread', 'spread_building')).toBe('CN 有 3 组互不相连的省份，但还没有都出现满 3 天（容错 1）')
+    expect(text('sub_spread', 'within')).toBe('3 组省份，在容错 1 内')
+    expect(text('devices', 'retention_short')).toBe('订阅日志只保留 2 天，少于判断所需的 3 天')
+    expect(text('devices', 'over')).toBe('4 台常用设备（上限 3）')
+    expect(text('devices', 'over_building')).toBe('共 5 台设备，其中常用 4 台（上限 3）')
+    expect(text('devices', 'within')).toBe('5 台设备，在上限 3 内')
+    // Usage needs 36 days of hourly history, whatever the fetch window is:
+    // the 35-day series plus the day the prune is partway through, so 35
+    // itself is short.
+    expect(text('usage_shift', 'retention_short')).toBe('流量历史只保留 35 天，少于判断所需的 36 天')
+    expect(text('usage_shift', 'warmup')).toBe('用量历史只有 9 天，满 14 天后开始判断')
+    expect(text('usage_shift', 'sustained')).toBe('最近 7 天有 4 天超过自身基线的 3 倍')
+    expect(text('login_country', 'learning')).toBe('之前的登录不足 3 次，还在学习')
+    // Each new country once, in the order the events list them.
+    expect(text('login_country', 'new_country')).toBe('从新国家登录：JP, US')
+  })
+
+  it('renders a code without evidence, which carries no numbers', () => {
+    expect(riskCodeText(sig('devices', 'disabled', { code: 'capture_off' }), zhT)).toBe('设备标识采集已关闭')
+    // The judged days are a setting now, and an idle row carries no evidence
+    // to say how many there were, so the sentence names none.
+    expect(riskCodeText(sig('usage_shift', 'idle', { code: 'no_usage' }), enT)).toBe('No usage in the judged days')
+  })
+
+  it('falls back to the code itself for one this build does not know', () => {
+    // A newer server may add a branch before this SPA learns it; the raw
+    // code is still more than a blank tooltip.
+    expect(riskCodeText(sig('devices', 'unknown', { code: 'teleported' }), zhT)).toBe('teleported')
+  })
+
+  // 「有 组互不相连的常驻省份（容错 ）」: a verdict stored without the numbers
+  // its sentence names — no evidence at all, or evidence missing a field —
+  // reads the same sentence without numbers, never one with holes in it.
+  const zhDict = flatten(zh as Nested)
+  const enDict = flatten(en as Nested)
+  const withNumbers = RISK_KINDS.flatMap(k => RISK_CODES[k]
+    .filter(c => [zhDict, enDict].some(d => /\{\{/.test(d[`risk_signals.code.${k}.${c}`] ?? '')))
+    .map(c => [k, c] as const))
+
+  it('has a sentence without numbers for exactly the codes whose sentence has numbers', () => {
+    for (const dict of [zhDict, enDict]) {
+      const bare = Object.keys(dict).filter(k => k.startsWith('risk_signals.code_bare.')).sort()
+      expect(bare).toEqual(withNumbers.map(([k, c]) => `risk_signals.code_bare.${k}.${c}`).sort())
+      for (const key of bare) expect(dict[key], key).not.toMatch(/\{\{|\}\}/)
+    }
+  })
+
+  it.each(withNumbers)('%s.%s without its numbers reads its sentence without them, in both languages', (kind, code) => {
+    for (const [t, dict] of [[zhT, zhDict], [enT, enDict]] as const) {
+      const want = dict[`risk_signals.code_bare.${kind}.${code}`]
+      expect(riskCodeText(sig(kind, 'flagged', { code, evidence: null }), t)).toBe(want)
+      expect(riskCodeText(sig(kind, 'flagged', { code, evidence: {} }), t)).toBe(want)
+    }
+  })
+
+  it('reads the verdicts seen with holes as whole sentences', () => {
+    expect(riskCodeText(sig('sub_spread', 'flagged', { code: 'spread' }), zhT)).toBe('有多组互不相连的常驻省份，超过容错')
+    expect(riskCodeText(sig('usage_shift', 'clean', { code: 'within' }), zhT)).toBe('最近的用量没有持续超过自身基线')
+    // The events are there, but none names a country.
+    expect(riskCodeText(sig('login_country', 'flagged', {
+      code: 'new_country', evidence: { ...evidence.login_country, events: [] },
+    }), enT)).toBe('Login from a new country')
+  })
+})
+
+describe('usage_shift reasons', () => {
+  const usage = (code: string, ev: object, t = zhT) => riskCodeText(sig('usage_shift', 'unknown', { code, evidence: ev }), t)
+
+  it('usage reasons read their days from the evidence, with 7/14/4 fallbacks', () => {
+    // A verdict judged with a 14-day baseline, 3 judged days, a 7-day
+    // warm-up and flag at 2 says so: the sentence names the days that
+    // applied to this account's group, never the shipped ones.
+    const judged = {
+      ...evidence.usage_shift, series: new Array(17).fill(0), history_retention_days: 17,
+      baseline_days: 14, recent_days: 3, warmup_days: 7, flag_days: 2, suspect_days: 2, over_days: 2,
+    }
+    expect(usage('sustained', judged)).toBe('最近 3 天有 2 天超过自身基线的 3 倍')
+    expect(usage('building', judged)).toBe('最近 3 天有 2 天超过自身基线的 3 倍（满 2 天标记）')
+    expect(usage('within', judged, enT)).toBe("2 of the last 3 days above 3× the account's own baseline")
+    expect(usage('warmup', judged)).toBe('用量历史只有 9 天，满 7 天后开始判断')
+    // The hourly history must cover the whole series and the day the prune
+    // is partway through: 14 + 3 + 1.
+    expect(usage('retention_short', judged)).toBe('流量历史只保留 17 天，少于判断所需的 18 天')
+
+    // A row stored before the days were settings carries none of them, and
+    // was judged with the shipped 28 + 7, warm-up 14 and flag at 4.
+    const stored = { ...evidence.usage_shift }
+    expect(usage('building', stored)).toBe('最近 7 天有 4 天超过自身基线的 3 倍（满 4 天标记）')
+    expect(usage('warmup', stored)).toBe('用量历史只有 9 天，满 14 天后开始判断')
+    expect(usage('retention_short', stored)).toBe('流量历史只保留 35 天，少于判断所需的 36 天')
+    // Its series is the fixed 35 days whatever else is missing.
+    expect(usage('retention_short', { ...stored, series: new Array(35).fill(0) })).toBe('流量历史只保留 35 天，少于判断所需的 36 天')
+  })
+})
+
+describe('dayBits', () => {
+  it('reads bit i as window day i, oldest first', () => {
+    expect(dayBits(0b1000001, 7)).toEqual([true, false, false, false, false, false, true])
+    expect(dayBits(0b11, 1)).toEqual([true])
+    expect(dayBits(0, 3)).toEqual([false, false, false])
+  })
+})
+
+describe('dayLabels', () => {
+  it('counts whole calendar days from the window start', () => {
+    expect(dayLabels('2026-09-18', 3)).toEqual(['2026-09-18', '2026-09-19', '2026-09-20'])
+    expect(dayLabels('2026-09-29', 3)).toEqual(['2026-09-29', '2026-09-30', '2026-10-01'])
+  })
+
+  it('labels nothing for a start it cannot read, one cell per day all the same', () => {
+    expect(dayLabels('', 2)).toEqual(['', ''])
+    expect(dayLabels('not-a-date', 1)).toEqual([''])
+  })
+})
+
+describe('formatGB', () => {
+  it('prints bytes as GiB with two decimals', () => {
+    expect(formatGB(0)).toBe('0.00 GB')
+    expect(formatGB(2.5 * 2 ** 30)).toBe('2.50 GB')
+    expect(formatGB(1536 * 2 ** 20)).toBe('1.50 GB')
+  })
+})
+
+describe('placeLabel', () => {
+  it('names the province, or the country when the database stopped there', () => {
+    expect(placeLabel({ cc: 'CN', region: 'Guangdong' })).toBe('Guangdong')
+    expect(placeLabel({ cc: 'CN', region: '' })).toBe('CN')
+  })
+
+  it('names the province through the namer it is given', () => {
+    // The one hook: the tab passes regionNamer, which maps the ISO code to
+    // the admin's language, and the country stays the fallback for a namer
+    // with nothing to say.
+    expect(placeLabel({ cc: 'CN', region: 'Guangdong', rc: 'GD' }, () => '广东')).toBe('广东')
+    expect(placeLabel({ cc: 'CN', region: 'Guangdong', rc: 'GD' }, () => '')).toBe('CN')
+  })
+})

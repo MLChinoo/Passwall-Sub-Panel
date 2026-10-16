@@ -24,6 +24,16 @@ describe('proxy group member editor helpers', () => {
     expect(proxyGroupMemberIdentity(remaining)).toBe('node_set:remaining:0')
   })
 
+  it('keeps individual lines distinct from their parent node and each other', () => {
+    const first: ProxyGroupMember = { kind: 'line', node_id: 42, line_id: 'relay-1' }
+    const second: ProxyGroupMember = { kind: 'line', node_id: 42, line_id: 'direct' }
+    expect(proxyGroupMemberIdentity(first)).toBe('line:42:relay-1')
+    expect(appendUniqueProxyGroupMember([node, first], second)).toEqual([node, first, second])
+    const source = [node, first]
+    expect(appendUniqueProxyGroupMember(source, { ...first })).toBe(source)
+    expect(proxyGroupMemberListsEqual([first], [second])).toBe(false)
+  })
+
   it('detects unsaved member changes including order and restoring defaults', () => {
     expect(proxyGroupMemberListsEqual([direct, node], [{ ...direct }, { ...node }])).toBe(true)
     expect(proxyGroupMemberListsEqual([node, direct], [direct, node])).toBe(false)
@@ -61,8 +71,8 @@ describe('proxy group member editor helpers', () => {
     ]
     expect(applyProxyGroupOrder(groups, []).map(group => group.name)).toEqual([
       '🚀 节点选择',
-      '⚡ QUIC控制',
       '🎮 UDP控制',
+      '⚡ QUIC控制',
       '🇨🇳 中国大陆',
       '🍎 苹果服务',
       '🐟 漏网之鱼',

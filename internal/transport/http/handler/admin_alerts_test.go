@@ -120,3 +120,58 @@ func TestAdminAlerts_MixedBackendsKeepUpgradeTargetsAndCountsIsolated(t *testing
 		})
 	}
 }
+
+type alRiskQueue struct {
+	n     int64
+	calls int
+}
+
+func (a *alRiskQueue) CountUrgent(context.Context) (int64, error) {
+	a.calls++
+	return a.n, nil
+}
+
+// The feed route is staff-visible; the risk center the risk_queue entry leads
+// to is not, because it names people on signals rather than proof. An
+// operator gets neither the entry nor a badge count that includes it — the
+// admin, on the same service, gets it. The handler tells the service who is
+// asking, so the fleet-wide count is not even computed for an operator; its
+// admin-only filter stays as the second line.
+func TestAdminAlerts_OperatorNeverSeesTheRiskQueue(t *testing.T) {
+	q := &alRiskQueue{n: 2}
+	svc := alert.New(alert.Deps{
+		Nodes:     alNodes{n: []*domain.Node{{ID: 1, DisplayName: "n1", Enabled: true, HealthState: domain.NodeHealthUnreachable}}},
+		RiskQueue: q,
+	})
+	h := NewAdminAlertsHandler(svc)
+
+	c, rr := claimsCtx(domain.RoleAdmin)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/alerts", nil)
+	h.List(c)
+	if admin := rr.Body.String(); !strings.Contains(admin, `"risk_queue"`) || !strings.Contains(admin, `"warning":1`) {
+		t.Fatalf("admin must see the risk_queue entry and its warning: %s", admin)
+	}
+	if q.calls != 1 {
+		t.Fatalf("CountUrgent called %d times for the admin's request, want 1", q.calls)
+	}
+
+	c, rr = claimsCtx(domain.RoleOperator)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/alerts", nil)
+	h.List(c)
+	op := rr.Body.String()
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rr.Code)
+	}
+	if !strings.Contains(op, `"node_health"`) {
+		t.Fatalf("operator must still see node_health: %s", op)
+	}
+	if strings.Contains(op, `"risk_queue"`) {
+		t.Fatalf("operator must NOT see the risk_queue entry (the risk center is admin-only): %s", op)
+	}
+	if !strings.Contains(op, `"warning":0`) {
+		t.Fatalf("counts must not include the risk-queue warning: %s", op)
+	}
+	if q.calls != 1 {
+		t.Fatalf("CountUrgent called %d times after an operator's request, want still 1 (never computed for an operator)", q.calls)
+	}
+}

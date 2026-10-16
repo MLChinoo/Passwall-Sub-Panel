@@ -209,8 +209,9 @@ func withRequiredProxyGroupDependencies(targets []string) []string {
 			}
 		}
 	}
-	// Close the transitive dependency if a built-in selector references the UDP
-	// selector: UDP's own alternatives also reference the canonical node group.
+	// The QUIC selector offers delegation to the UDP selector, and UDP's own
+	// alternatives reference the canonical node selector. Close that transitive
+	// dependency even when an administrator defines only a QUIC rule.
 	if needsUDPSelector && !hasUDPSelector {
 		needsNodeSelector = true
 	}
@@ -257,15 +258,24 @@ func normalizeRulePart(raw string) string {
 func proxyGroupChoices(name string) []string {
 	switch {
 	case strings.Contains(name, "QUIC控制"):
-		// HTTP/3 over UDP/443 is independent from general UDP. REJECT is the
-		// conservative default: browsers immediately fall back to TCP instead of
-		// stalling on a slow UDP path. Users can still opt into proxying or DIRECT.
-		return []string{"REJECT", "🚀 节点选择", "DIRECT"}
+		// Disable Internet UDP/443 by default so browsers fall back to TCP.
+		// Users can explicitly allow QUIC directly, via the node, or through
+		// the general UDP selector. PASS has no equivalent sing-box outbound.
+		return []string{"REJECT", "🎮 UDP控制", "🚀 节点选择", "DIRECT"}
 	case strings.Contains(name, "UDP控制"):
-		// PASS keeps evaluating later domain/region rules, so non-QUIC UDP follows
-		// the same policy as the corresponding service instead of being forced
-		// through a potentially slow UDP proxy or leaked through DIRECT.
-		return []string{"PASS", "🚀 节点选择", "DIRECT", "REJECT"}
+		// General non-local UDP defaults to the local DIRECT exit, independently
+		// of the main node selection. This allows UDP; it neither blocks it nor
+		// depends on the selected node's UDP support, and it does not promise a
+		// proxied source IP. QUIC is rejected by default; either selector can
+		// still be overridden by subscribers.
+		//
+		// PASS hands UDP to the service rules below (YouTube to its group,
+		// mainland IPs to 🇨🇳 中国大陆, the rest to the final MATCH), which the
+		// node selector cannot express: that one forces all UDP through the node.
+		// Both stay. PASS is second, never first, because sing-box has no PASS
+		// outbound: a non-default PASS is simply dropped from its selector, while
+		// a PASS default would remove the whole UDP selector and its route there.
+		return []string{"DIRECT", "PASS", "🚀 节点选择", "REJECT"}
 	case strings.Contains(name, "全球直连"):
 		return []string{"DIRECT"}
 	case strings.Contains(name, "广告拦截") || strings.Contains(name, "应用净化"):

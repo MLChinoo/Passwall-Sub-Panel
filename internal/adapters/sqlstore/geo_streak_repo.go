@@ -2,13 +2,19 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
 // geoStreakRow persists the between-poll state that makes a concurrent-location
@@ -33,6 +39,18 @@ type geoStreakRow struct {
 	Over  int  `gorm:"not null;default:0"`
 	Under int  `gorm:"not null;default:0"`
 	Flag  bool `gorm:"column:flagged;not null;default:false"`
+	// Tier is the tier the last over-sample was judged at (domain.GeoTier:
+	// "", country, region, city), kept while the flag is latched. Persisted
+	// with the counters so a restart keeps WHY as well as whether: a latched
+	// flag whose tier came back empty could no longer say what raised it.
+	Tier string `gorm:"size:16;not null;default:''"`
+	// BanOver is consecutive judged polls over the SUSPENSION tolerances —
+	// its own counter, because the suspension line is looser than the flag
+	// line and a sample between the two keeps one streak and breaks the
+	// other. Persisted for the same reason as Over: a restart must neither
+	// extend nor shorten the sustain window, and one that reset it would
+	// restart every window on every deploy.
+	BanOver int `gorm:"not null;default:0"`
 
 	// The last verdict, stored alongside the counters that produced it.
 	//
@@ -46,11 +64,15 @@ type geoStreakRow struct {
 	// and an operator would have no way to tell which was current.
 	State  string `gorm:"size:16;not null;default:''"`
 	Reason string `gorm:"size:512;not null;default:''"`
-	// Places is the comma-joined place list behind the verdict. A short,
-	// bounded list (country codes, or "CC/City"), so a scalar column beats a
-	// join table nothing else references.
+	// Places is the comma-joined list of COUNTRIES behind the verdict. A
+	// short, bounded list, so a scalar column beats a join table nothing else
+	// references. A row an older build wrote may still hold its scope's
+	// places ("CC/City") until the user's next judgement. Save strips commas
+	// from each place, since one would split it in two on the way back.
 	Places string `gorm:"size:512;not null;default:''"`
-	// LiveIPs is how many distinct addresses backed the verdict.
+	// LiveIPs is how many distinct addresses the upstream still remembered
+	// for this user — its whole retention window, not the number judged
+	// (that is Concurrent).
 	//
 	// Incomplete says that number is only a FLOOR, because a panel holding
 	// this user's clients could not be read. Showing a floor as a total reads
@@ -64,10 +86,73 @@ type geoStreakRow struct {
 	// is the non-zero one removes the trap instead of working around it.
 	LiveIPs    int  `gorm:"not null;default:0"`
 	Incomplete bool `gorm:"not null;default:false"`
+	// Concurrent and Excluded split the live sample: sources judged (live at
+	// poll time and not set aside) and sources set aside (shared exits, the
+	// ignore list, infrastructure, internal ranges). Next to LiveIPs they show
+	// how much of the window was only memory and how much was deliberately
+	// not counted — without them a verdict drawn from 2 of 30 addresses looks
+	// like one drawn from all 30.
+	Concurrent int `gorm:"not null;default:0"`
+	Excluded   int `gorm:"not null;default:0"`
+	// Evidence is the structured account of the verdict (domain.GeoEvidence:
+	// spots, exclusions, coverage, spread — never an address), as JSON.
+	//
+	// text, NULLABLE, and NO DEFAULT. MySQL refuses a DEFAULT on a TEXT
+	// column (error 1101; TestSchemaNoDefaultOnTextColumns), and NULL is the
+	// honest value for a row an older build wrote: "not recorded", which a
+	// reader must be able to tell from "nothing found". The struct-typed JSON
+	// shape of jsonLayout, except that the zero value is written as NULL.
+	Evidence jsonGeoEvidence `gorm:"column:evidence"`
 
 	// UpdatedAt lets an operator see how fresh a latched flag is, and lets a
 	// later cleanup drop rows for users the poll has stopped seeing.
 	UpdatedAt int64 `gorm:"autoUpdateTime:milli"`
+}
+
+// jsonGeoEvidence stores domain.GeoEvidence as a JSON text column.
+//
+// The zero value (V 0) is written as NULL rather than as an object saying
+// v 0, so "no evidence recorded" has ONE stored form whether an older build
+// wrote the row or a verdict was saved without evidence. Anything with V set
+// is a real value and is written whole.
+type jsonGeoEvidence domain.GeoEvidence
+
+func (j jsonGeoEvidence) Value() (driver.Value, error) {
+	if j.V == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(domain.GeoEvidence(j))
+	return string(b), err
+}
+
+// GormDBDataType — see jsonTagFilter.GormDBDataType. A struct would otherwise
+// let the Postgres driver infer a column type from its fields; pin it to text.
+func (jsonGeoEvidence) GormDBDataType(*gorm.DB, *schema.Field) string { return "text" }
+
+// Scan reads NULL and the empty string as the zero value — a legacy row, not
+// an error. A scan error fails the whole Find, so one such row would blank
+// the admin view for every user. (Through GORM a NULL never reaches here: it
+// scans into a **jsonGeoEvidence and database/sql just leaves that pointer
+// nil. The nil case is the Scanner contract for any other reader; the empty
+// string does reach here.) The destination is reset first so a reused value
+// can never keep spots from a previous row.
+func (j *jsonGeoEvidence) Scan(value any) error {
+	*j = jsonGeoEvidence{}
+	var b []byte
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("unsupported scan type for jsonGeoEvidence: %T", value)
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	return json.Unmarshal(b, (*domain.GeoEvidence)(j))
 }
 
 func (geoStreakRow) TableName() string { return "geo_streaks" }
@@ -77,14 +162,22 @@ type GeoStreakRepo struct{ db *gorm.DB }
 
 func NewGeoStreakRepo(db *gorm.DB) *GeoStreakRepo { return &GeoStreakRepo{db: db} }
 
-// Load returns every stored streak.
+// Load returns every stored streak, WITHOUT the evidence.
 //
 // Whole-table rather than per-user: the poll judges every user each cycle, so
 // one read replaces one round trip per user, and the row count is bounded by
 // the user count.
+//
+// Evidence is left out because this is the poll's read and the poll never
+// uses it, while it is by far the widest column (up to GeoEvidenceMaxSpots
+// named places per row) — read here, it would be paid for on every row,
+// every cycle, only to be thrown away. Records from Load therefore carry a
+// zero Evidence; List is the read that has it. Everything else is read,
+// UpdatedAt included: when a user was last judged is part of the streak's
+// state, not of its explanation.
 func (r *GeoStreakRepo) Load(ctx context.Context) (map[int64]domain.GeoRecord, error) {
 	var rows []geoStreakRow
-	if err := r.db.WithContext(ctx).Find(&rows).Error; err != nil {
+	if err := r.db.WithContext(ctx).Omit("evidence").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[int64]domain.GeoRecord, len(rows))
@@ -95,8 +188,9 @@ func (r *GeoStreakRepo) Load(ctx context.Context) (map[int64]domain.GeoRecord, e
 }
 
 // List returns every stored record, newest judgement first, for the admin
-// view. Same rows as Load; a separate method because the poll wants a map it
-// can look a user up in and a reader wants an ordered list.
+// view. Same rows as Load plus the evidence; a separate method because the
+// poll wants a map it can look a user up in and a reader wants an ordered
+// list with the explanation attached.
 func (r *GeoStreakRepo) List(ctx context.Context) ([]domain.GeoRecord, error) {
 	var rows []geoStreakRow
 	if err := r.db.WithContext(ctx).Order("updated_at DESC").Find(&rows).Error; err != nil {
@@ -109,18 +203,114 @@ func (r *GeoStreakRepo) List(ctx context.Context) ([]domain.GeoRecord, error) {
 	return out, nil
 }
 
+// AttentionLevels returns the risk center's geo read: the rows of existing
+// accounts that are at attention — latched (flagged) or mid-ramp (over > 0),
+// what domain.GeoAttentionOf turns into flagged and suspect — and that the
+// detector judged at or after since, by user id. Four narrow columns and
+// never the evidence: the queue, the bell and the Users page's levels read
+// this for the whole fleet on every request, and only a page of accounts
+// ever needs the explanation (ListByUsers).
+//
+// The latch and not the last state: an idle or unreadable sample freezes
+// the streak, so a latched account that went quiet is still flagged, and a
+// read of state='flagged' would let it leave the queue by disconnecting.
+// JOIN users because there is no foreign key — a deleted account's row is
+// nobody an admin can open. Bounded by updated_at because Save never deletes
+// an unjudged row: every judged user is re-saved each cycle, idle ones
+// included, so the bound drops only rows the poll stopped judging. updated_at
+// is unix ms, so the comparison is an integer one on every dialect;
+// inclusive, so "judged at since" is fresh.
+//
+// over is a reserved word on MySQL 8 (window functions), so it is never
+// written raw: the predicate and the select name it as clause.Column, which
+// GORM quotes for the dialect it runs on.
+func (r *GeoStreakRepo) AttentionLevels(ctx context.Context, since time.Time) ([]ports.GeoAttentionRow, error) {
+	col := func(name string) clause.Column { return clause.Column{Table: "geo_streaks", Name: name} }
+	var rows []struct {
+		UserID    int64 `gorm:"column:user_id"`
+		Flagged   bool  `gorm:"column:flagged"`
+		Over      int   `gorm:"column:over"`
+		UpdatedAt int64 `gorm:"column:updated_at"`
+	}
+	err := r.db.WithContext(ctx).Table("geo_streaks").
+		Clauses(clause.Select{Columns: []clause.Column{col("user_id"), col("flagged"), col("over"), col("updated_at")}}).
+		Joins("JOIN users ON users.id = geo_streaks.user_id").
+		Where(clause.Or(
+			clause.Eq{Column: col("flagged"), Value: true},
+			clause.Gt{Column: col("over"), Value: 0},
+		)).
+		Where(clause.Gte{Column: col("updated_at"), Value: since.UnixMilli()}).
+		Order(clause.OrderByColumn{Column: col("user_id")}).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("geo attention levels: %w", err)
+	}
+	out := make([]ports.GeoAttentionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ports.GeoAttentionRow{
+			UserID: row.UserID, Flagged: row.Flagged, Over: row.Over, UpdatedAtMS: row.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// ListByUsers returns the full rows — evidence included — of the asked
+// accounts, any state, by user id; an account with no row is absent. The
+// read for one page of the queue, or one account's drawer: the explanation
+// AttentionLevels leaves out. Read in IN lists of idReadChunk ids.
+func (r *GeoStreakRepo) ListByUsers(ctx context.Context, userIDs []int64) ([]domain.GeoRecord, error) {
+	var out []domain.GeoRecord
+	for _, chunk := range idChunks(userIDs) {
+		var rows []geoStreakRow
+		if err := r.db.WithContext(ctx).Where("user_id IN ?", chunk).Order("user_id").Find(&rows).Error; err != nil {
+			return nil, fmt.Errorf("list geo streaks by user: %w", err)
+		}
+		for _, row := range rows {
+			out = append(out, row.toDomain())
+		}
+	}
+	return out, nil
+}
+
+// CountFreshUnknown counts the existing accounts whose LAST verdict is
+// unknown — the detector could not place them — judged at or after since.
+// The queue shows it beside a GeoIP database warning, so a dead or
+// country-only database is never silent: an account nobody can place is
+// also an account the queue cannot list.
+func (r *GeoStreakRepo) CountFreshUnknown(ctx context.Context, since time.Time) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Table("geo_streaks").
+		Joins("JOIN users ON users.id = geo_streaks.user_id").
+		Where("geo_streaks.state = ? AND geo_streaks.updated_at >= ?", string(domain.GeoStateUnknown), since.UnixMilli()).
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("count unknown geo verdicts: %w", err)
+	}
+	return n, nil
+}
+
 func (row geoStreakRow) toDomain() domain.GeoRecord {
 	var places []string
 	if row.Places != "" {
 		places = strings.Split(row.Places, ",")
 	}
+	streak := domain.GeoStreak{
+		Over:    row.Over,
+		Under:   row.Under,
+		Flagged: row.Flag,
+		Tier:    domain.GeoTier(row.Tier),
+		BanOver: row.BanOver,
+	}
 	return domain.GeoRecord{
 		UserID:      row.UserID,
-		Streak:      domain.GeoStreak{Over: row.Over, Under: row.Under, Flagged: row.Flag},
+		Streak:      streak,
 		State:       domain.GeoState(row.State),
 		Reason:      row.Reason,
 		Places:      places,
 		LiveIPs:     row.LiveIPs,
+		Concurrent:  row.Concurrent,
+		Excluded:    row.Excluded,
+		Evidence:    domain.GeoEvidence(row.Evidence),
 		Complete:    !row.Incomplete,
 		UpdatedAtMS: row.UpdatedAt,
 	}
@@ -132,10 +322,18 @@ func (row geoStreakRow) toDomain() domain.GeoRecord {
 // empty for the duration of the write, and a crash inside that window would
 // clear every latched flag in the fleet.
 //
-// Rows for users absent from this cycle are left alone rather than deleted. A
-// user with no live connections is not evaluated at all — idling must not shed
-// a streak, which is the easiest evasion there is — so their row has to
-// survive a cycle that did not mention them.
+// Rows for users absent from this cycle are left alone rather than deleted.
+// An idle user is NOT absent: every user holding a client is judged each
+// cycle, and an idle sample freezes the streak and re-saves the row (which is
+// also what keeps a latched flag's updated_at current). Absent means the poll
+// did not judge the user at all this cycle, and their row has to survive
+// that: deleting it would let a watched account shed its streak simply by not
+// being judged once.
+//
+// Every column the row carries is named in DoUpdates. An upsert rewrites only
+// the columns it names, so one left out keeps its FIRST value forever — a
+// flag's tier from last month, a suspension streak that never resets,
+// evidence from a different cycle than the verdict beside it.
 func (r *GeoStreakRepo) Save(ctx context.Context, records map[int64]domain.GeoRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -147,21 +345,41 @@ func (r *GeoStreakRepo) Save(ctx context.Context, records map[int64]domain.GeoRe
 			Over:       rec.Streak.Over,
 			Under:      rec.Streak.Under,
 			Flag:       rec.Streak.Flagged,
+			Tier:       string(rec.Streak.Tier),
+			BanOver:    rec.Streak.BanOver,
 			State:      string(rec.State),
 			Reason:     truncate(rec.Reason, 512),
-			Places:     truncate(strings.Join(rec.Places, ","), 512),
+			Places:     truncate(joinPlaces(rec.Places), 512),
 			LiveIPs:    rec.LiveIPs,
 			Incomplete: !rec.Complete,
+			Concurrent: rec.Concurrent,
+			Excluded:   rec.Excluded,
+			Evidence:   jsonGeoEvidence(rec.Evidence),
 		})
 	}
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"over", "under", "flagged",
+			"over", "under", "flagged", "tier", "ban_over",
 			"state", "reason", "places", "live_ips", "incomplete",
+			"concurrent", "excluded", "evidence",
 			"updated_at",
 		}),
 	}).CreateInBatches(rows, 200).Error
+}
+
+// joinPlaces joins places for the comma-separated column, dropping any comma
+// inside a place first. Places are country codes today, but this column
+// cannot know what a later caller hands it, and a place such as
+// "US/Washington, D.C." would come back as two — a phantom that anything
+// reading the count would judge. Losing the comma is cosmetic; gaining a
+// place is not.
+func joinPlaces(places []string) string {
+	cleaned := make([]string, len(places))
+	for i, p := range places {
+		cleaned[i] = strings.ReplaceAll(p, ",", "")
+	}
+	return strings.Join(cleaned, ",")
 }
 
 // truncate keeps a generated string inside its column.

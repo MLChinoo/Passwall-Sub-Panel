@@ -33,11 +33,31 @@ function generalSettings(overrides: Partial<UISettings> = {}): UISettings {
     geo_ip_enabled: false,
     geo_ip_auto_update: false,
     geo_ip_update_source: 'dbip',
+    geo_anomaly_scope: '',
     geo_anomaly_max_places: 1,
+    geo_anomaly_max_regions: 0,
+    geo_anomaly_max_cities: 0,
     geo_anomaly_min_placed_ratio: 0.8,
     geo_anomaly_flag_after_polls: 2,
     geo_anomaly_clear_after_polls: 3,
+    geo_anomaly_co_travel: '',
     geo_anomaly_allow_anywhere: false,
+    geo_anomaly_ignore_addresses: '',
+    geo_anomaly_ban_enabled: false,
+    geo_anomaly_ban_max_countries: 0,
+    geo_anomaly_ban_max_regions: 0,
+    geo_anomaly_ban_max_cities: 0,
+    geo_anomaly_ban_after_polls: 0,
+    geo_anomaly_ban_duration_minutes: 0,
+    risk_sub_spread_off: false,
+    risk_devices_off: false,
+    risk_usage_shift_off: false,
+    risk_login_country_off: false,
+    risk_min_days: 0,
+    risk_max_devices: 0,
+    risk_usage_ratio: 0,
+    risk_usage_floor_gb: 0,
+    risk_hwid_capture_off: false,
     sub_clients: [],
     quick_links: [],
     ...overrides,
@@ -176,6 +196,53 @@ describe('native-task lifecycle settings', () => {
     save()
     expect(api.put).not.toHaveBeenCalled()
     expect(snack).toHaveBeenLastCalledWith('admin:settings.general.node_task_retention_minimum', 'warning')
+  })
+})
+
+// The detector policy moved to the risk center's 策略 tab, which owns it on
+// the server too (the settings PUT keeps whatever policy it loaded). A copy
+// of those fields left here would be a second editor whose saves are
+// silently discarded, so the page keeps none — only the way there.
+describe('the risk policy lives in the risk center', () => {
+  it('shows no detector section in General, only a pointer to the policy tab', async () => {
+    await mountSettings()
+
+    for (const section of ['settings.geo_anomaly.section', 'settings.risk.section', 'settings.risk_center.section']) {
+      expect(screen.queryByText(`admin:${section}`), section).toBeNull()
+    }
+    // Not one of the policy's fields is left to edit on this page.
+    const policyField = /^admin:settings\.(geo_anomaly|risk|risk_center)\./
+    expect(screen.queryAllByRole('spinbutton', { name: policyField })).toEqual([])
+    expect(screen.queryAllByRole('switch', { name: policyField })).toEqual([])
+    expect(screen.queryAllByRole('textbox', { name: policyField })).toEqual([])
+
+    expect(screen.getByText('admin:settings.geo.policy_pointer')).toBeTruthy()
+    const link = screen.getByRole('link', { name: 'admin:settings.geo.open_policy' })
+    expect(link.getAttribute('href')).toBe('/admin/risk?tab=policy')
+  })
+
+  it("offers only notify and emergency in a group's General rail", async () => {
+    installReads({
+      '/admin/settings/ui': generalSettings(),
+      '/admin/groups': list([{ id: 1, slug: 'test', name: 'group', tag_filter: { all: true, tags: [], mode: 'all' }, members: 0, remark: '', require_2fa: false }]),
+      '/admin/groups/1/scope-settings': {
+        overrides: {},
+        overridable: [
+          'notify.expire_before_days', 'security.emergency_access_enabled',
+          'geo_anomaly.max_places', 'geo_anomaly.ban_enabled', 'risk.min_days', 'risk.usage_ratio',
+        ],
+      },
+    })
+    mount(<SettingsView />)
+    fireEvent.click(await screen.findByRole('button', { name: 'group' }))
+
+    expect(await screen.findByText('admin:groups.scope.cat_notify')).toBeTruthy()
+    expect(screen.getByText('admin:groups.scope.cat_emergency')).toBeTruthy()
+    for (const text of [
+      'cat_geo', 'cat_geo_ban', 'cat_risk', 'geo_max_countries', 'geo_ban_enabled', 'risk_min_days', 'risk_usage_ratio',
+    ]) {
+      expect(screen.queryByText(`admin:groups.scope.${text}`), text).toBeNull()
+    }
   })
 })
 

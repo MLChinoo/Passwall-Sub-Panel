@@ -43,21 +43,56 @@ type geoAnomalyRow struct {
 	Display string `json:"display_name,omitempty"`
 	State   string `json:"state"`
 	Reason  string `json:"reason"`
-	// Places is the concurrent locations behind the verdict, at whatever
-	// granularity the effective policy uses.
-	Places  []string `json:"places"`
-	LiveIPs int      `json:"live_ips"`
+	// Tier is the tier the flag (or the last over-sample) was raised at —
+	// country, region or city — and "" when nothing was over. Kept while the
+	// flag is latched, so an idle flagged row can still say what raised it.
+	Tier string `json:"tier"`
+	// Flagged is the LATCH, separate from State. An idle or unreadable sample
+	// freezes the streak, so a flagged account that disconnected reads
+	// state "idle" and is still flagged; without this field that row looks
+	// cleared.
+	Flagged bool `json:"flagged"`
+	// Places is the COUNTRIES behind the verdict, co-travel folded. Regions
+	// and cities are in Evidence. A row an older build wrote may still show
+	// that build's places until the user's next judgement.
+	Places []string `json:"places"`
+	// LiveIPs is every address the upstream still remembered for this user —
+	// its whole retention window, not what was judged (ConcurrentIPs).
+	LiveIPs int `json:"live_ips"`
+	// ConcurrentIPs are the sources judged (live at poll time and not set
+	// aside); ExcludedIPs the live sources set aside (shared exits, the
+	// ignore list, infrastructure, internal ranges). Next to LiveIPs they
+	// show how much of the window was memory and how much was deliberately
+	// not counted.
+	ConcurrentIPs int `json:"concurrent_ips"`
+	ExcludedIPs   int `json:"excluded_ips"`
 	// Complete=false means LiveIPs is a FLOOR: a panel holding this user's
 	// clients could not be read. Rendered, never silently dropped — a partial
 	// count shown as a total reads as "this account is fine" exactly when the
 	// evidence is missing.
-	Complete    bool  `json:"complete"`
-	OverStreak  int   `json:"over_streak"`
-	UnderStreak int   `json:"under_streak"`
-	UpdatedAtMS int64 `json:"updated_at_ms"`
+	Complete    bool `json:"complete"`
+	OverStreak  int  `json:"over_streak"`
+	UnderStreak int  `json:"under_streak"`
+	// BanStreak is consecutive judged polls over the SUSPENSION tolerances:
+	// how far into the sustain window an account is, in a group that armed
+	// automatic suspension (always 0 where it is off). It resets when a
+	// suspension fires, because the ban consumes the streak.
+	BanStreak int `json:"ban_streak"`
+	// Evidence is the structured account of the verdict — spots, exclusions,
+	// coverage, spread; never an address. v 0 is a row an older build wrote.
+	Evidence    domain.GeoEvidence `json:"evidence"`
+	UpdatedAtMS int64              `json:"updated_at_ms"`
+	// ServiceDisabledReason / ServiceDisabledAtMS are the account's current
+	// service hold, read from the same user lookup as the name. geo_auto
+	// means the detector already suspended it (and since when, for the time
+	// box); anything else is somebody else's hold, shown so the admin does
+	// not act on an account that is already paused. Omitted when active.
+	ServiceDisabledReason string `json:"service_disabled_reason,omitempty"`
+	ServiceDisabledAtMS   int64  `json:"service_disabled_at_ms,omitempty"`
 }
 
-// List returns every judged user, newest first.
+// List returns every judged user, newest first — or, with ?user_id=, that
+// one account's row alone (the risk center's single-account lookup).
 //
 // Every state is returned, not only the flagged ones. "unknown", "exempt" and
 // "disabled" all look identical to "no flags" if a reader filters to flagged
@@ -73,6 +108,11 @@ func (h *AdminGeoAnomalyHandler) List(c *gin.Context) {
 		})
 		return
 	}
+	only, err := queryID(c, "user_id")
+	if err != nil {
+		respondError(c, err)
+		return
+	}
 	recs, err := h.records.List(c.Request.Context())
 	if err != nil {
 		// respondError, not err.Error(): the helper exists precisely to stop
@@ -83,34 +123,75 @@ func (h *AdminGeoAnomalyHandler) List(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
+	if only != nil {
+		// Filtered BEFORE the rows are named below: each row costs one user
+		// read, and a single-account lookup must cost one, not one per
+		// judged account in the fleet. The store's read is the whole table
+		// either way (it is small: one row per client-holding account).
+		kept := recs[:0:0]
+		for _, r := range recs {
+			if r.UserID == *only {
+				kept = append(kept, r)
+			}
+		}
+		recs = kept
+	}
 
 	rows := make([]geoAnomalyRow, 0, len(recs))
 	for _, r := range recs {
-		row := geoAnomalyRow{
-			UserID:      r.UserID,
-			State:       string(r.State),
-			Reason:      r.Reason,
-			Places:      r.Places,
-			LiveIPs:     r.LiveIPs,
-			Complete:    r.Complete,
-			OverStreak:  r.Streak.Over,
-			UnderStreak: r.Streak.Under,
-			UpdatedAtMS: r.UpdatedAtMS,
-		}
-		if row.Places == nil {
-			// So the client renders an empty list rather than null.
-			row.Places = []string{}
-		}
 		// Names are a convenience: a numeric id is not something an operator
 		// can act on. A user that has since been deleted keeps its row with no
 		// name rather than disappearing — dropping it would silently shrink a
 		// list somebody is auditing.
+		var u *domain.User
 		if h.users != nil {
-			if u, uerr := h.users.GetByID(c.Request.Context(), r.UserID); uerr == nil && u != nil {
-				row.UPN, row.Display = u.UPN, u.DisplayName
+			if found, uerr := h.users.GetByID(c.Request.Context(), r.UserID); uerr == nil {
+				u = found
 			}
 		}
-		rows = append(rows, row)
+		rows = append(rows, geoAnomalyRowOf(r, u))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": rows})
+}
+
+// geoAnomalyRowOf is one verdict as every admin read serves it — this list,
+// and the risk center's queue and drawer, which must show exactly the same
+// thing. u names the row and carries the account's current service hold; nil
+// leaves both out (an account deleted since).
+func geoAnomalyRowOf(r domain.GeoRecord, u *domain.User) geoAnomalyRow {
+	row := geoAnomalyRow{
+		UserID:        r.UserID,
+		State:         string(r.State),
+		Reason:        r.Reason,
+		Tier:          string(r.Streak.Tier),
+		Flagged:       r.Streak.Flagged,
+		Places:        r.Places,
+		LiveIPs:       r.LiveIPs,
+		ConcurrentIPs: r.Concurrent,
+		ExcludedIPs:   r.Excluded,
+		Complete:      r.Complete,
+		OverStreak:    r.Streak.Over,
+		UnderStreak:   r.Streak.Under,
+		BanStreak:     r.Streak.BanOver,
+		Evidence:      r.Evidence,
+		UpdatedAtMS:   r.UpdatedAtMS,
+	}
+	if row.Places == nil {
+		// So the client renders an empty list rather than null.
+		row.Places = []string{}
+	}
+	if row.Evidence.Spots == nil {
+		// Same, for a row an older build wrote (evidence NULL, v 0): the
+		// client reads spots.length on every row, and v — not a null —
+		// is how it tells "not recorded" from "nothing found".
+		row.Evidence.Spots = []domain.GeoSpot{}
+	}
+	if u != nil {
+		row.UPN, row.Display = u.UPN, u.DisplayName
+		row.ServiceDisabledReason = string(u.ServiceDisabledReason)
+		if u.ServiceDisabledAt != nil {
+			row.ServiceDisabledAtMS = u.ServiceDisabledAt.UnixMilli()
+		}
+	}
+	return row
 }

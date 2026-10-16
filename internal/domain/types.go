@@ -601,6 +601,8 @@ type Node struct {
 	// server/port (and optionally the TLS SNI / WS Host for CDN fronting). The
 	// relay machine's actual forwarding is configured outside the panel.
 	Relays []RelayLine
+	// RouteState is written only by the vlessRoute synchronization service.
+	RouteState NodeRouteState
 	// HideDirect suppresses the direct entry when at least one relay line is
 	// enabled — for landings that only accept connections from their relays
 	// (firewalled to the transit IP). Ignored when no relay is enabled, so a
@@ -665,6 +667,8 @@ func (n *Node) EffectiveShowRelayStatus() bool {
 // the dialed endpoint; the protocol, UUID-derived credentials and transport
 // come from the landing inbound unchanged.
 type RelayLine struct {
+	// ID is a stable subscription-line identity, independent of label/order.
+	ID string
 	// Name labels the rendered entry, appended after the node's display name
 	// (e.g. "广州移动中转"). Falls back to Address when empty.
 	Name string
@@ -933,6 +937,15 @@ type SubLog struct {
 	UA          string    `json:"ua"`
 	ClientType  string    `json:"client_type"`
 	AccessedAt  time.Time `json:"accessed_at"`
+	// DeviceID is the keyed per-user digest of the client's declared x-hwid
+	// (subdevice.Hasher), never the raw header; DeviceLabel is the sanitized
+	// OS/version/model the same fetch declared. Both are admin-only, and the
+	// sub-log API is staff-visible and serves this struct by embedding, so
+	// they are NEVER serialized from here: an admin-only view copies them
+	// into its own fields. "" = nothing declared, capture off, or a row that
+	// predates capture.
+	DeviceID    string `json:"-"`
+	DeviceLabel string `json:"-"`
 }
 
 // AuditEntry is one immutable line in the admin audit log.
@@ -1086,18 +1099,35 @@ type SAMLLoginRequest struct {
 // Consumed reports whether this request has already been claimed.
 func (r *SAMLLoginRequest) Consumed() bool { return r != nil && r.ConsumedAt != nil }
 
-// GeoLocation is a resolved geolocation for an IP. Empty fields mean
+// GeoLocation is a resolved geolocation for an IP. Empty name fields mean
 // "unknown" (private/reserved IP, lookup disabled, or provider failure).
 // CountryCode is ISO 3166-1 alpha-2 (e.g. "HK"); the frontend renders the
 // flag from it.
+//
+// Only the four names reach JSON. The sub-log, audit and auth-event views
+// serve this type verbatim, and their bytes must not change. The fields
+// after them are for in-memory judging; evidence exposes what it needs of
+// them through its own fields, and coordinates never leave memory.
 type GeoLocation struct {
 	CountryCode string `json:"country_code"`
 	Country     string `json:"country"`
 	Region      string `json:"region"`
 	City        string `json:"city"`
+	// RegionCode is Region's ISO 3166-2 code without the country prefix
+	// ("GD"), as the database gave it; normalize with NormalizeRegionCode.
+	RegionCode string `json:"-"`
+	// Latitude/Longitude place the NETWORK (WGS84), a pair or none; (0, 0)
+	// means none. AccuracyRadiusKm is the database's radius around it, 0 =
+	// none given (not "exact"). In memory only: see GeoPoint.
+	Latitude         float64 `json:"-"`
+	Longitude        float64 `json:"-"`
+	AccuracyRadiusKm int     `json:"-"`
 }
 
-// Empty reports whether nothing useful was resolved.
+// Empty reports whether nothing useful was resolved. It reads the four names
+// only, mirroring authcore's Location.Empty: a record carrying a region code
+// or coordinates but no name is still "nothing resolved", as it was before
+// those fields existed, so the geo service keeps dropping it.
 func (g GeoLocation) Empty() bool {
 	return g.CountryCode == "" && g.Country == "" && g.Region == "" && g.City == ""
 }
@@ -1168,13 +1198,14 @@ type MihomoRematchOutbound struct {
 }
 
 // ProxyGroupMember is one ordered choice in a generated Mihomo/sing-box
-// selector. Kind is one of: builtin, proxy_group, node, node_set, rematch.
+// selector. Kind is one of: builtin, proxy_group, node, line, node_set, rematch.
 // NodeID is used only by node; Value carries the builtin/group/rematch name
 // or a node-set selector (remaining, region:XX, tag:name).
 type ProxyGroupMember struct {
 	Kind   string `json:"kind" yaml:"kind"`
 	Value  string `json:"value,omitempty" yaml:"value,omitempty"`
 	NodeID int64  `json:"node_id,omitempty" yaml:"node_id,omitempty"`
+	LineID string `json:"line_id,omitempty" yaml:"line_id,omitempty"`
 }
 
 // ProxyGroupOptions configures one generated proxy group. Pointer

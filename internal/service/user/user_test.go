@@ -1,9 +1,11 @@
 package user
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +206,48 @@ func TestEmergencyStatus_UsedBytesZeroWhenNoActiveWindow(t *testing.T) {
 	}
 }
 
+// A hard service hold outranks emergency access (AccessSnapshot checks it
+// first), so offering a window under one would take a use from the user and
+// restore nothing. Worse, the grant writes the service reason: before this, it
+// replaced the hold with traffic_exceeded, and the next rollover then resumed
+// the user — an admin pause or geo suspension undone by the user clicking a
+// button. Over quota is exactly when such a user would click it.
+func TestEmergencyStatus_UnavailableUnderAHardServiceHold(t *testing.T) {
+	now := time.Now()
+	for _, hold := range []domain.AutoDisabledReason{domain.DisabledGeoAutoSuspend, domain.DisabledServiceManual} {
+		t.Run(string(hold), func(t *testing.T) {
+			u := &domain.User{ID: 1, Enabled: true, ServiceDisabledReason: hold}
+			st := EmergencyAccessStatusForUserWithTrafficLimit(u, emSettings(), now, true) // over quota
+			if st.Available {
+				t.Fatalf("Available = true under a %s hold", hold)
+			}
+			if st.Status != "service_held" {
+				t.Fatalf("status = %q, want service_held", st.Status)
+			}
+		})
+	}
+}
+
+// The use path decides from the same status under emergencyMu, before any
+// write: the held row is left exactly as it was and no use is spent.
+func TestUseEmergencyAccess_RefusedUnderAHardServiceHoldWithoutWriting(t *testing.T) {
+	u := &domain.User{ID: 7, Enabled: true, ServiceDisabledReason: domain.DisabledGeoAutoSuspend, ServiceDisableDetail: "held"}
+	repo := &memoryUserRepo{byID: map[int64]*domain.User{7: u}}
+	svc := &Service{users: repo, ownership: emptyOwnershipRepo{}, settings: &fakeFloorSettingsRepo{cfg: emSettings()}}
+
+	_, err := svc.UseEmergencyAccess(context.Background(), 7, true)
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	got := repo.byID[7]
+	if got.ServiceDisabledReason != domain.DisabledGeoAutoSuspend || got.ServiceDisableDetail != "held" {
+		t.Fatalf("row = %q/%q, want the hold untouched", got.ServiceDisabledReason, got.ServiceDisableDetail)
+	}
+	if got.EmergencyUntil != nil || got.EmergencyUsedCount != 0 {
+		t.Fatalf("a window was granted: until=%v used=%d", got.EmergencyUntil, got.EmergencyUsedCount)
+	}
+}
+
 // The SSO role-policy unit tests live in the auth package now
 // (see internal/service/auth/role_test.go) because the policy moved
 // out of this package — user.EnsureSSO just calls auth.ResolveRoleForSSO.
@@ -228,6 +272,51 @@ func TestUpdateProfile_BlocksDemotingLastAdmin(t *testing.T) {
 	}
 	if repo.byID[1].Role != domain.RoleUser {
 		t.Errorf("user 1 should now be a user, got %v", repo.byID[1].Role)
+	}
+}
+
+func TestUpdateProfile_ChangesUPN(t *testing.T) {
+	local := &domain.User{ID: 1, UPN: "old@example.test", SSOProvider: domain.SSOProviderLocal, SSOSubject: "old@example.test"}
+	sso := &domain.User{ID: 2, UPN: "sso@example.test", SSOProvider: domain.SSOProviderSAML, SSOSubject: "stable-subject"}
+	repo := &memoryUserRepo{byID: map[int64]*domain.User{1: local, 2: sso}}
+	svc := &Service{users: repo}
+
+	newLocal := " New@Example.Test "
+	if err := svc.UpdateProfile(context.Background(), 1, UpdateInput{UPN: &newLocal}); err != nil {
+		t.Fatalf("update local UPN: %v", err)
+	}
+	if got := repo.byID[1]; got.UPN != "new@example.test" || got.SSOSubject != got.UPN {
+		t.Fatalf("local identity = (%q, %q), want canonical matching UPN and subject", got.UPN, got.SSOSubject)
+	}
+	newSSO := "changed@example.test"
+	if err := svc.UpdateProfile(context.Background(), 2, UpdateInput{UPN: &newSSO}); err != nil {
+		t.Fatalf("update SSO UPN: %v", err)
+	}
+	if got := repo.byID[2]; got.UPN != newSSO || got.SSOSubject != "stable-subject" {
+		t.Fatalf("SSO identity = (%q, %q), want new UPN with original subject", got.UPN, got.SSOSubject)
+	}
+}
+
+func TestUpdateProfile_RejectsInvalidOrDuplicateUPN(t *testing.T) {
+	repo := &memoryUserRepo{byID: map[int64]*domain.User{
+		1: {ID: 1, UPN: "alice@example.test"},
+		2: {ID: 2, UPN: "bob@example.test"},
+	}}
+	svc := &Service{users: repo}
+	for _, tc := range []struct {
+		upn  string
+		want error
+	}{
+		{"  ", domain.ErrValidation},
+		{" Bob@Example.Test ", domain.ErrAlreadyExists},
+	} {
+		err := svc.UpdateProfile(context.Background(), 1, UpdateInput{UPN: &tc.upn})
+		if !errors.Is(err, tc.want) {
+			t.Errorf("upn %q: got %v, want %v", tc.upn, err, tc.want)
+		}
+		if got := repo.byID[1].UPN; got != "alice@example.test" {
+			t.Errorf("upn %q changed stored identity to %q", tc.upn, got)
+		}
 	}
 }
 
@@ -484,6 +573,75 @@ func (r *memoryUserRepo) UpdateServiceState(ctx context.Context, userID int64, r
 		cur.ServiceDisabledAt = disabledAt
 	}
 	return nil
+}
+
+// SetServiceStateIfClear / ClearServiceStateIfReason mirror the production
+// conditional writes (same predicates, same "did it write", same refusal of an
+// empty reason), so a service test cannot pass against code that overwrites.
+// Not emulated: the production refusal of geo_auto for an account an admin
+// trusts (risk_reviews), which app's TestBuildNeverGeoAutoSuspendsATrustedAccount
+// pins end to end.
+func (r *memoryUserRepo) SetServiceStateIfClear(ctx context.Context, userID int64, reason domain.AutoDisabledReason, detail string, at time.Time) (bool, error) {
+	if reason == domain.DisabledNone {
+		return false, fmt.Errorf("%w: empty service reason", domain.ErrValidation)
+	}
+	cur, ok := r.byID[userID]
+	if !ok || cur.ServiceDisabledReason != domain.DisabledNone {
+		return false, nil
+	}
+	a := at
+	cur.ServiceDisabledReason = reason
+	cur.ServiceDisableDetail = detail
+	cur.ServiceDisabledAt = &a
+	return true, nil
+}
+
+func (r *memoryUserRepo) ClearServiceStateIfReason(ctx context.Context, userID int64, reason domain.AutoDisabledReason) (bool, error) {
+	if reason == domain.DisabledNone {
+		return false, fmt.Errorf("%w: empty service reason", domain.ErrValidation)
+	}
+	cur, ok := r.byID[userID]
+	if !ok || cur.ServiceDisabledReason != reason {
+		return false, nil
+	}
+	cur.ServiceDisabledReason = domain.DisabledNone
+	cur.ServiceDisableDetail = ""
+	cur.ServiceDisabledAt = nil
+	return true, nil
+}
+
+// ListByIDs / ListServiceHolds answer like the production reads: existing
+// ids in id order, each once; the exact reason, by id, the hold time in ms.
+func (r *memoryUserRepo) ListByIDs(ctx context.Context, ids []int64) ([]*domain.User, error) {
+	seen := make(map[int64]bool, len(ids))
+	var out []*domain.User
+	for _, id := range ids {
+		if u, ok := r.byID[id]; ok && !seen[id] {
+			seen[id] = true
+			out = append(out, cloneUser(u))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.User) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+func (r *memoryUserRepo) ListServiceHolds(ctx context.Context, reason domain.AutoDisabledReason) ([]ports.ServiceHold, error) {
+	if reason == domain.DisabledNone {
+		return nil, fmt.Errorf("%w: empty service reason", domain.ErrValidation)
+	}
+	var out []ports.ServiceHold
+	for _, u := range r.byID {
+		if u.ServiceDisabledReason != reason {
+			continue
+		}
+		h := ports.ServiceHold{UserID: u.ID}
+		if u.ServiceDisabledAt != nil {
+			h.SinceMS = u.ServiceDisabledAt.UnixMilli()
+		}
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b ports.ServiceHold) int { return cmp.Compare(a.UserID, b.UserID) })
+	return out, nil
 }
 
 func (r *memoryUserRepo) UpdateTrafficState(ctx context.Context, u *domain.User) error {

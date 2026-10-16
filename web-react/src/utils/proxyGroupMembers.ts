@@ -7,8 +7,8 @@ export const DEFAULT_PROXY_GROUP_TOLERANCE = 50
 export const DEFAULT_LOAD_BALANCE_STRATEGY: LoadBalanceStrategy = 'consistent-hashing'
 export const DEFAULT_PROXY_GROUP_ORDER = [
   '🚀 节点选择',
-  '⚡ QUIC控制',
   '🎮 UDP控制',
+  '⚡ QUIC控制',
   '🇨🇳 中国大陆',
   '💬 Ai平台',
   '📹 油管视频',
@@ -84,6 +84,7 @@ export function proxyGroupOrderEqual(left: string[], right: string[]): boolean {
 }
 
 export function proxyGroupMemberIdentity(member: ProxyGroupMember): string {
+  if (member.kind === 'line') return `line:${member.node_id || 0}:${member.line_id || ''}`
   return `${member.kind}:${member.value || ''}:${member.node_id || 0}`
 }
 

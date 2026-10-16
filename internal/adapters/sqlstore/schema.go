@@ -383,6 +383,8 @@ type nodeRow struct {
 	// least one relay is enabled. AutoMigrate adds both; empty/false on legacy
 	// rows, no backfill.
 	Relays          jsonRelays      `gorm:"column:relays"`
+	RouteState      jsonRouteState  `gorm:"column:route_state"`
+	RouteRevision   int64           `gorm:"not null;default:0"`
 	HideDirect      bool            `gorm:"default:false"`
 	ShowRelayStatus bool            `gorm:"default:false"`
 	RelayHealth     jsonRelayHealth `gorm:"column:relay_health"`
@@ -452,6 +454,7 @@ func (r *nodeRow) toDomain() (*domain.Node, error) {
 		CertSource:              domain.CertSource(r.CertSource),
 		CertID:                  r.CertID,
 		Relays:                  []domain.RelayLine(r.Relays),
+		RouteState:              domain.NodeRouteState(r.RouteState),
 		HideDirect:              r.HideDirect,
 		ShowRelayStatus:         r.ShowRelayStatus,
 		RelayHealth:             []domain.RelayHealth(r.RelayHealth),
@@ -515,6 +518,8 @@ func nodeFromDomain(n *domain.Node) (*nodeRow, error) {
 		CertSource:              string(n.CertSource),
 		CertID:                  n.CertID,
 		Relays:                  jsonRelays(n.Relays),
+		RouteState:              jsonRouteState(n.RouteState),
+		RouteRevision:           n.RouteState.Revision,
 		HideDirect:              n.HideDirect,
 		ShowRelayStatus:         n.ShowRelayStatus,
 		RelayHealth:             jsonRelayHealth(n.RelayHealth),
@@ -836,6 +841,32 @@ type subLogRow struct {
 	// (WHERE accessed_at < cutoff); leading-column user_id in the composite
 	// idx can't, same rationale as traffic_snapshots.
 	AccessedAt time.Time `gorm:"index:idx_sub_user_time,priority:2;index:idx_sub_accessed"`
+	// DeviceID is a keyed per-user digest of the client's declared x-hwid
+	// (subdevice.Hasher), NEVER the raw header. The empty string means nothing
+	// declared, capture off, or a row that predates capture.
+	//
+	// Both device columns are varchar with an empty DEFAULT, never text: a
+	// text column may not carry a DEFAULT on MySQL (TestSchemaNoDefaultOnTextColumns),
+	// and the DEFAULT is what lets AutoMigrate add a NOT NULL column to a
+	// populated table. The ADD COLUMN is instant on MySQL 8, metadata-only on
+	// Postgres 11+ and O(1) on SQLite, which matters on the busiest table.
+	DeviceID string `gorm:"size:16;not null;default:''"`
+	// DeviceLabel is the sanitized OS/version/model the same fetch declared
+	// (subdevice.Label, at most 64 runes). Admin-only on every read path.
+	DeviceLabel string `gorm:"size:64;not null;default:''"`
+}
+
+func (r subLogRow) toDomain() domain.SubLog {
+	return domain.SubLog{
+		ID:          r.ID,
+		UserID:      r.UserID,
+		IP:          r.IP,
+		UA:          r.UA,
+		ClientType:  r.ClientType,
+		AccessedAt:  r.AccessedAt,
+		DeviceID:    r.DeviceID,
+		DeviceLabel: r.DeviceLabel,
+	}
 }
 
 type syncTaskRow struct {
@@ -1508,6 +1539,7 @@ var schemaModels = []any{
 	&roleAssignmentRow{},
 	&groupRow{},
 	&nodeRow{},
+	&routeLeaseRow{},
 	// ownershipRow (user_xui_clients) is intentionally NOT here: v3.9.0 retired the
 	// per-node ownership model. A fresh install never creates the table; an upgrade
 	// keeps its existing one (AutoMigrate leaves untracked tables alone) until the
@@ -1533,6 +1565,10 @@ var schemaModels = []any{
 	&webauthnCredentialRow{},
 	&subLogRow{},
 	&geoStreakRow{},
+	&riskSignalRow{},
+	&connectionHistoryRow{},
+	&flagRecordRow{},
+	&riskReviewRow{},
 	&syncTaskRow{},
 	&xuiPanelRow{},
 	&separatorRow{},
@@ -1575,6 +1611,9 @@ func EnsureSchema(db *gorm.DB) error {
 		return err
 	}
 	if err := repairTrafficCounterNulls(db); err != nil {
+		return err
+	}
+	if err := backfillRelayLineIDs(db); err != nil {
 		return err
 	}
 	return seedBuiltinRoles(db)

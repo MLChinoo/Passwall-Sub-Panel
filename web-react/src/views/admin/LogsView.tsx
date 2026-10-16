@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   Card,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -29,6 +30,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility'
 import CleaningIcon from '@mui/icons-material/CleaningServices'
 import SearchIcon from '@mui/icons-material/Search'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router'
 import { useCan } from '@/utils/permissions'
 
 import PageHeader from '@/components/PageHeader'
@@ -43,10 +45,11 @@ import { getUISettings, putUISettings } from '@/api/settings'
 import { confirm } from '@/components/ConfirmHost'
 import { pushSnack } from '@/components/SnackbarHost'
 import { PagedTableFooter } from '@/components/PagedTableFooter'
+import { AsyncButton } from '@/components/AsyncButton'
 import { useTabParam } from '@/hooks/useTabParam'
-import GeoAnomaliesTab from './GeoAnomaliesTab'
 import { formatDualTz } from '@/utils/datetime'
 import CertEventsTab from './CertEventsTab'
+import { parseUserId } from './risk/riskParams'
 import { useSiteStore } from '@/stores/site'
 
 // Initial page size pulled from the shared psp_page_size key so the
@@ -76,7 +79,20 @@ export default function LogsView() {
   const canConfig = useCan('config.write')
   const panelTz = useSiteStore(s => s.timezone)
 
-  const [tab, setTab] = useTabParam<'sub' | 'audit' | 'auth' | 'email' | 'certs' | 'geo'>('tab', 'sub', ['sub', 'audit', 'auth', 'email', 'certs', 'geo'])
+  // The location and risk tabs moved to the admin-only risk center; their old
+  // ?tab=geo|risk links are sent on by LogsRoute (admins) or fall back to 'sub'
+  // here (operators, who cannot open the risk center).
+  const [tab, setTab] = useTabParam<'sub' | 'audit' | 'auth' | 'email' | 'certs'>('tab', 'sub', ['sub', 'audit', 'auth', 'email', 'certs'])
+
+  // The EXACT user filter the risk center's drawer links with: `user_id`
+  // filters (both the sub and the auth log take it), `upn` only names the
+  // chip. The search box would not do — it is a fuzzy match over user, IP,
+  // UA and client, and would also list every account whose name contains
+  // the one asked for. The URL owns it, so Back returns to the filtered list;
+  // a malformed id filters nothing.
+  const [urlParams, setUrlParams] = useSearchParams()
+  const userFilterId = parseUserId(urlParams.get('user_id'))
+  const userFilterUpn = urlParams.get('upn') ?? ''
 
   // Sub logs
   const [subPage, setSubPage] = useState(1)
@@ -172,8 +188,11 @@ export default function LogsView() {
   // demand — never in the background. The filter objects must carry every
   // argument that changes the response; anything omitted is a stale-data bug.
   const subFilter = useMemo<SubLogFilter>(
-    () => ({ page: subPage, page_size: subPageSize, search: subAppliedSearch || undefined }),
-    [subPage, subPageSize, subAppliedSearch],
+    () => ({
+      page: subPage, page_size: subPageSize, search: subAppliedSearch || undefined,
+      user_id: userFilterId ?? undefined,
+    }),
+    [subPage, subPageSize, subAppliedSearch, userFilterId],
   )
   const auditFilter = useMemo(
     () => ({ page: auditPage, page_size: auditPageSize, search: auditAppliedSearch || undefined }),
@@ -183,8 +202,9 @@ export default function LogsView() {
     () => ({
       page: authPage, page_size: authPageSize, search: authAppliedSearch || undefined,
       method: authMethod || undefined, outcome: authOutcome || undefined,
+      user_id: userFilterId ?? undefined,
     }),
-    [authPage, authPageSize, authAppliedSearch, authMethod, authOutcome],
+    [authPage, authPageSize, authAppliedSearch, authMethod, authOutcome, userFilterId],
   )
   const emailFilter = useMemo<EmailLogFilter>(
     () => ({ page: emailPage, page_size: emailPageSize, search: emailAppliedSearch || undefined }),
@@ -221,6 +241,23 @@ export default function LogsView() {
   function loadAudit() { return auditQuery.refetch() }
   function loadEmail() { return emailQuery.refetch() }
   function onAuthFilter(e: FormEvent) { e.preventDefault(); setAuthPage(1); setAuthAppliedSearch(authSearch) }
+
+  // Removing the chip drops the filter from the URL in place (replace: it is
+  // the same list, unfiltered) and starts both lists from their first page.
+  function clearUserFilter() {
+    setUrlParams(prev => {
+      const out = new URLSearchParams(prev)
+      out.delete('user_id')
+      out.delete('upn')
+      return out
+    }, { replace: true })
+    setSubPage(1)
+    setAuthPage(1)
+  }
+  const userFilterChip = userFilterId !== null && (
+    <Chip label={t('admin:logs.filter.user_chip', { upn: userFilterUpn || `#${userFilterId}` })}
+      onDelete={clearUserFilter} />
+  )
 
   async function clearSubAll() {
     const ok = await confirm({
@@ -304,18 +341,11 @@ export default function LogsView() {
         <Tab value="auth" label={t('admin:logs.tab_auth', { defaultValue: '认证日志' })} />
         <Tab value="email" label={t('admin:logs.tab_email')} />
         <Tab value="certs" label={t('admin:logs.tab_certs')} />
-        {/* admin only, matching the endpoint's RequireRole(RoleAdmin). Without
-            the gate an operator sees a tab that can only ever answer 403 —
-            the API is the authority either way, this just stops offering a
-            door that is always locked. */}
-        {canConfig && <Tab value="geo" label={t('admin:logs.tab_geo', { defaultValue: '异地并发' })} />}
       </Tabs>
-      {/* Lives beside the logs rather than on its own page: it is a record of
-          what the fleet did, read the same way and by the same person. */}
-      {tab === 'geo' && canConfig && <GeoAnomaliesTab />}
       {tab === 'sub' && (
         <>
           <Box component="form" onSubmit={onSubFilter} sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            {userFilterChip}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, height: 40, px: 2, borderRadius: 9999,
               bgcolor: md.surfaceContainer, color: md.onSurfaceVariant, width: 320, maxWidth: '100%' }}>
               <SearchIcon sx={{ fontSize: 18 }} />
@@ -327,12 +357,12 @@ export default function LogsView() {
           </Box>
           <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'center', flexWrap: 'wrap' }}>
             {canConfig && <>
-              <Button variant="outlined" startIcon={<CleaningIcon />} onClick={purgeSubOld}>
+              <AsyncButton variant="outlined" startIcon={<CleaningIcon />} onClick={() => purgeSubOld()}>
                 {t('admin:logs.purge_old')}
-              </Button>
-              <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={clearSubAll}>
+              </AsyncButton>
+              <AsyncButton variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => clearSubAll()}>
                 {t('admin:logs.clear_all')}
-              </Button>
+              </AsyncButton>
             </>}
             <Box sx={{ flex: 1 }} />
             {canConfig && <>
@@ -365,16 +395,29 @@ export default function LogsView() {
                     <TableCell>{t('admin:logs.sub_table.ip')}</TableCell>
                     <TableCell>{t('admin:logs.sub_table.client_type')}</TableCell>
                     <TableCell>{t('admin:logs.sub_table.ua')}</TableCell>
+                    {/* Admin only, as the API is: the sub-log route is staff,
+                        and the server adds the device fields for admins alone.
+                        describeChild keeps the column's name "Device" and puts
+                        the hint in its description. */}
+                    {canConfig && (
+                      <TableCell>
+                        <Tooltip describeChild title={t('admin:logs.sub_table.device_hint', {
+                          defaultValue: '客户端通过 x-hwid 声明的设备：只保存按用户加密的摘要（显示前 4 位）与系统 / 机型，仅管理员可见',
+                        })}>
+                          <span>{t('admin:logs.sub_table.device', { defaultValue: '设备' })}</span>
+                        </Tooltip>
+                      </TableCell>
+                    )}
                     <TableCell>{t('admin:logs.sub_table.at')}</TableCell>
                     <TableCell align="right" />
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {subLoading && subItems.length === 0 && (
-                    <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6 }}><CircularProgress size={24} /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={canConfig ? 8 : 7} sx={{ textAlign: 'center', py: 6 }}><CircularProgress size={24} /></TableCell></TableRow>
                   )}
                   {!subLoading && subItems.length === 0 && (
-                    <TableRow><TableCell colSpan={7} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={canConfig ? 8 : 7} sx={{ textAlign: 'center', py: 6, color: md.onSurfaceVariant }}>—</TableCell></TableRow>
                   )}
                   {subItems.map(r => (
                     <TableRow key={r.id} hover sx={{ '& td': { borderBottom: `1px solid ${md.outlineVariant}` } }}>
@@ -389,6 +432,14 @@ export default function LogsView() {
                       </TableCell>
                       <TableCell sx={{ fontSize: 13 }}>{r.client_type}</TableCell>
                       <TableCell sx={{ fontSize: 12, color: md.onSurfaceVariant, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.ua}</TableCell>
+                      {/* The label, else the digest's 4-character prefix; a
+                          fetch that declared nothing says so rather than
+                          leaving a blank that reads as "not loaded". */}
+                      {canConfig && (
+                        <TableCell sx={{ fontSize: 12, color: md.onSurfaceVariant, whiteSpace: 'nowrap' }}>
+                          {r.device_label || (r.device_id4 ? `#${r.device_id4}` : '—')}
+                        </TableCell>
+                      )}
                       <TableCell sx={{ fontSize: 13, whiteSpace: 'nowrap' }}>{formatDualTz(r.accessed_at, panelTz)}</TableCell>
                       <TableCell align="right">
                         <Tooltip title={t('admin:logs.view_detail')}>
@@ -421,9 +472,9 @@ export default function LogsView() {
             </Box>
             <Button type="submit" variant="outlined">{t('common:search.placeholder')}</Button>
             <Box sx={{ flex: 1 }} />
-            {canConfig && <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={clearAuditAll}>
+            {canConfig && <AsyncButton variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => clearAuditAll()}>
               {t('admin:logs.clear_all')}
-            </Button>}
+            </AsyncButton>}
           </Box>
           <Card sx={{ bgcolor: md.surfaceContainerLow, boxShadow: '0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15)', overflow: 'hidden' }}>
             <TableContainer>
@@ -482,6 +533,7 @@ export default function LogsView() {
       {tab === 'auth' && (
         <>
           <Box component="form" onSubmit={onAuthFilter} sx={{ display: 'flex', gap: 1.5, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+            {userFilterChip}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, height: 40, px: 2, borderRadius: 9999,
               bgcolor: md.surfaceContainer, color: md.onSurfaceVariant, width: 300, maxWidth: '100%' }}>
               <SearchIcon sx={{ fontSize: 18 }} />
@@ -576,12 +628,12 @@ export default function LogsView() {
           </Box>
           <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'center', flexWrap: 'wrap' }}>
             {canConfig && <>
-              <Button variant="outlined" startIcon={<CleaningIcon />} onClick={purgeEmailOld}>
+              <AsyncButton variant="outlined" startIcon={<CleaningIcon />} onClick={() => purgeEmailOld()}>
                 {t('admin:logs.purge_old')}
-              </Button>
-              <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={clearEmailAll}>
+              </AsyncButton>
+              <AsyncButton variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => clearEmailAll()}>
                 {t('admin:logs.clear_all')}
-              </Button>
+              </AsyncButton>
             </>}
             <Box sx={{ flex: 1 }} />
             {canConfig && <>

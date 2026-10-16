@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	nodeprotocol "github.com/KazuhaHub/passwall-protocol/protocol"
@@ -16,6 +18,17 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/captcha"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/geo"
 )
+
+// uiSettingsWriteMu serializes the two writers of the settings record: this
+// page's PUT and the risk center's policy PUT (AdminRiskPolicyHandler.Put).
+// The store saves whole records only (the KV repo rewrites every key), so
+// each writer loads the whole record, changes its part and saves the whole
+// record back; two of them interleaving would each write the other's part
+// back as it was before they loaded, and the later save would silently
+// revert the earlier (D6). Held from the load to the last save (or
+// rollback) and nothing else is locked inside it. Package-level because
+// the two writers are separate handlers sharing one store.
+var uiSettingsWriteMu sync.Mutex
 
 // AdminSettingsHandler exposes /api/admin/settings/ui — every runtime-editable
 // preference (branding, login mode, email domains, cron cadence, JWT TTLs,
@@ -84,15 +97,103 @@ type settingsDTO struct {
 	// Notify thresholds (moved from mail_settings to settings KV type='notify').
 	ExpireBeforeDays     int `json:"expire_before_days"`
 	TrafficRemainPercent int `json:"traffic_remain_percent"`
-	// Concurrent-location anomaly policy. Per-group overridable; see
-	// docs/connection-limits.md §12.3 for why each knob exists.
+	// The risk center's policy: every geo_anomaly_* and risk_* field from
+	// here to RuntimeDefaults is served READ-ONLY. The risk center's policy
+	// endpoint (PUT /risk-center/policy) is their one writer, and Put writes
+	// back the values it loaded whatever the request says; the GET keeps
+	// serving them because the group scope editor reads its "global" baseline
+	// from here, and older SPAs read them too (D8).
+	//
+	// Concurrent-location anomaly policy. Every field but the ignore list is
+	// per-group overridable (the ignore list is global only); see
+	// ports.UISettings and docs/connection-limits.md §12.3 for why each knob
+	// exists.
 	GeoAnomalyScope           string  `json:"geo_anomaly_scope"`
 	GeoAnomalyMaxPlaces       int     `json:"geo_anomaly_max_places"`
+	GeoAnomalyMaxRegions      int     `json:"geo_anomaly_max_regions"`
+	GeoAnomalyMaxCities       int     `json:"geo_anomaly_max_cities"`
 	GeoAnomalyFlagAfterPolls  int     `json:"geo_anomaly_flag_after_polls"`
 	GeoAnomalyClearAfterPolls int     `json:"geo_anomaly_clear_after_polls"`
 	GeoAnomalyMinPlacedRatio  float64 `json:"geo_anomaly_min_placed_ratio"`
 	GeoAnomalyCoTravel        string  `json:"geo_anomaly_co_travel"`
 	GeoAnomalyAllowAnywhere   bool    `json:"geo_anomaly_allow_anywhere"`
+	GeoAnomalyIgnoreAddresses string  `json:"geo_anomaly_ignore_addresses"`
+	// Automatic temporary suspension on concurrent locations (off by default).
+	GeoAnomalyBanEnabled         bool `json:"geo_anomaly_ban_enabled"`
+	GeoAnomalyBanMaxCountries    int  `json:"geo_anomaly_ban_max_countries"`
+	GeoAnomalyBanMaxRegions      int  `json:"geo_anomaly_ban_max_regions"`
+	GeoAnomalyBanMaxCities       int  `json:"geo_anomaly_ban_max_cities"`
+	GeoAnomalyBanAfterPolls      int  `json:"geo_anomaly_ban_after_polls"`
+	GeoAnomalyBanDurationMinutes int  `json:"geo_anomaly_ban_duration_minutes"`
+	// The detector's fleet-wide runtime (the former constants). Global only;
+	// 0 means the shipped default, and the clamps are applied when read by
+	// domain.GeoRuntimeFromSettings.
+	GeoAnomalyFreshWindowSeconds  int `json:"geo_anomaly_fresh_window_seconds"`
+	GeoAnomalySharedExitMinUsers  int `json:"geo_anomaly_shared_exit_min_users"`
+	GeoAnomalyBanMaxPerPoll       int `json:"geo_anomaly_ban_max_per_poll"`
+	GeoAnomalyLiftMaxPerPoll      int `json:"geo_anomaly_lift_max_per_poll"`
+	GeoAnomalyInfraRefreshMinutes int `json:"geo_anomaly_infra_refresh_minutes"`
+	GeoAnomalyInfraHostTTLMinutes int `json:"geo_anomaly_infra_host_ttl_minutes"`
+	// Risk signals (observe only). Capture of the device a subscription
+	// client declares; global only, false = capture on.
+	RiskHWIDCaptureOff bool `json:"risk_hwid_capture_off"`
+	// The four signal switches (negative: false = signal on) and the shared
+	// tolerances, all per-group overridable; see ports.UISettings for why
+	// each exists. 0 in a number means "never configured";
+	// domain.RiskPolicyFromSettings is the one place a stored value is
+	// interpreted, and it repairs nonsense toward NOT accusing (a ratio under
+	// 1.5 is raised, MinDays is clamped to the window, 0 is unset).
+	RiskSubSpreadOff    bool    `json:"risk_sub_spread_off"`
+	RiskDevicesOff      bool    `json:"risk_devices_off"`
+	RiskUsageShiftOff   bool    `json:"risk_usage_shift_off"`
+	RiskLoginCountryOff bool    `json:"risk_login_country_off"`
+	RiskMinDays         int     `json:"risk_min_days"`
+	RiskMaxDevices      int     `json:"risk_max_devices"`
+	RiskUsageRatio      float64 `json:"risk_usage_ratio"`
+	RiskUsageFloorGB    int     `json:"risk_usage_floor_gb"`
+	// login_country's two thresholds and usage_shift's three, per-group like
+	// the tolerances above and read by the same domain.RiskPolicyFromSettings
+	// (which raises usage_shift's to their floors of 7 and 2 days).
+	RiskLoginWarmupLogins int `json:"risk_login_warmup_logins"`
+	RiskLoginHoldDays     int `json:"risk_login_hold_days"`
+	RiskUsageWarmupDays   int `json:"risk_usage_warmup_days"`
+	RiskUsageFlagDays     int `json:"risk_usage_flag_days"`
+	RiskUsageSuspectDays  int `json:"risk_usage_suspect_days"`
+	// The risk worker's fleet-wide runtime (the former constants of the
+	// loop, the fetch window, the login read, the bell and usage_shift's
+	// series). Global only; 0 means the shipped default, and the clamps are
+	// applied when read by domain.RiskRuntimeFromSettings.
+	RiskRefreshIntervalMinutes int `json:"risk_refresh_interval_minutes"`
+	RiskFirstDelayMinutes      int `json:"risk_first_delay_minutes"`
+	RiskAlertFreshnessHours    int `json:"risk_alert_freshness_hours"`
+	RiskWindowDays             int `json:"risk_window_days"`
+	RiskLoginLookbackDays      int `json:"risk_login_lookback_days"`
+	RiskUsageBaselineDays      int `json:"risk_usage_baseline_days"`
+	RiskUsageRecentDays        int `json:"risk_usage_recent_days"`
+	// connection_history's retention in days. Global; 0 means the shipped
+	// week (never "keep forever", unlike sub_log_retention_days), and the
+	// 1..90 clamp is applied when read.
+	RiskConnectionRetentionDays int `json:"risk_connection_retention_days"`
+	// flag_records' retention in days. Global; 0 means the shipped 90 days
+	// (never "keep forever"), and the 1..3650 clamp is applied when read.
+	RiskFlagRecordRetentionDays int `json:"risk_flag_record_retention_days"`
+	// The risk center's live view: its staleness warning (minutes, floored
+	// at two polls where read), the refresh cooldown (seconds) and how far
+	// back devices are inferred from the fetch log (hours). Global; 0 means
+	// the shipped 15 / 30 / 24, and the clamps are applied when read.
+	RiskLiveSnapshotStaleMinutes   int `json:"risk_live_snapshot_stale_minutes"`
+	RiskLiveRefreshCooldownSeconds int `json:"risk_live_refresh_cooldown_seconds"`
+	RiskDeviceInferHours           int `json:"risk_device_infer_hours"`
+	// Read-only, response only: for each of the 23 geo and risk runtime
+	// knobs above, the number the panel runs with and the shipped default
+	// an unset knob falls back to (ports.RuntimeEffective), keyed by the
+	// knob's json tag. The fields above echo what is STORED (0 = unset, and
+	// out-of-range values as typed); these say what that became, so a page
+	// can show "in effect" and a default placeholder without holding a copy
+	// of any default or clamp. settingsRequest shadows both keys, so a PUT
+	// never reads them, whatever the client sends back.
+	RuntimeEffective map[string]int `json:"runtime_effective"`
+	RuntimeDefaults  map[string]int `json:"runtime_defaults"`
 	// Geo IP (access-log region display, offline .mmdb).
 	GeoIPEnabled             bool   `json:"geo_ip_enabled"`
 	GeoIPDBFile              string `json:"geo_ip_db_file"`
@@ -170,6 +271,12 @@ type settingsRequest struct {
 	NodeTaskOfflineReconcileDays *int `json:"node_task_offline_reconcile_days"`
 	NodeTaskBackupRestoreDays    *int `json:"node_task_backup_restore_days"`
 	NodeTaskResultRetentionDays  *int `json:"node_task_result_retention_days"`
+	// The response-only runtime maps, shadowed as raw JSON so the embedded
+	// DTO's typed maps are never decoded. The SPA posts back the whole
+	// object it read, maps included; a tab loaded before a change to their
+	// shape must still save, and nothing in them is ever stored.
+	RuntimeEffective json.RawMessage `json:"runtime_effective"`
+	RuntimeDefaults  json.RawMessage `json:"runtime_defaults"`
 }
 
 func nodeTaskLifecyclePolicyFromSettings(s ports.UISettings) domain.NodeTaskLifecyclePolicy {
@@ -230,7 +337,13 @@ func (h *AdminSettingsHandler) Get(c *gin.Context) {
 // other (the drift that briefly broke the 2FA totp_enabled round-trip).
 func settingsToDTO(s ports.UISettings) settingsDTO {
 	policy := nodeTaskLifecyclePolicyFromSettings(s)
+	// From the same settings the DTO echoes: after a PUT that is what was
+	// just saved, so the page reads the new values in effect off the save.
+	effective, defaults := ports.RuntimeEffective(s)
 	return settingsDTO{
+		RuntimeEffective: effective,
+		RuntimeDefaults:  defaults,
+
 		LoginMode:                   s.LoginMode,
 		SiteTitle:                   s.SiteTitle,
 		AppTitle:                    s.AppTitle,
@@ -283,11 +396,14 @@ func settingsToDTO(s ports.UISettings) settingsDTO {
 		TrafficRemainPercent:        s.TrafficRemainPercent,
 		GeoAnomalyScope:             s.GeoAnomalyScope,
 		GeoAnomalyMaxPlaces:         s.GeoAnomalyMaxPlaces,
+		GeoAnomalyMaxRegions:        s.GeoAnomalyMaxRegions,
+		GeoAnomalyMaxCities:         s.GeoAnomalyMaxCities,
 		GeoAnomalyFlagAfterPolls:    s.GeoAnomalyFlagAfterPolls,
 		GeoAnomalyClearAfterPolls:   s.GeoAnomalyClearAfterPolls,
 		GeoAnomalyMinPlacedRatio:    s.GeoAnomalyMinPlacedRatio,
 		GeoAnomalyCoTravel:          s.GeoAnomalyCoTravel,
 		GeoAnomalyAllowAnywhere:     s.GeoAnomalyAllowAnywhere,
+		GeoAnomalyIgnoreAddresses:   s.GeoAnomalyIgnoreAddresses,
 		GeoIPEnabled:                s.GeoIPEnabled,
 		GeoIPDBFile:                 s.GeoIPDBFile,
 		GeoIPAutoUpdate:             s.GeoIPAutoUpdate,
@@ -329,6 +445,52 @@ func settingsToDTO(s ports.UISettings) settingsDTO {
 		TwoFAEmailResendCooldownSec:          s.TwoFAEmailResendCooldownSec,
 		CodeResendCooldownSec:                s.CodeResendCooldownSec,
 		Require2FAForStaff:                   s.Require2FAForStaff,
+		// Concurrent locations: automatic temporary suspension (off by default).
+		GeoAnomalyBanEnabled:         s.GeoAnomalyBanEnabled,
+		GeoAnomalyBanMaxCountries:    s.GeoAnomalyBanMaxCountries,
+		GeoAnomalyBanMaxRegions:      s.GeoAnomalyBanMaxRegions,
+		GeoAnomalyBanMaxCities:       s.GeoAnomalyBanMaxCities,
+		GeoAnomalyBanAfterPolls:      s.GeoAnomalyBanAfterPolls,
+		GeoAnomalyBanDurationMinutes: s.GeoAnomalyBanDurationMinutes,
+		RiskHWIDCaptureOff:           s.RiskHWIDCaptureOff,
+		RiskSubSpreadOff:             s.RiskSubSpreadOff,
+		RiskDevicesOff:               s.RiskDevicesOff,
+		RiskUsageShiftOff:            s.RiskUsageShiftOff,
+		RiskLoginCountryOff:          s.RiskLoginCountryOff,
+		RiskMinDays:                  s.RiskMinDays,
+		RiskMaxDevices:               s.RiskMaxDevices,
+		RiskUsageRatio:               s.RiskUsageRatio,
+		RiskUsageFloorGB:             s.RiskUsageFloorGB,
+		RiskLoginWarmupLogins:        s.RiskLoginWarmupLogins,
+		RiskLoginHoldDays:            s.RiskLoginHoldDays,
+		RiskUsageWarmupDays:          s.RiskUsageWarmupDays,
+		RiskUsageFlagDays:            s.RiskUsageFlagDays,
+		RiskUsageSuspectDays:         s.RiskUsageSuspectDays,
+
+		// The risk worker's fleet-wide runtime: the stored values, 0 = default.
+		RiskRefreshIntervalMinutes: s.RiskRefreshIntervalMinutes,
+		RiskFirstDelayMinutes:      s.RiskFirstDelayMinutes,
+		RiskAlertFreshnessHours:    s.RiskAlertFreshnessHours,
+		RiskWindowDays:             s.RiskWindowDays,
+		RiskLoginLookbackDays:      s.RiskLoginLookbackDays,
+		RiskUsageBaselineDays:      s.RiskUsageBaselineDays,
+		RiskUsageRecentDays:        s.RiskUsageRecentDays,
+		// connection_history's retention: the stored value, 0 = the week.
+		RiskConnectionRetentionDays: s.RiskConnectionRetentionDays,
+		// flag_records' retention: the stored value, 0 = 90 days.
+		RiskFlagRecordRetentionDays: s.RiskFlagRecordRetentionDays,
+		// The live view's knobs: the stored values, 0 = default.
+		RiskLiveSnapshotStaleMinutes:   s.RiskLiveSnapshotStaleMinutes,
+		RiskLiveRefreshCooldownSeconds: s.RiskLiveRefreshCooldownSeconds,
+		RiskDeviceInferHours:           s.RiskDeviceInferHours,
+
+		// The detector's fleet-wide runtime: the stored values, 0 = default.
+		GeoAnomalyFreshWindowSeconds:  s.GeoAnomalyFreshWindowSeconds,
+		GeoAnomalySharedExitMinUsers:  s.GeoAnomalySharedExitMinUsers,
+		GeoAnomalyBanMaxPerPoll:       s.GeoAnomalyBanMaxPerPoll,
+		GeoAnomalyLiftMaxPerPoll:      s.GeoAnomalyLiftMaxPerPoll,
+		GeoAnomalyInfraRefreshMinutes: s.GeoAnomalyInfraRefreshMinutes,
+		GeoAnomalyInfraHostTTLMinutes: s.GeoAnomalyInfraHostTTLMinutes,
 
 		NodeTaskOfflineReconcileDays: policy.OfflineReconcileDays,
 		NodeTaskBackupRestoreDays:    policy.BackupRestoreDays,
@@ -349,6 +511,10 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Login_mode must be sso_redirect | sso_first | dual | local_only"})
 		return
 	}
+	// From the load to the last save or rollback, no other settings writer
+	// may load: see uiSettingsWriteMu.
+	uiSettingsWriteMu.Lock()
+	defer uiSettingsWriteMu.Unlock()
 	// Load the prior state so normalizeGlobalAnnouncement can decide
 	// whether to bump UpdatedAt (only on meaningful change).
 	prev, prevErr := h.repo.Load(c.Request.Context(), h.defaults())
@@ -362,67 +528,56 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		return
 	}
 	s := ports.UISettings{
-		LoginMode:                  req.LoginMode,
-		SiteTitle:                  req.SiteTitle,
-		AppTitle:                   req.AppTitle,
-		IconURL:                    strings.TrimSpace(req.IconURL),
-		LogoURL:                    req.LogoURL,
-		LogoURLDark:                req.LogoURLDark,
-		EmailDomain:                strings.TrimSpace(req.EmailDomain),
-		AuditRetentionDays:         req.AuditRetentionDays,
-		SubBaseURL:                 strings.TrimRight(strings.TrimSpace(req.SubBaseURL), "/"),
-		PanelPath:                  strings.TrimSpace(req.PanelPath),
-		Timezone:                   strings.TrimSpace(req.Timezone),
-		CronTrafficPullMinutes:     req.CronTrafficPullMinutes,
-		CronReconcileMinutes:       req.CronReconcileMinutes,
-		NodePollSeconds:            req.NodePollSeconds,
-		FullReportSeconds:          req.FullReportSeconds,
-		MaxPanelConcurrency:        req.MaxPanelConcurrency,
-		JWTAccessTTLMinutes:        req.JWTAccessTTLMinutes,
-		JWTRefreshTTLMinutes:       req.JWTRefreshTTLMinutes,
-		JWTIssuer:                  strings.TrimSpace(req.JWTIssuer),
-		SubPerIPPerMin:             req.SubPerIPPerMin,
-		LoginPerIPPerMin:           req.LoginPerIPPerMin,
-		SyncTaskRetentionDays:      req.SyncTaskRetentionDays,
-		TrafficHistoryDays:         req.TrafficHistoryDays,
-		DisallowUserLocalLogin:     req.DisallowUserLocalLogin,
-		DisallowUserPasswordChange: req.DisallowUserPasswordChange,
-		AllowUserPersonalRules:     req.AllowUserPersonalRules,
-		EmergencyAccessEnabled:     req.EmergencyAccessEnabled,
-		EmergencyAccessHours:       req.EmergencyAccessHours,
-		EmergencyAccessMaxCount:    req.EmergencyAccessMaxCount,
-		EmergencyAccessQuotaGB:     req.EmergencyAccessQuotaGB,
-		SubPath:                    strings.TrimSpace(req.SubPath),
-		SubClients:                 normalizeSubClients(req.SubClients),
-		SubClientFilterMode:        normalizeFilterMode(req.SubClientFilterMode),
-		SubImportTutorialURL:       strings.TrimSpace(req.SubImportTutorialURL),
-		SubLogRetentionDays:        req.SubLogRetentionDays,
-		MailSentRetentionDays:      req.MailSentRetentionDays,
-		AuthEventRetentionDays:     req.AuthEventRetentionDays,
-		SubBlockAutoDisable:        req.SubBlockAutoDisable,
-		SubBlockAutoDisableCount:   req.SubBlockAutoDisableCount,
-		SubBlockNotifyUser:         req.SubBlockNotifyUser,
-		SubBlockNotifyMaxPerDay:    req.SubBlockNotifyMaxPerDay,
-		SubUpdateIntervalHours:     req.SubUpdateIntervalHours,
-		SubProfileNameTemplate:     strings.TrimSpace(req.SubProfileNameTemplate),
-		SubRegionFlagPrefix:        req.SubRegionFlagPrefix,
-		QuickLinks:                 normalizeQuickLinks(req.QuickLinks),
-		GlobalAnnouncement:         normalizeGlobalAnnouncement(req.GlobalAnnouncement, prev.GlobalAnnouncement),
-		FooterText:                 strings.TrimSpace(req.FooterText),
-		ThemeColor:                 strings.TrimSpace(req.ThemeColor),
-		ExpireBeforeDays:           req.ExpireBeforeDays,
-		TrafficRemainPercent:       req.TrafficRemainPercent,
-		// Trimmed but NOT otherwise validated here: domain.GeoPolicyFromSettings
-		// is the single place a stored value is interpreted, and it already
-		// repairs an unusable one toward NOT accusing. Rejecting at the form
-		// would put a second, drifting definition of "valid" in the codebase.
-		GeoAnomalyScope:               strings.TrimSpace(req.GeoAnomalyScope),
-		GeoAnomalyMaxPlaces:           req.GeoAnomalyMaxPlaces,
-		GeoAnomalyFlagAfterPolls:      req.GeoAnomalyFlagAfterPolls,
-		GeoAnomalyClearAfterPolls:     req.GeoAnomalyClearAfterPolls,
-		GeoAnomalyMinPlacedRatio:      req.GeoAnomalyMinPlacedRatio,
-		GeoAnomalyCoTravel:            strings.TrimSpace(req.GeoAnomalyCoTravel),
-		GeoAnomalyAllowAnywhere:       req.GeoAnomalyAllowAnywhere,
+		LoginMode:                     req.LoginMode,
+		SiteTitle:                     req.SiteTitle,
+		AppTitle:                      req.AppTitle,
+		IconURL:                       strings.TrimSpace(req.IconURL),
+		LogoURL:                       req.LogoURL,
+		LogoURLDark:                   req.LogoURLDark,
+		EmailDomain:                   strings.TrimSpace(req.EmailDomain),
+		AuditRetentionDays:            req.AuditRetentionDays,
+		SubBaseURL:                    strings.TrimRight(strings.TrimSpace(req.SubBaseURL), "/"),
+		PanelPath:                     strings.TrimSpace(req.PanelPath),
+		Timezone:                      strings.TrimSpace(req.Timezone),
+		CronTrafficPullMinutes:        req.CronTrafficPullMinutes,
+		CronReconcileMinutes:          req.CronReconcileMinutes,
+		NodePollSeconds:               req.NodePollSeconds,
+		FullReportSeconds:             req.FullReportSeconds,
+		MaxPanelConcurrency:           req.MaxPanelConcurrency,
+		JWTAccessTTLMinutes:           req.JWTAccessTTLMinutes,
+		JWTRefreshTTLMinutes:          req.JWTRefreshTTLMinutes,
+		JWTIssuer:                     strings.TrimSpace(req.JWTIssuer),
+		SubPerIPPerMin:                req.SubPerIPPerMin,
+		LoginPerIPPerMin:              req.LoginPerIPPerMin,
+		SyncTaskRetentionDays:         req.SyncTaskRetentionDays,
+		TrafficHistoryDays:            req.TrafficHistoryDays,
+		DisallowUserLocalLogin:        req.DisallowUserLocalLogin,
+		DisallowUserPasswordChange:    req.DisallowUserPasswordChange,
+		AllowUserPersonalRules:        req.AllowUserPersonalRules,
+		EmergencyAccessEnabled:        req.EmergencyAccessEnabled,
+		EmergencyAccessHours:          req.EmergencyAccessHours,
+		EmergencyAccessMaxCount:       req.EmergencyAccessMaxCount,
+		EmergencyAccessQuotaGB:        req.EmergencyAccessQuotaGB,
+		SubPath:                       strings.TrimSpace(req.SubPath),
+		SubClients:                    normalizeSubClients(req.SubClients),
+		SubClientFilterMode:           normalizeFilterMode(req.SubClientFilterMode),
+		SubImportTutorialURL:          strings.TrimSpace(req.SubImportTutorialURL),
+		SubLogRetentionDays:           req.SubLogRetentionDays,
+		MailSentRetentionDays:         req.MailSentRetentionDays,
+		AuthEventRetentionDays:        req.AuthEventRetentionDays,
+		SubBlockAutoDisable:           req.SubBlockAutoDisable,
+		SubBlockAutoDisableCount:      req.SubBlockAutoDisableCount,
+		SubBlockNotifyUser:            req.SubBlockNotifyUser,
+		SubBlockNotifyMaxPerDay:       req.SubBlockNotifyMaxPerDay,
+		SubUpdateIntervalHours:        req.SubUpdateIntervalHours,
+		SubProfileNameTemplate:        strings.TrimSpace(req.SubProfileNameTemplate),
+		SubRegionFlagPrefix:           req.SubRegionFlagPrefix,
+		QuickLinks:                    normalizeQuickLinks(req.QuickLinks),
+		GlobalAnnouncement:            normalizeGlobalAnnouncement(req.GlobalAnnouncement, prev.GlobalAnnouncement),
+		FooterText:                    strings.TrimSpace(req.FooterText),
+		ThemeColor:                    strings.TrimSpace(req.ThemeColor),
+		ExpireBeforeDays:              req.ExpireBeforeDays,
+		TrafficRemainPercent:          req.TrafficRemainPercent,
 		GeoIPEnabled:                  req.GeoIPEnabled,
 		GeoIPDBFile:                   strings.TrimSpace(req.GeoIPDBFile),
 		GeoIPAutoUpdate:               req.GeoIPAutoUpdate,
@@ -466,6 +621,15 @@ func (h *AdminSettingsHandler) Put(c *gin.Context) {
 		NodeTaskBackupRestoreDays:    policy.BackupRestoreDays,
 		NodeTaskResultRetentionDays:  policy.ResultRetentionDays,
 	}
+	// The risk center owns these (PUT /risk-center/policy); a stale tab here
+	// can never move them. Every geo_anomaly_* and risk_* key is written back
+	// exactly as loaded, whatever the request carries: this page posts back
+	// the whole object it read, the policy keys included, so a save that
+	// took them would silently revert whatever an admin set on the policy
+	// page since this tab loaded. Nor is the ignore list validated here any
+	// more — this save does not store it, so a list that does not parse must
+	// not make the rest of the page unsavable.
+	s.SetRiskCenterPolicy(prev.RiskCenterPolicy())
 	var pathErr error
 	if s.PanelPath, pathErr = panelpath.Normalize(s.PanelPath); pathErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": pathErr.Error()})

@@ -232,3 +232,145 @@ func TestScopedSettings_SkipsNonOverridableRow(t *testing.T) {
 			g.Require2FAForStaff, gl.Require2FAForStaff)
 	}
 }
+
+// TestScopedSettings_GeoTierAndBanKeysOverridable: the per-tier tolerances and
+// every automatic-suspension key resolve per group, which is how one group
+// arms suspension (or a group of confirmed false positives disarms it) while
+// the fleet keeps the default. Bites if any of the eight is missing from
+// OverridableScopeKeys: SetOverride would still store the row, and the
+// resolver would silently skip it, so the group editor would show a value
+// the poll never judges with.
+//
+// The ignore list is the deliberate exception: whether an address is
+// somebody's relay does not depend on which group is looking. A stray group
+// row for it must not take effect.
+func TestScopedSettings_GeoTierAndBanKeysOverridable(t *testing.T) {
+	global, scope, resolver := newScopedTestRepos(t)
+	ctx := context.Background()
+
+	base, _ := global.Load(ctx, ports.UISettings{})
+	base.GeoAnomalyIgnoreAddresses = "203.0.113.7"
+	if err := global.Save(ctx, base); err != nil {
+		t.Fatalf("save global: %v", err)
+	}
+	for _, o := range []ports.ScopeOverride{
+		{Type: "geo_anomaly", Name: "max_regions", Value: "2"},
+		{Type: "geo_anomaly", Name: "max_cities", Value: "5"},
+		{Type: "geo_anomaly", Name: "ban_enabled", Value: "1"},
+		{Type: "geo_anomaly", Name: "ban_max_countries", Value: "2"},
+		{Type: "geo_anomaly", Name: "ban_max_regions", Value: "3"},
+		{Type: "geo_anomaly", Name: "ban_max_cities", Value: "6"},
+		{Type: "geo_anomaly", Name: "ban_after_polls", Value: "8"},
+		{Type: "geo_anomaly", Name: "ban_duration_minutes", Value: "120"},
+		// Written straight to the repo, which (unlike the admin handler)
+		// does not gate on the overridable set.
+		{Type: "geo_anomaly", Name: "ignore_addresses", Value: "198.51.100.0/24"},
+	} {
+		if err := scope.SetOverride(ctx, "group", 1, o); err != nil {
+			t.Fatalf("set override %s: %v", o.Name, err)
+		}
+	}
+
+	g, err := resolver.LoadForGroup(ctx, 1, ports.UISettings{})
+	if err != nil {
+		t.Fatalf("LoadForGroup: %v", err)
+	}
+	for _, c := range []struct {
+		key       string
+		got, want any
+	}{
+		{"max_regions", g.GeoAnomalyMaxRegions, 2},
+		{"max_cities", g.GeoAnomalyMaxCities, 5},
+		{"ban_enabled", g.GeoAnomalyBanEnabled, true},
+		{"ban_max_countries", g.GeoAnomalyBanMaxCountries, 2},
+		{"ban_max_regions", g.GeoAnomalyBanMaxRegions, 3},
+		{"ban_max_cities", g.GeoAnomalyBanMaxCities, 6},
+		{"ban_after_polls", g.GeoAnomalyBanAfterPolls, 8},
+		{"ban_duration_minutes", g.GeoAnomalyBanDurationMinutes, 120},
+	} {
+		if c.got != c.want {
+			t.Errorf("group override geo_anomaly.%s must apply: got %v, want %v", c.key, c.got, c.want)
+		}
+	}
+	if g.GeoAnomalyIgnoreAddresses != "203.0.113.7" {
+		t.Errorf("the ignore list is global only; a group row must not replace it: got %q", g.GeoAnomalyIgnoreAddresses)
+	}
+
+	gl, _ := resolver.Load(ctx, ports.UISettings{})
+	if gl.GeoAnomalyBanEnabled || gl.GeoAnomalyMaxCities != 0 {
+		t.Error("the global geo policy must be unaffected by a group override")
+	}
+}
+
+// TestScopedSettings_RiskKeysOverridable: the thirteen risk-signal knobs
+// resolve per group, which is how one group has a signal it legitimately
+// trips switched off, or its tolerance raised, while the fleet keeps the
+// default. Bites if any of the thirteen is missing from OverridableScopeKeys:
+// the row is stored and the resolver silently skips it, so the group editor
+// would show a value the worker never judges with.
+//
+// Device capture is the deliberate exception: /sub reads it from the global
+// settings, and whether the panel records a device identifier at all is a
+// panel-wide decision. A stray group row for it must not take effect.
+func TestScopedSettings_RiskKeysOverridable(t *testing.T) {
+	global, scope, resolver := newScopedTestRepos(t)
+	ctx := context.Background()
+
+	for _, o := range []ports.ScopeOverride{
+		{Type: "risk", Name: "sub_spread_off", Value: "1"},
+		{Type: "risk", Name: "devices_off", Value: "1"},
+		{Type: "risk", Name: "usage_shift_off", Value: "1"},
+		{Type: "risk", Name: "login_country_off", Value: "1"},
+		{Type: "risk", Name: "min_days", Value: "4"},
+		{Type: "risk", Name: "max_devices", Value: "5"},
+		{Type: "risk", Name: "usage_ratio", Value: "2.5"},
+		{Type: "risk", Name: "usage_floor_gb", Value: "6"},
+		{Type: "risk", Name: "login_warmup_logins", Value: "7"},
+		{Type: "risk", Name: "login_hold_days", Value: "8"},
+		{Type: "risk", Name: "usage_warmup_days", Value: "9"},
+		{Type: "risk", Name: "usage_flag_days", Value: "10"},
+		{Type: "risk", Name: "usage_suspect_days", Value: "11"},
+		// Written straight to the repo, which (unlike the admin handler)
+		// does not gate on the overridable set.
+		{Type: "risk", Name: "hwid_capture_off", Value: "1"},
+	} {
+		if err := scope.SetOverride(ctx, "group", 1, o); err != nil {
+			t.Fatalf("set override %s: %v", o.Name, err)
+		}
+	}
+
+	g, err := resolver.LoadForGroup(ctx, 1, ports.UISettings{})
+	if err != nil {
+		t.Fatalf("LoadForGroup: %v", err)
+	}
+	for _, c := range []struct {
+		key       string
+		got, want any
+	}{
+		{"sub_spread_off", g.RiskSubSpreadOff, true},
+		{"devices_off", g.RiskDevicesOff, true},
+		{"usage_shift_off", g.RiskUsageShiftOff, true},
+		{"login_country_off", g.RiskLoginCountryOff, true},
+		{"min_days", g.RiskMinDays, 4},
+		{"max_devices", g.RiskMaxDevices, 5},
+		{"usage_ratio", g.RiskUsageRatio, 2.5},
+		{"usage_floor_gb", g.RiskUsageFloorGB, 6},
+		{"login_warmup_logins", g.RiskLoginWarmupLogins, 7},
+		{"login_hold_days", g.RiskLoginHoldDays, 8},
+		{"usage_warmup_days", g.RiskUsageWarmupDays, 9},
+		{"usage_flag_days", g.RiskUsageFlagDays, 10},
+		{"usage_suspect_days", g.RiskUsageSuspectDays, 11},
+	} {
+		if c.got != c.want {
+			t.Errorf("group override risk.%s must apply: got %v, want %v", c.key, c.got, c.want)
+		}
+	}
+	if g.RiskHWIDCaptureOff {
+		t.Error("device capture is global only; a group row must not turn it off")
+	}
+
+	gl, _ := global.Load(ctx, ports.UISettings{})
+	if gl.RiskSubSpreadOff || gl.RiskMinDays != 0 || gl.RiskUsageRatio != 0 {
+		t.Error("the global risk policy must be unaffected by a group override")
+	}
+}

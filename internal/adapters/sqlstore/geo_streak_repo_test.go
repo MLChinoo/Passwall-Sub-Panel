@@ -2,10 +2,15 @@ package sqlstore
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"gorm.io/gorm"
+
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 )
 
 // The streak is the only thing standing between a stable verdict and a jittery
@@ -95,10 +100,11 @@ func TestGeoStreakRepo_SaveIsIdempotentAndUpdates(t *testing.T) {
 	}
 }
 
-// A user with no live connections is not evaluated at all, so they are absent
-// from the cycle's map. Their row must SURVIVE: idling is the easiest evasion
-// there is, and deleting unmentioned rows would let a flagged account clear
-// itself simply by disconnecting for one poll.
+// A user the poll did not judge this cycle is absent from the cycle's map.
+// Their row must SURVIVE: deleting unmentioned rows would let a flagged
+// account clear itself simply by not being judged for one poll. (An idle user
+// is judged — the poll re-saves them with the streak frozen — so this is about
+// users the cycle skipped, not about idling.)
 func TestGeoStreakRepo_AbsentUserKeepsTheirRow(t *testing.T) {
 	r := newStreakRepo(t)
 	ctx := context.Background()
@@ -108,7 +114,7 @@ func TestGeoStreakRepo_AbsentUserKeepsTheirRow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	// Next cycle sees only user 8 — user 7 went idle.
+	// Next cycle judges only user 8 — user 7 was not judged at all.
 	if err := r.Save(ctx, map[int64]domain.GeoRecord{8: {Streak: domain.GeoStreak{Under: 2}}}); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
@@ -117,7 +123,7 @@ func TestGeoStreakRepo_AbsentUserKeepsTheirRow(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	if !got[7].Streak.Flagged {
-		t.Fatal("an idle user's latched flag was dropped; disconnecting must not acquit")
+		t.Fatal("an unjudged user's latched flag was dropped; skipping a cycle must not acquit")
 	}
 	if got[8].Streak.Under != 2 {
 		t.Fatalf("user 8 = %+v, want the updated streak", got[8])
@@ -295,5 +301,558 @@ func TestGeoStreakRepo_TruncationDoesNotSplitARune(t *testing.T) {
 	}
 	if got[7].Reason == "" {
 		t.Fatal("truncation must keep what fits, not discard everything")
+	}
+}
+
+// sampleEvidence is a realistic evidence value at the current version, with
+// no why (TestGeoStreakRepo_WhyRoundTrips adds one): two provinces of one
+// country, some sources excluded, most of the upstream window stale. One
+// non-ASCII name, because the column holds whatever the geo database says.
+func sampleEvidence() domain.GeoEvidence {
+	return domain.GeoEvidence{
+		V: domain.GeoEvidenceVersion,
+		Spots: []domain.GeoSpot{
+			{CC: "CN", Region: "Guangdong", City: "Shenzhen", N: 2},
+			{CC: "CN", Region: "湖南", City: "长沙", N: 1},
+		},
+		Excluded: domain.GeoExcluded{Shared: 1, Infra: 2},
+		Stale:    21,
+		Coverage: domain.GeoCoverage{Placed: 3, RegionKnown: 3, CityKnown: 3},
+		Networks: 3,
+		Spread:   domain.GeoSpread{Countries: 1, Regions: 2, RegionCountry: "CN", Cities: 2, CityCountry: "CN"},
+	}
+}
+
+// listed returns one user's record through List, the admin view's read.
+func listed(t *testing.T, r *GeoStreakRepo, uid int64) domain.GeoRecord {
+	t.Helper()
+	rows, err := r.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, rec := range rows {
+		if rec.UserID == uid {
+			return rec
+		}
+	}
+	t.Fatalf("user %d not listed (rows: %d)", uid, len(rows))
+	return domain.GeoRecord{}
+}
+
+// Everything v2 adds to a verdict must survive the store, or a restart
+// quietly changes what the detector knows.
+//
+// The tier and the suspension streak are STATE, not decoration: losing the
+// tier makes a latched flag unable to say why it was raised, and losing
+// BanOver resets the sustain window on every deploy — a sharer who times a
+// restart would never be suspended. Concurrent, Excluded and the evidence are
+// what an operator weighs before acting; a verdict whose evidence came back
+// empty reads as "nothing found" rather than "not recorded".
+func TestGeoStreakRepo_TierBanOverConcurrentExcludedEvidenceRoundTrip(t *testing.T) {
+	r := newStreakRepo(t)
+	want := domain.GeoRecord{
+		UserID:     7,
+		Streak:     domain.GeoStreak{Over: 4, Flagged: true, Tier: domain.GeoTierRegion, BanOver: 2},
+		State:      domain.GeoStateFlagged,
+		Reason:     "in 2 regions of CN at once ([CN/Guangdong CN/湖南]); tolerance is 1",
+		Places:     []string{"CN"},
+		LiveIPs:    24,
+		Concurrent: 3,
+		Excluded:   3,
+		Evidence:   sampleEvidence(),
+		Complete:   true,
+	}
+	if err := r.Save(context.Background(), map[int64]domain.GeoRecord{7: want}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	g := listed(t, r, 7)
+	if g.Streak != want.Streak {
+		t.Fatalf("streak = %+v, want %+v (tier and ban streak must survive the store)", g.Streak, want.Streak)
+	}
+	if g.Concurrent != want.Concurrent || g.Excluded != want.Excluded {
+		t.Fatalf("concurrent/excluded = %d/%d, want %d/%d", g.Concurrent, g.Excluded, want.Concurrent, want.Excluded)
+	}
+	if !reflect.DeepEqual(g.Evidence, want.Evidence) {
+		t.Fatalf("evidence = %+v, want %+v", g.Evidence, want.Evidence)
+	}
+}
+
+// An upgraded install's rows were written by a build that knew none of the
+// new columns. AutoMigrate gives the scalar ones their defaults and leaves
+// evidence NULL (a text column carries no DEFAULT on MySQL). Such a row must
+// read as "no evidence recorded" (v 0), not fail the whole read — a scan
+// error here would blank the admin view and, through Load, make every poll
+// judge without history until the rows were rewritten.
+//
+// The empty string is the other shape "nothing" can take in a text column.
+func TestGeoStreakRepo_LegacyNullEvidenceReadsAsNone(t *testing.T) {
+	r := newStreakRepo(t)
+	ctx := context.Background()
+	if err := r.db.WithContext(ctx).Exec(
+		"INSERT INTO geo_streaks (user_id, flagged, state, places, updated_at) VALUES (?, ?, ?, ?, ?)",
+		int64(7), true, string(domain.GeoStateFlagged), "DE,JP", int64(1_700_000_000_000),
+	).Error; err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := r.db.WithContext(ctx).Exec(
+		"INSERT INTO geo_streaks (user_id, state, evidence, updated_at) VALUES (?, ?, ?, ?)",
+		int64(8), string(domain.GeoStateClean), "", int64(1_700_000_000_000),
+	).Error; err != nil {
+		t.Fatalf("insert empty-evidence row: %v", err)
+	}
+
+	loaded, err := r.Load(ctx)
+	if err != nil {
+		t.Fatalf("load over legacy rows must not error: %v", err)
+	}
+	for _, uid := range []int64{7, 8} {
+		g := listed(t, r, uid)
+		if !reflect.DeepEqual(g.Evidence, domain.GeoEvidence{}) {
+			t.Fatalf("user %d: evidence = %+v, want none (v 0)", uid, g.Evidence)
+		}
+		if g.Streak.Tier != domain.GeoTierNone || g.Streak.BanOver != 0 || g.Concurrent != 0 || g.Excluded != 0 {
+			t.Fatalf("user %d: new columns = %+v concurrent %d excluded %d, want their zero defaults",
+				uid, g.Streak, g.Concurrent, g.Excluded)
+		}
+		if _, ok := loaded[uid]; !ok {
+			t.Fatalf("user %d missing from Load", uid)
+		}
+	}
+	// The latch an old build set is still a latch after the upgrade.
+	if !loaded[7].Streak.Flagged {
+		t.Fatal("a legacy latched flag was lost across the upgrade")
+	}
+}
+
+// The why rides inside the evidence column and must come back whole through
+// List, the admin view's read: the code a UI localizes from, and the policy
+// the verdict was judged against. A why lost on the way back renders every
+// row as the stored English, and a partial one renders a sentence with the
+// wrong numbers in it.
+func TestGeoStreakRepo_WhyRoundTrips(t *testing.T) {
+	r := newStreakRepo(t)
+	ev := sampleEvidence()
+	ev.Why = &domain.GeoWhy{
+		Code: domain.GeoWhyFlaggedSustained, Tier: domain.GeoTierRegion, Scope: domain.GeoScopeCity,
+		Tol:       domain.GeoTolerances{Countries: 1, Regions: 3, Cities: 2},
+		FlagAfter: 4, ClearAfter: 8, MinPlacedRatio: 0.25,
+	}
+	if err := r.Save(context.Background(), map[int64]domain.GeoRecord{
+		7: {UserID: 7, State: domain.GeoStateFlagged, Evidence: ev},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	g := listed(t, r, 7)
+	if g.Evidence.Why == nil {
+		t.Fatalf("why lost in the store: evidence = %+v", g.Evidence)
+	}
+	if *g.Evidence.Why != *ev.Why {
+		t.Fatalf("why = %+v, want %+v", *g.Evidence.Why, *ev.Why)
+	}
+	if !reflect.DeepEqual(g.Evidence, ev) {
+		t.Fatalf("evidence = %+v, want %+v", g.Evidence, ev)
+	}
+}
+
+// A row a v1 build wrote has evidence and no why. After the upgrade it must
+// still read as that: v 1 (so a reader knows which build wrote it and falls
+// back to the stored English) and no why — not a zero why, which a reader
+// would try to localize as a code of "".
+func TestGeoStreakRepo_V1EvidenceReadsWithoutWhy(t *testing.T) {
+	r := newStreakRepo(t)
+	ctx := context.Background()
+	if err := r.db.WithContext(ctx).Exec(
+		"INSERT INTO geo_streaks (user_id, state, evidence, updated_at) VALUES (?, ?, ?, ?)",
+		int64(7), string(domain.GeoStateSuspect), `{"v":1,"spots":[]}`, int64(1_700_000_000_000),
+	).Error; err != nil {
+		t.Fatalf("insert v1 row: %v", err)
+	}
+	g := listed(t, r, 7)
+	if g.Evidence.V != 1 || g.Evidence.Why != nil {
+		t.Fatalf("evidence = v%d why %+v, want v1 with no why", g.Evidence.V, g.Evidence.Why)
+	}
+}
+
+// What v3 adds rides inside the evidence column and must come back through
+// List: a spot's region code (what the SPA names a province by in Chinese)
+// and the concurrent distance. Either one dropped by the store renders the
+// row as a v3 that measured nothing, which is a different statement from the
+// one the poll made.
+func TestGeoStreakRepo_V3EvidenceRoundTrips(t *testing.T) {
+	r := newStreakRepo(t)
+	ev := sampleEvidence()
+	ev.Spots[0].RC = "GD"
+	ev.Spread.MaxKm = 540
+	if err := r.Save(context.Background(), map[int64]domain.GeoRecord{
+		7: {UserID: 7, State: domain.GeoStateSuspect, Evidence: ev},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	g := listed(t, r, 7)
+	if g.Evidence.Spots[0].RC != "GD" || g.Evidence.Spread.MaxKm != 540 {
+		t.Fatalf("evidence = %+v, want the first spot's rc GD and max_km 540", g.Evidence)
+	}
+	if !reflect.DeepEqual(g.Evidence, ev) {
+		t.Fatalf("evidence = %+v, want %+v", g.Evidence, ev)
+	}
+}
+
+// Load is the poll's read and runs every cycle over the whole table; the poll
+// never reads evidence, which is the one sizeable column. It still needs the
+// streak (tier and ban streak included) and when the user was last judged.
+func TestGeoStreakRepo_LoadSkipsEvidence(t *testing.T) {
+	r := newStreakRepo(t)
+	ctx := context.Background()
+	want := domain.GeoRecord{
+		UserID:   7,
+		Streak:   domain.GeoStreak{Over: 2, Tier: domain.GeoTierCity, BanOver: 1},
+		State:    domain.GeoStateSuspect,
+		Evidence: sampleEvidence(),
+	}
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{7: want}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := r.Load(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	g := loaded[7]
+	if !reflect.DeepEqual(g.Evidence, domain.GeoEvidence{}) {
+		t.Fatalf("Load returned evidence %+v; the poll's read must not pull the evidence column", g.Evidence)
+	}
+	if g.Streak != want.Streak {
+		t.Fatalf("Load streak = %+v, want %+v", g.Streak, want.Streak)
+	}
+	if g.UpdatedAtMS <= 0 {
+		t.Fatalf("Load UpdatedAtMS = %d, want the last judgement time", g.UpdatedAtMS)
+	}
+	if l := listed(t, r, 7); !reflect.DeepEqual(l.Evidence, want.Evidence) {
+		t.Fatalf("List evidence = %+v, want %+v", l.Evidence, want.Evidence)
+	}
+}
+
+// The row is an upsert, and an upsert only rewrites the columns it names. A
+// new column missing from that list keeps its FIRST value forever: the tier
+// of a flag raised last month, a ban streak that never resets, evidence from
+// a different cycle than the verdict beside it. Zero values included — a
+// streak consumed back to 0, and a verdict saved with no evidence, must
+// overwrite rather than leave the old value in place.
+func TestGeoStreakRepo_UpsertUpdatesNewColumns(t *testing.T) {
+	r := newStreakRepo(t)
+	ctx := context.Background()
+	first := domain.GeoRecord{
+		UserID:     7,
+		Streak:     domain.GeoStreak{Over: 3, Tier: domain.GeoTierCity, BanOver: 3},
+		Concurrent: 4,
+		Excluded:   2,
+		Evidence:   sampleEvidence(),
+	}
+	second := domain.GeoRecord{
+		UserID:     7,
+		Streak:     domain.GeoStreak{Under: 1, Flagged: true, Tier: domain.GeoTierRegion},
+		Concurrent: 1,
+		Evidence: domain.GeoEvidence{
+			V:        domain.GeoEvidenceVersion,
+			Spots:    []domain.GeoSpot{{CC: "JP", Region: "Kanto", City: "Tokyo", N: 1}},
+			Coverage: domain.GeoCoverage{Placed: 1, RegionKnown: 1, CityKnown: 1},
+			Networks: 1,
+			Spread:   domain.GeoSpread{Countries: 1, Regions: 1, RegionCountry: "JP", Cities: 1, CityCountry: "JP"},
+		},
+	}
+	for _, rec := range []domain.GeoRecord{first, second} {
+		if err := r.Save(ctx, map[int64]domain.GeoRecord{7: rec}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	g := listed(t, r, 7)
+	if g.Streak != second.Streak {
+		t.Fatalf("streak = %+v, want the second save's %+v", g.Streak, second.Streak)
+	}
+	if g.Concurrent != 1 || g.Excluded != 0 {
+		t.Fatalf("concurrent/excluded = %d/%d, want 1/0 from the second save", g.Concurrent, g.Excluded)
+	}
+	if !reflect.DeepEqual(g.Evidence, second.Evidence) {
+		t.Fatalf("evidence = %+v, want the second save's %+v", g.Evidence, second.Evidence)
+	}
+
+	third := second
+	third.Evidence = domain.GeoEvidence{}
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{7: third}); err != nil {
+		t.Fatalf("third save: %v", err)
+	}
+	if g := listed(t, r, 7); !reflect.DeepEqual(g.Evidence, domain.GeoEvidence{}) {
+		t.Fatalf("evidence = %+v after a save with none; stale evidence must not outlive its verdict", g.Evidence)
+	}
+}
+
+// Places are stored comma-joined, so a comma inside one place would come back
+// as two. Anything that reads the length would then count a place that does
+// not exist — and a place count is exactly what a verdict is about.
+func TestGeoStreakRepo_PlacesWithCommasDoNotSplit(t *testing.T) {
+	r := newStreakRepo(t)
+	if err := r.Save(context.Background(), map[int64]domain.GeoRecord{
+		7: {UserID: 7, Places: []string{"US/Washington, D.C.", "JP"}},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	g := listed(t, r, 7)
+	if want := []string{"US/Washington D.C.", "JP"}; !reflect.DeepEqual(g.Places, want) {
+		t.Fatalf("places = %#v, want %#v", g.Places, want)
+	}
+}
+
+// "No evidence recorded" has one stored form: NULL, the same as a row an
+// older build wrote. A verdict saved without evidence must not leave an
+// object saying v 0 in its place — a reader filtering on NULL would then
+// count it as recorded.
+func TestGeoStreakRepo_NoEvidenceIsStoredAsNull(t *testing.T) {
+	r := newStreakRepo(t)
+	ctx := context.Background()
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{
+		7: {UserID: 7, State: domain.GeoStateIdle},
+		8: {UserID: 8, State: domain.GeoStateClean, Evidence: sampleEvidence()},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	var nulls int64
+	if err := r.db.WithContext(ctx).Table("geo_streaks").Where("evidence IS NULL").Count(&nulls).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if nulls != 1 {
+		t.Fatalf("rows with NULL evidence = %d, want 1 (only the verdict saved without evidence)", nulls)
+	}
+}
+
+// ---- the freshness column ----
+
+// newStreakRepoWithUsers is newStreakRepo plus the users repository over the
+// same database: the risk center's reads join users, so their fixtures need
+// real rows.
+func newStreakRepoWithUsers(t *testing.T) (*GeoStreakRepo, ports.UserRepo, *gorm.DB) {
+	t.Helper()
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if err := ensureTestSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	return NewGeoStreakRepo(db), NewRepos(db).User, db
+}
+
+// Every save is a judgement, so every save must move updated_at — the upsert
+// names it in DoUpdates for exactly that. Left out, the column keeps the
+// row's FIRST insert time forever, and two readers go wrong without a single
+// error: the poll's sample spacing compares now against that first judgement,
+// so after one half-interval every "poll now" click counts as a sample again;
+// and the risk center's AttentionLevels(now-24h) — the queue and the bell —
+// drops a latch the poll re-judges every cycle once the row turns a day old.
+// The row is aged by hand, so a second save within the same millisecond
+// cannot pass by accident.
+func TestGeoStreakRepo_ReSaveAdvancesUpdatedAt(t *testing.T) {
+	r, users, db := newStreakRepoWithUsers(t)
+	ctx := context.Background()
+	u := createServiceStateUser(t, users, 1)
+	flagged := domain.GeoRecord{State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true, Tier: domain.GeoTierCity}}
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{u.ID: flagged}); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	aged := time.Now().Add(-25 * time.Hour).UnixMilli()
+	if err := db.Exec("UPDATE geo_streaks SET updated_at = ? WHERE user_id = ?", aged, u.ID).Error; err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
+
+	before := time.Now()
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{u.ID: flagged}); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	loaded, err := r.Load(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// GORM stamps the column from the process clock at save time
+	// (autoUpdateTime:milli), not from the database's, so it cannot read
+	// earlier than the moment just before the save.
+	if got := loaded[u.ID].UpdatedAtMS; got < before.UnixMilli() {
+		t.Fatalf("updated_at = %d after a re-save, want the second save's time (>= %d); the aged value was %d",
+			got, before.UnixMilli(), aged)
+	}
+	rows, err := r.AttentionLevels(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("AttentionLevels: %v", err)
+	}
+	if len(rows) != 1 || rows[0].UserID != u.ID {
+		t.Fatalf("AttentionLevels = %+v, want the one account — a latch judged just now is inside a 24-hour window", rows)
+	}
+}
+
+// ---- the risk center's evidence-free reads ----
+
+// setStreakUpdatedAt pins a row's judgement time, for the freshness bounds.
+func setStreakUpdatedAt(t *testing.T, db *gorm.DB, uid, ms int64) {
+	t.Helper()
+	if err := db.Exec("UPDATE geo_streaks SET updated_at = ? WHERE user_id = ?", ms, uid).Error; err != nil {
+		t.Fatalf("set updated_at: %v", err)
+	}
+}
+
+// AttentionLevels is the queue's geo read: the rows at attention — the LATCH
+// (flagged, whatever the last state: an idle or unreadable latched account
+// is still flagged, because those samples freeze the streak) or a ramp
+// (over > 0, suspect) — judged at or after since. A clean row is not
+// attention and a row the poll stopped judging is not fresh. The boundary is
+// inclusive, the bell's comparison.
+func TestGeoStreakRepo_AttentionLevelsIsLatchedOrRampingAndFresh(t *testing.T) {
+	r, users, db := newStreakRepoWithUsers(t)
+	ctx := context.Background()
+	since := time.Now().Add(-24 * time.Hour)
+	recs := map[int64]domain.GeoRecord{}
+	var ids []int64
+	for i, rec := range []domain.GeoRecord{
+		{State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true, Tier: domain.GeoTierCity}},
+		{State: domain.GeoStateIdle, Streak: domain.GeoStreak{Over: 3, Flagged: true, Tier: domain.GeoTierCity}},
+		{State: domain.GeoStateUnknown, Streak: domain.GeoStreak{Under: 2, Flagged: true, Tier: domain.GeoTierCountry}},
+		{State: domain.GeoStateSuspect, Streak: domain.GeoStreak{Over: 2, Tier: domain.GeoTierRegion}},
+		{State: domain.GeoStateClean, Streak: domain.GeoStreak{Under: 6}},
+		{State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true}}, // stale
+		{State: domain.GeoStateSuspect, Streak: domain.GeoStreak{Over: 1}},                // judged exactly at since
+	} {
+		u := createServiceStateUser(t, users, i+1)
+		rec.UserID = u.ID
+		rec.Evidence = sampleEvidence()
+		recs[u.ID] = rec
+		ids = append(ids, u.ID)
+	}
+	if err := r.Save(ctx, recs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	setStreakUpdatedAt(t, db, ids[5], since.UnixMilli()-1)
+	setStreakUpdatedAt(t, db, ids[6], since.UnixMilli())
+	loaded, err := r.Load(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got, err := r.AttentionLevels(ctx, since)
+	if err != nil {
+		t.Fatalf("AttentionLevels: %v", err)
+	}
+	var want []ports.GeoAttentionRow
+	for _, i := range []int{0, 1, 2, 3, 6} {
+		rec := loaded[ids[i]]
+		want = append(want, ports.GeoAttentionRow{
+			UserID: ids[i], Flagged: rec.Streak.Flagged, Over: rec.Streak.Over, UpdatedAtMS: rec.UpdatedAtMS,
+		})
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AttentionLevels = %+v\nwant %+v", got, want)
+	}
+	if got[4].UpdatedAtMS != since.UnixMilli() {
+		t.Fatalf("the boundary row reads updated_at %d, want %d", got[4].UpdatedAtMS, since.UnixMilli())
+	}
+}
+
+// geo_streaks has no foreign key: a deleted account's row stays until the
+// poll stops judging it, and an id that never existed is nobody to review.
+func TestGeoStreakRepo_AttentionLevelsSkipsDeletedAccounts(t *testing.T) {
+	r, users, _ := newStreakRepoWithUsers(t)
+	ctx := context.Background()
+	kept := createServiceStateUser(t, users, 1)
+	gone := createServiceStateUser(t, users, 2)
+	const neverExisted = int64(987654)
+	flagged := domain.GeoRecord{State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true}}
+	if err := r.Save(ctx, map[int64]domain.GeoRecord{kept.ID: flagged, gone.ID: flagged, neverExisted: flagged}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := users.Delete(ctx, gone.ID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	got, err := r.AttentionLevels(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("AttentionLevels: %v", err)
+	}
+	if len(got) != 1 || got[0].UserID != kept.ID || !got[0].Flagged || got[0].Over != 3 {
+		t.Fatalf("AttentionLevels = %+v, want only the existing account's latched row", got)
+	}
+}
+
+// ListByUsers is the page's evidence: the whole row of each asked account,
+// any state, evidence included; an account with no row is absent. Asked in
+// chunks of 500, so a long page never meets a dialect's parameter limit.
+func TestGeoStreakRepo_ListByUsers(t *testing.T) {
+	r, users, db := newStreakRepoWithUsers(t)
+	ctx := context.Background()
+	a := createServiceStateUser(t, users, 1)
+	b := createServiceStateUser(t, users, 2)
+	c := createServiceStateUser(t, users, 3)
+	noRow := createServiceStateUser(t, users, 4)
+	recs := map[int64]domain.GeoRecord{
+		a.ID: {UserID: a.ID, State: domain.GeoStateClean, Streak: domain.GeoStreak{Under: 6}, Complete: true},
+		b.ID: {UserID: b.ID, State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true}, Evidence: sampleEvidence(), Complete: true},
+		c.ID: {UserID: c.ID, State: domain.GeoStateSuspect, Streak: domain.GeoStreak{Over: 1}, Evidence: sampleEvidence(), Places: []string{"CN", "US"}, Complete: true},
+	}
+	if err := r.Save(ctx, recs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	full := map[int64]domain.GeoRecord{}
+	for _, rec := range []int64{a.ID, b.ID, c.ID} {
+		full[rec] = listed(t, r, rec)
+	}
+	want := []domain.GeoRecord{full[a.ID], full[c.ID]}
+
+	got, err := r.ListByUsers(ctx, []int64{c.ID, noRow.ID, a.ID})
+	if err != nil {
+		t.Fatalf("ListByUsers: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListByUsers = %+v\nwant %+v", got, want)
+	}
+	if got[1].Evidence.V == 0 {
+		t.Fatal("ListByUsers dropped the evidence")
+	}
+
+	reads := countReads(t, db, "geo_streaks")
+	got, err = r.ListByUsers(ctx, chunkSpanningIDs(a.ID, c.ID, noRow.ID))
+	if err != nil {
+		t.Fatalf("ListByUsers over 1100 ids: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) || reads() != 3 {
+		t.Fatalf("ListByUsers over 1100 ids = %d rows in %d reads, want %d in 3", len(got), reads(), len(want))
+	}
+}
+
+// CountFreshUnknown is the queue's "the database cannot place N accounts"
+// line: existing accounts whose LAST verdict is unknown, judged at or after
+// since.
+func TestGeoStreakRepo_CountFreshUnknown(t *testing.T) {
+	r, users, db := newStreakRepoWithUsers(t)
+	ctx := context.Background()
+	since := time.Now().Add(-24 * time.Hour)
+	unknown := domain.GeoRecord{State: domain.GeoStateUnknown, Streak: domain.GeoStreak{Under: 1}}
+	recs := map[int64]domain.GeoRecord{}
+	var ids []int64
+	for i, rec := range []domain.GeoRecord{
+		unknown, // fresh: in
+		unknown, // stale: out
+		unknown, // deleted: out
+		{State: domain.GeoStateFlagged, Streak: domain.GeoStreak{Over: 3, Flagged: true}},
+		unknown, // judged exactly at since: in
+	} {
+		u := createServiceStateUser(t, users, i+1)
+		recs[u.ID] = rec
+		ids = append(ids, u.ID)
+	}
+	if err := r.Save(ctx, recs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	setStreakUpdatedAt(t, db, ids[1], since.UnixMilli()-1)
+	setStreakUpdatedAt(t, db, ids[4], since.UnixMilli())
+	if err := users.Delete(ctx, ids[2]); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	n, err := r.CountFreshUnknown(ctx, since)
+	if err != nil || n != 2 {
+		t.Fatalf("CountFreshUnknown = %d, %v; want 2, nil", n, err)
 	}
 }

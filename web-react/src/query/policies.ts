@@ -23,6 +23,12 @@ export interface ResourcePolicy {
 }
 
 export const policies = {
+  nodeRouteLines: {
+    staleTime: 0,
+    gcTime: MINUTE,
+    refetchInterval: false,
+    note: 'Read on opening the node line editor; scoped per editing session. Focus/reconnect never replaces an unsaved draft.',
+  },
   /** Keeps the existing 60s cadence; pauses while the tab is hidden. */
   alerts: {
     staleTime: 30 * SECOND,
@@ -108,15 +114,71 @@ export const policies = {
     note: 'Self-service profile; the page has nothing to show without it.',
   },
   /**
-   * Concurrent-location verdicts. Not polled: the verdicts themselves only move
-   * when the traffic poll runs, so re-reading on a browser timer buys nothing
-   * and would keep a background tab querying.
+   * The risk center's live view. Not polled: the snapshot lives in the
+   * server's memory and moves only when a traffic poll or an admin's refresh
+   * replaces it, and the refresh is rationed for the whole fleet — a timer
+   * here would re-read the same snapshot, never a newer one.
    */
-  geoAnomalies: {
+  riskCenterLive: {
+    staleTime: 30 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'In-memory snapshot; moves only per poll or refresh; revalidates on focus.',
+  },
+  /** Connection history: written once per poll, read on demand. */
+  riskCenterHistory: {
     staleTime: 60 * SECOND,
     gcTime: 5 * MINUTE,
     refetchInterval: false,
-    note: 'Revalidates on tab focus; the server-side cadence is the traffic poll.',
+    note: 'Appended per traffic poll; paged and filtered on demand; focus revalidation only.',
+  },
+  /** Flag records: written only when an attention level changes. */
+  riskCenterFlags: {
+    staleTime: 60 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'Appended on attention changes only; focus revalidation only.',
+  },
+  /**
+   * The attention queue. Polled while the page is visible — the bell polls at
+   * the same rate, so the list and the bell move together — and the previous
+   * page is kept on screen while the next loads (the query sets
+   * placeholderData), so a filter change never blanks the table.
+   */
+  riskCenterQueue: {
+    staleTime: 30 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: 60 * SECOND,
+    note: 'Recomputed from stored verdicts; the bell polls at the same rate, so the list and the bell move together.',
+  },
+  /** One account's drawer. Every review or service action invalidates it. */
+  riskCenterUser: {
+    staleTime: 15 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'Keyed by user id; the actions invalidate riskCenterKeys.all; focus revalidation otherwise.',
+  },
+  /** The Users page's risk column: decoration, one read for the whole list. */
+  riskCenterLevels: {
+    staleTime: 60 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'One read per list view; verdicts move per poll or hourly; actions invalidate it.',
+  },
+  /** The policy tab. Its draft is local and seeded once; a newer policy
+   *  read on focus is offered, never merged in behind the admin's back. */
+  riskCenterPolicy: {
+    staleTime: 5 * MINUTE,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'The policy page keeps a local draft seeded once; its save writes through.',
+  },
+  /** One account's record, as the user picker names a picked account. */
+  userDetail: {
+    staleTime: 15 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'Keyed by user id; a users write invalidates it through userKeys.all.',
   },
   /**
    * The sync-task queue. NOT polled: it is a bounded list whose contents only
@@ -205,6 +267,29 @@ export const policies = {
     gcTime: 15 * MINUTE,
     refetchInterval: false,
     note: 'Form-backed record; editors keep drafts locally, writes invalidate.',
+  },
+  /**
+   * Which location database is active, for the risk center's database
+   * notices. Not polled: it changes only when an admin swaps or updates the
+   * database, and a notice a minute late costs nothing.
+   */
+  geoIPStatus: {
+    staleTime: 60 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: false,
+    note: 'Advisory notice input; revalidates on tab focus like the queue beside it.',
+  },
+  /**
+   * The diagnostics page's registry read. Polled while visible, because the
+   * page reports whether each problem is still growing since it was opened,
+   * and that line is only as fresh as the last read. One read a minute is a
+   * walk over an in-memory registry: no database, no panel.
+   */
+  diagnostics: {
+    staleTime: 30 * SECOND,
+    gcTime: 5 * MINUTE,
+    refetchInterval: 60 * SECOND,
+    note: 'One registry read per minute per visible page; paused while hidden (refetchIntervalInBackground=false). Feeds the per-session growth line.',
   },
 } as const satisfies Record<string, ResourcePolicy>
 

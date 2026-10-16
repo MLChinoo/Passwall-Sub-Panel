@@ -129,7 +129,8 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	// Expand each relay-bearing node into its direct entry + one entry per
 	// enabled transit line BEFORE the flag prefix, so every variant inherits
 	// its node's region flag. relay-less nodes pass through unchanged.
-	items = expandRelays(items)
+	items = expandNodeLines(items)
+	items = s.filterRouteItems(ctx, u, items)
 	if st.SubRegionFlagPrefix {
 		applyRegionFlagPrefix(items)
 	}
@@ -148,7 +149,7 @@ func (s *Service) RenderForUser(ctx context.Context, u *domain.User, ct domain.C
 	if err != nil {
 		return nil, fmt.Errorf("load template: %w", err)
 	}
-	bundle, err := s.resolveRuleBundle(ctx, tpl, st)
+	bundle, err := s.resolveRuleBundle(ctx, tpl, st, ct)
 	if err != nil {
 		return nil, fmt.Errorf("resolve rules: %w", err)
 	}
@@ -317,6 +318,10 @@ func (s *Service) buildProxies(ctx context.Context, u *domain.User, items []rend
 			}
 		}
 		renderUser, userEmail, appliedPassword := renderIdentityForNode(u, it.node.ID, emailRules, appliedCredentials)
+		renderUser, lineErr := it.userForLine(renderUser)
+		if lineErr != nil {
+			continue
+		}
 		block, err := emitProxy(it.name, it.node, renderUser, inb, userEmail, appliedPassword, it.relay,
 			mlkemFirstRealityByPanel[it.node.PanelID])
 		if err != nil {
@@ -609,7 +614,7 @@ type resolvedRuleBundle struct {
 	RematchOutbounds  []domain.MihomoRematchOutbound
 }
 
-func (s *Service) resolveRuleBundle(ctx context.Context, tpl *domain.Template, st ports.UISettings) (resolvedRuleBundle, error) {
+func (s *Service) resolveRuleBundle(ctx context.Context, tpl *domain.Template, st ports.UISettings, clientType domain.ClientType) (resolvedRuleBundle, error) {
 	slugs := tpl.RuleSets
 	if len(slugs) == 0 {
 		log.Debug("render: no rule_sets configured for template", "template", tpl.Slug)
@@ -647,25 +652,27 @@ func (s *Service) resolveRuleBundle(ctx context.Context, tpl *domain.Template, s
 		if content != "" {
 			sharedParts = append(sharedParts, content)
 		}
-		for _, subRule := range rs.MihomoSubRules {
-			name := strings.TrimSpace(subRule.Name)
-			if owner, exists := seenSubRules[name]; exists {
-				return resolvedRuleBundle{}, fmt.Errorf("duplicate Mihomo sub-rule %q in rule sets %s and %s", name, owner, slug)
+		if clientType == domain.ClientMihomo {
+			for _, subRule := range rs.MihomoSubRules {
+				name := strings.TrimSpace(subRule.Name)
+				if owner, exists := seenSubRules[name]; exists {
+					return resolvedRuleBundle{}, fmt.Errorf("duplicate Mihomo sub-rule %q in rule sets %s and %s", name, owner, slug)
+				}
+				seenSubRules[name] = slug
+				subRule.Name = name
+				subRules = append(subRules, subRule)
 			}
-			seenSubRules[name] = slug
-			subRule.Name = name
-			subRules = append(subRules, subRule)
-		}
-		for _, outbound := range rs.MihomoRematchOutbounds {
-			name := strings.TrimSpace(outbound.Name)
-			if owner, exists := seenRematchOutbounds[name]; exists {
-				return resolvedRuleBundle{}, fmt.Errorf("duplicate Mihomo rematch outbound %q in rule sets %s and %s", name, owner, slug)
+			for _, outbound := range rs.MihomoRematchOutbounds {
+				name := strings.TrimSpace(outbound.Name)
+				if owner, exists := seenRematchOutbounds[name]; exists {
+					return resolvedRuleBundle{}, fmt.Errorf("duplicate Mihomo rematch outbound %q in rule sets %s and %s", name, owner, slug)
+				}
+				seenRematchOutbounds[name] = slug
+				outbound.Name = name
+				outbound.TargetRematchName = strings.TrimSpace(outbound.TargetRematchName)
+				outbound.TargetSubRule = strings.TrimSpace(outbound.TargetSubRule)
+				rematchOutbounds = append(rematchOutbounds, outbound)
 			}
-			seenRematchOutbounds[name] = slug
-			outbound.Name = name
-			outbound.TargetRematchName = strings.TrimSpace(outbound.TargetRematchName)
-			outbound.TargetSubRule = strings.TrimSpace(outbound.TargetSubRule)
-			rematchOutbounds = append(rematchOutbounds, outbound)
 		}
 		for _, target := range rs.ProxyGroupOrder {
 			target = strings.TrimSpace(target)
@@ -707,7 +714,7 @@ func (s *Service) resolveRuleBundle(ctx context.Context, tpl *domain.Template, s
 // tests and older call sites. It exposes the shared rule stream; Mihomo render
 // uses resolveRuleBundle directly.
 func (s *Service) resolveRulesCommon(ctx context.Context, tpl *domain.Template, st ports.UISettings) (string, []string, map[string][]domain.ProxyGroupMember, map[string]domain.ProxyGroupOptions, error) {
-	bundle, err := s.resolveRuleBundle(ctx, tpl, st)
+	bundle, err := s.resolveRuleBundle(ctx, tpl, st, domain.ClientSingBox)
 	return bundle.SharedRules, bundle.ProxyGroupOrder, bundle.ProxyGroupMembers, bundle.ProxyGroupOptions, err
 }
 
@@ -857,8 +864,10 @@ func buildProfileName(u *domain.User, st ports.UISettings) string {
 	return RenderProfileName(st, u)
 }
 
-// buildSubInfo produces the Subscription-Userinfo header value. Bytes are
-// taken from the most recent traffic snapshot; total reflects the user's
+// buildSubInfo produces the Subscription-Userinfo header value. Usage follows
+// the user's period baseline, not cumulative traffic snapshots. The user only
+// stores a total baseline, so report aggregate period usage as download and
+// upload as zero; their sum matches quota enforcement. total reflects the user's
 // configured cap (0 = unlimited); expire is appended ONLY when the user
 // has a real expiry — both ClashMi and ClashMetaForAndroid parse a literal
 // "expire=0" as the Unix epoch (1969/1970 in negative-offset timezones)
@@ -866,13 +875,8 @@ func buildProfileName(u *domain.User, st ports.UISettings) string {
 // there's nothing to communicate.
 //
 // Format spec: https://github.com/Dreamacro/clash/wiki/managing-providers
-func (s *Service) buildSubInfo(ctx context.Context, u *domain.User) string {
-	var up, down int64
-	if snap, err := s.repos.Traffic.LatestForUser(ctx, u.ID); err == nil && snap != nil {
-		up = snap.UpBytes
-		down = snap.DownBytes
-	}
-	out := fmt.Sprintf("upload=%d; download=%d; total=%d", up, down, u.TrafficLimitBytes)
+func (s *Service) buildSubInfo(_ context.Context, u *domain.User) string {
+	out := fmt.Sprintf("upload=0; download=%d; total=%d", u.PeriodUsed(), u.TrafficLimitBytes)
 	if u.ExpireAt != nil && !u.ExpireAt.IsZero() {
 		out += fmt.Sprintf("; expire=%d", u.ExpireAt.Unix())
 	}

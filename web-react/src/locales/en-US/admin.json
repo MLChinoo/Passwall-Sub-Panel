@@ -44,7 +44,8 @@
       "cert_expired": "Certificate {{name}} has expired",
       "panel_upgrade": "{{name}}: 3X-UI {{version}} available",
       "psp_upgrade": "Panel update {{version}} available",
-      "login_security": "{{count}} login lockouts recently"
+      "login_security": "{{count}} login lockouts recently",
+      "risk_queue": "{{count}} account(s) need action now"
     }
   },
   "validation": {
@@ -237,26 +238,105 @@
       "emergency_access_quota_gb_hint": "0 = unlimited; once exceeded the panel ends the window early and re-disables the user"
     },
     "geo_anomaly": {
-      "section": "Concurrent-location detection",
-      "hint": "Combines one user's live source IPs across every panel; being in several places at once is the signal for a shared account. Needs the IP location database above — without it every verdict is \"unknown\", never \"clean\". Observation and alerting only; nothing is enforced automatically.",
       "scope": "Granularity",
-      "scope_hint": "Country is the recommended setting. Two CITIES happens every day — a commute, a carrier NAT pool, a phone changing networks — so city scope produces constant false alarms unless you know your users are local.",
-      "scope_country": "Country (recommended)",
+      "scope_hint": "How fine the judgement goes: \"City, tiered\" judges countries, regions and cities; \"Region / state\" skips cities; \"Country only\" judges countries alone.",
+      "scope_country": "Country only",
       "scope_region": "Region / state",
-      "scope_city": "City (noisy)",
+      "scope_city": "City, tiered (recommended)",
       "scope_off": "Detection off",
-      "max_places": "Tolerance: places allowed at once",
-      "max_places_hint": "1 means two at once is over. A second location is often legitimate — a work VPN, a second home, family abroad — so raise it to 2 if you see false alarms.",
+      "max_places": "Country tolerance: countries allowed at once",
+      "max_places_hint": "1 means two countries at once is over.",
+      "max_regions": "Region tolerance: regions allowed at once in one country",
+      "max_regions_hint": "1 means two regions of one country at once is over. A home router plus a phone in another region also trips it; raise to 2 if noisy.",
+      "max_cities": "City tolerance: cities allowed at once in one country",
+      "max_cities_hint": "2 means three cities of one country at once is over; addresses placed only to a country never count as a city.",
+      "effective": "In effect: over at {{countries}} countries, or {{regions}} regions, or {{cities}} cities in one country",
       "min_placed_ratio": "Minimum locatable share",
-      "min_placed_ratio_hint": "0–1. Below this share of addresses being locatable the verdict is \"unknown\", so a stale or partial database cannot quietly read as a clean fleet.",
+      "min_placed_ratio_hint": "Below this share of locatable addresses the verdict is \"unknown\", so a stale or partial database cannot quietly read as a clean fleet.",
       "flag_after": "Consecutive checks to flag",
       "flag_after_hint": "One noisy sample does not raise an alert — below this it shows as \"suspect\". Setting it to 1 disables hysteresis and makes the detector flap; not recommended.",
       "clear_after": "Consecutive checks to clear",
-      "clear_after_hint": "Deliberately larger than the flag threshold, or an account sheds its flag by stepping under the line for one check. Being disconnected does not count toward clearing.",
+      "clear_after_hint": "Keep it above the checks to flag, or an account sheds its flag by stepping under the line for one check. Being disconnected does not count toward clearing.",
       "co_travel": "Places that count as one",
-      "co_travel_hint": "One set per line, members comma-separated. For a genuine cross-border user this is more precise than raising their tolerance: a third place outside the set still flags.",
+      "co_travel_hint": "One set per line, country codes comma-separated (any case). Countries only; region or city entries containing \"/\" are ignored. A third country outside the set still flags.",
       "allow_anywhere": "Allow anywhere in this scope (no detection)",
-      "allow_anywhere_hint": "An outright exemption rather than a raised threshold — raising the threshold would also loosen detection for everyone who is not travelling. Set it on one group to exempt only that group."
+      "allow_anywhere_hint": "An outright exemption rather than a raised threshold — raising the threshold would also loosen detection for everyone who is not travelling. Set it on one group to exempt only that group.",
+      "ignore_addresses": "Ignored addresses (IP or CIDR)",
+      "ignore_addresses_hint": "One per line or comma-separated, up to 256; text after # is a comment. For relays, CDNs or office exits the panel does not know. Node and relay addresses, 100.64.0.0/10 and private ranges, and addresses held at once by at least the shared-exit account count (3 by default) are excluded automatically. Global only.",
+      "ban_section": "Automatic temporary suspension (off by default)",
+      "ban_hint": "When on, accounts that stay over the suspension thresholds have proxy service suspended and restored automatically when the time is up. Panel login is kept, no other suspension is overwritten, and accounts in an emergency window, expired or over quota are never auto-suspended. An account still over the line after it is restored is suspended again — trust a confirmed false positive from its risk details. Thresholds are raised to at least the flag tolerances.",
+      "ban_enabled": "Enable automatic suspension",
+      "ban_max_countries": "Suspend threshold: countries",
+      "ban_max_regions": "Suspend threshold: regions",
+      "ban_max_cities": "Suspend threshold: cities",
+      "ban_tolerance_hint": "Same meaning as the country, region and city tolerances, used only for suspension.",
+      "ban_after": "Consecutive checks to suspend",
+      "ban_after_hint": "Manual polls closer than half a poll interval do not count.",
+      "ban_duration": "Suspension length (minutes)",
+      "ban_duration_hint": "Default 60, at most 10080 (7 days). Restored automatically; an admin can resume at any time. Changes apply to suspensions already running.",
+      "ban_effective": "In effect: {{countries}} countries, or {{regions}} regions, or {{cities}} cities in one country, for {{polls}} checks; suspended {{minutes}} minutes",
+      "fresh_window_seconds": "Live window (seconds)",
+      "fresh_window_seconds_hint": "How far behind its node's newest scan an address still counts as connected now. Default 120, range 20–900.",
+      "shared_exit_min_users": "Shared-exit accounts",
+      "shared_exit_min_users_hint": "This many accounts on one source at once make it a shared exit, set aside; subscription spread uses it too. Default 3, range 2–20.",
+      "ban_max_per_poll": "Suspensions per poll",
+      "ban_max_per_poll_hint": "Default 20, at most 200; the rest wait for the next poll.",
+      "lift_max_per_poll": "Lifts per poll",
+      "lift_max_per_poll_hint": "Default 20, at most 200; the rest wait for the next poll.",
+      "infra_refresh_minutes": "Node/relay address refresh (minutes)",
+      "infra_refresh_minutes_hint": "Default 5, range 1–60; a change applies after the next refresh.",
+      "infra_host_ttl_minutes": "Hostname cache (minutes)",
+      "infra_host_ttl_minutes_hint": "Default 10, range 1–1440."
+    },
+    "risk": {
+      "sub_spread_hint": "Provinces one client (same device id or client string) was seen in count as one group; more groups than the concurrent-location region tolerance is flagged. Only the country with the most recurring provinces is judged; cross-border is not judged here.",
+      "min_days": "Recurring days",
+      "min_days_hint": "Days a province or device must appear on within the fetch window (bounded by sub-log retention), counted as calendar days in the panel timezone; at most the window's days.",
+      "max_devices": "Device limit",
+      "max_devices_hint": "More recurring devices than this is flagged; only clients that send x-hwid are counted.",
+      "usage_ratio": "Usage ratio",
+      "usage_ratio_hint": "A day above the daily median of the baseline days (since first use) times this ratio is an over-day; within the judged days, reaching the over-days to flag is flagged and reaching the over-days for suspect is suspect.",
+      "usage_floor_gb": "Daily floor (GB)",
+      "usage_floor_gb_hint": "Days below this are never over-days, so an account with a tiny baseline is not flagged for light use.",
+      "usage_warmup_days": "Usage warm-up (days)",
+      "usage_warmup_days_hint": "Default 14, at least 7, at most the baseline days.",
+      "usage_flag_days": "Over-days to flag",
+      "usage_flag_days_hint": "Default 4, at least 2 (one day over is a download), at most the judged days.",
+      "usage_suspect_days": "Over-days for suspect",
+      "usage_suspect_days_hint": "Default 2, at least 2, at most the over-days to flag; equal to it means no suspect stage.",
+      "login_warmup_logins": "Login warm-up",
+      "login_warmup_logins_hint": "Placed logins an account needs before a new one is judged. Default 3, range 1–50.",
+      "login_hold_days": "New-country hold (days)",
+      "login_hold_days_hint": "How long a login from a new country keeps the account flagged. Default 7, at most the login lookback.",
+      "hwid_capture": "Capture client device ids (x-hwid)",
+      "hwid_capture_hint": "Only some clients send a device id (x-hwid) when they refresh; most do not. Only a keyed per-account digest (not reversible) and the OS / model are kept; they expire with the subscription log and are visible to admins only. It only observes and never blocks a fetch. Turning it off stops capture; stored digests expire with the log. Global only.",
+      "refresh_interval_minutes": "Risk refresh interval (minutes)",
+      "refresh_interval_minutes_hint": "Default 60, range 10–1440; a change applies after the next run.",
+      "first_delay_minutes": "First run after start (minutes)",
+      "first_delay_minutes_hint": "Default 2, range 1–60; takes effect on restart.",
+      "alert_freshness_hours": "Queue and bell freshness (hours)",
+      "alert_freshness_hours_hint": "A flag not re-judged for this long leaves the review queue and stops lighting the bell. Default 24; never shorter than two traffic polls for locations, or two refresh intervals (completed to a whole hour) for risk signals; the value in effect is the risk entry's exact window.",
+      "window_days": "Fetch window (days)",
+      "window_days_hint": "Days subscription spread and devices read. Default 7, range 1–7; shorter when sub-log retention is.",
+      "usage_baseline_days": "Usage baseline (days)",
+      "usage_baseline_days_hint": "Days the median is taken over. Default 28, range 14–56.",
+      "usage_recent_days": "Usage judged days",
+      "usage_recent_days_hint": "The most recent days after the baseline that are judged. Default 7, range 3–14.",
+      "login_lookback_days": "Login lookback (days)",
+      "login_lookback_days_hint": "Default 90, range 7–365; shorter when auth-event retention is."
+    },
+    "risk_center": {
+      "effective": "In effect: {{value}}",
+      "connection_retention_days": "Connection history retention (days)",
+      "connection_retention_days_hint": "Holds IP addresses. Default 7, range 1–90; never kept forever.",
+      "flag_record_retention_days": "Flag record retention (days)",
+      "flag_record_retention_days_hint": "Default 90, range 1–3650.",
+      "live_snapshot_stale_minutes": "Snapshot stale after (minutes)",
+      "live_snapshot_stale_minutes_hint": "Default 15; never shorter than two traffic-poll intervals.",
+      "live_refresh_cooldown_seconds": "Refresh-now cooldown (seconds)",
+      "live_refresh_cooldown_seconds_hint": "Each refresh asks every panel once. Default 30, range 5–3600.",
+      "device_infer_hours": "Device inference window (hours)",
+      "device_infer_hours_hint": "Default 24, range 1–168, and never beyond sub-log retention."
     },
     "geo": {
       "section": "IP region (logs)",
@@ -288,6 +368,8 @@
       "update_now": "Update now",
       "update_hint": "“Update now” saves your settings first, then downloads. MaxMind databases must be refreshed within 30 days (EULA) — enabling auto-update is recommended.",
       "attribution": "Attribution required where the data is used: MaxMind (GeoLite2) / DB-IP / IPinfo — depending on the database in use.",
+      "policy_pointer": "Concurrent-location and risk-signal settings are in Risk center › Policy.",
+      "open_policy": "Open policy",
       "update_ok": "Database updated: ",
       "update_running": "Update still running in the background; refresh later to see the result."
     },
@@ -909,23 +991,545 @@
     }
   },
   "geo_anomalies": {
-    "intro": "Verdicts on each user's live source IPs combined across every panel. Only \"flagged\" means sustained; \"suspect\" is the ramp that has not reached the threshold yet. This is suspicion, not proof — split tunnelling, a corporate VPN and family abroad all produce it honestly. Nothing is enforced automatically.",
-    "unwired": "Concurrent-location detection is not enabled in this deployment.",
-    "empty": "No verdicts yet — they appear after the traffic poll has run a cycle.",
     "incomplete": "A panel could not be read, so this number is a floor rather than a total.",
-    "col_user": "User",
-    "col_state": "Verdict",
     "col_places": "Places at once",
-    "col_ips": "Live IPs",
-    "col_reason": "Basis",
-    "col_updated": "Last judged",
-    "state_flagged": "Flagged",
-    "state_suspect": "Suspect",
-    "state_clean": "Clean",
-    "state_unknown": "Cannot tell",
-    "state_idle": "Idle",
-    "state_exempt": "Exempt",
-    "state_disabled": "Off"
+    "col_ips": "Concurrent / window IPs",
+    "tier_country": "Cross-border",
+    "tier_region": "Cross-region",
+    "tier_city": "Cross-city",
+    "latched": "Still flagged",
+    "auto_suspended_since": "Auto-suspended since {{time}}; lifts automatically",
+    "ips_hint": "Concurrent {{concurrent}}: addresses connected right now (IPv6 folded by /64). Window {{window}}: seen upstream in the last 30 minutes. {{excluded}} excluded: shared exits {{shared}}, ignore list {{listed}}, own nodes/relays {{infra}}, internal {{internal}}.",
+    "coarse_db": "The active location database resolves countries only, so the region and city tiers cannot fire.",
+    "reason_disabled": "Location checks are switched off for this account",
+    "reason_exempt": "This account is allowed to connect from anywhere",
+    "reason_trusted": "An admin trusts this account; its location is not judged",
+    "reason_idle_stale": "No concurrent connections; {{stale}} address(es) seen earlier in the upstream window",
+    "reason_idle_stale_bare": "No concurrent connections; addresses seen earlier remain in the upstream window",
+    "reason_idle_none": "No live connections",
+    "reason_unknown_excluded": "All {{total}} concurrent address(es) are excluded (shared {{shared}}, listed {{listed}}, infrastructure {{infra}}, internal {{internal}}); no conclusion drawn",
+    "reason_unknown_excluded_bare": "All concurrent addresses are excluded; no conclusion drawn",
+    "reason_unknown_geo_off": "Location lookup unavailable; no conclusion drawn",
+    "reason_unknown_low_ratio": "Only {{placed}} of {{sample}} addresses could be located ({{ratio}}% required)",
+    "reason_unknown_low_ratio_bare": "Too few addresses could be located; no conclusion drawn",
+    "reason_over_country": "In {{spread}} countries at once (tolerance {{tolerance}})",
+    "reason_over_country_bare": "In several countries at once, over the tolerance",
+    "reason_over_region": "In {{spread}} regions of {{country}} at once (tolerance {{tolerance}})",
+    "reason_over_region_bare": "In several regions of one country at once, over the tolerance",
+    "reason_over_city": "In {{spread}} cities of {{country}} at once (tolerance {{tolerance}})",
+    "reason_over_city_bare": "In several cities of one country at once, over the tolerance",
+    "reason_suspect_suffix": ", {{over}} of {{need}} checks so far",
+    "reason_flagged_suffix": ", sustained for {{over}} of {{need}} checks",
+    "reason_flagged_clearing": "Within tolerance for {{under}} of the {{need}} checks needed to clear",
+    "reason_flagged_clearing_bare": "Back within tolerance; the flag clears after enough checks in a row",
+    "reason_flagged_clearing_tier": "; flagged as {{tier}}",
+    "reason_clean_unplaced": "Connected, but no address could be placed",
+    "reason_clean_within": "Within tolerance: {{countries}} country(ies); {{regions}} region(s) and {{cities}} city(ies) in the widest country; tolerances {{tol_countries}}/{{tol_regions}}/{{tol_cities}} ({{scope}})",
+    "reason_clean_within_bare": "Within tolerance",
+    "reason_scope_city": "judged down to cities",
+    "reason_scope_region": "judged down to regions",
+    "reason_scope_country": "countries only",
+    "max_km": "about {{km}} km apart",
+    "max_km_hint": "The two concurrent sources farthest apart: the straight-line distance between the places the location database gives, minus both accuracy radii, rounded to 10 km. It estimates where the networks are, not the devices; sources placed to a country only are left out. For reference only; the verdict does not use it."
+  },
+  "geo_regions": {
+    "cn": {
+      "AH": "Anhui",
+      "BJ": "Beijing",
+      "CQ": "Chongqing",
+      "FJ": "Fujian",
+      "GD": "Guangdong",
+      "GS": "Gansu",
+      "GX": "Guangxi",
+      "GZ": "Guizhou",
+      "HA": "Henan",
+      "HB": "Hubei",
+      "HE": "Hebei",
+      "HI": "Hainan",
+      "HK": "Hong Kong",
+      "HL": "Heilongjiang",
+      "HN": "Hunan",
+      "JL": "Jilin",
+      "JS": "Jiangsu",
+      "JX": "Jiangxi",
+      "LN": "Liaoning",
+      "MO": "Macao",
+      "NM": "Inner Mongolia",
+      "NX": "Ningxia",
+      "QH": "Qinghai",
+      "SC": "Sichuan",
+      "SD": "Shandong",
+      "SH": "Shanghai",
+      "SN": "Shaanxi",
+      "SX": "Shanxi",
+      "TJ": "Tianjin",
+      "TW": "Taiwan",
+      "XJ": "Xinjiang",
+      "XZ": "Tibet",
+      "YN": "Yunnan",
+      "ZJ": "Zhejiang"
+    }
+  },
+  "risk_signals": {
+    "col_updated": "Last computed",
+    "kind": {
+      "sub_spread": "Subscription spread",
+      "devices": "Devices",
+      "usage_shift": "Usage change",
+      "login_country": "Login country"
+    },
+    "expand": "Show evidence",
+    "collapse": "Hide",
+    "window_hint": "One cell per day, {{days}} days from {{start}} (panel timezone)",
+    "province_recurring": "Recurring",
+    "province_group": "Group {{n}}",
+    "identities_title": "Clients that fetched",
+    "identity_hwid": "Device",
+    "identity_ua": "Client string",
+    "identity_seen_at": "Seen at: {{places}}",
+    "foreign_title": "Sources in other countries (context only, not judged)",
+    "coverage": "{{sources}} sources, {{placed}} located, {{region_known}} to a province; excluded: shared {{shared}}, ignore list {{listed}}, own nodes / relays {{infra}}, internal {{internal}}",
+    "devices_title": "Declared devices",
+    "device_recurring": "Recurring",
+    "device_last_seen": "Last seen {{time}}",
+    "device_fetches": "{{with}} fetches with a device id, {{without}} without",
+    "clients_title": "Clients without a device id",
+    "usage_title": "Daily usage, last {{days}} days (to {{end}})",
+    "usage_caption": "Baseline median {{median}}, ratio {{ratio}}, daily floor {{floor}}; {{over}} of the last {{recent}} days over",
+    "login_known": "Known countries",
+    "login_events": "New-country logins",
+    "login_counts": "{{logins}} logins in {{lookback}} days; {{recent}} in the last {{hold}} days, {{judged}} judged; skipped: own nodes {{infra}}, internal {{internal}}, ignore list {{listed}}, node countries {{node_country}}, unlocatable {{unplaced}}",
+    "code": {
+      "sub_spread": {
+        "signal_off": "Subscription spread is off for this account's scope",
+        "scope_off": "Concurrent-location granularity is \"off\"",
+        "scope_country": "Concurrent-location granularity is \"country only\", so provinces are not judged",
+        "allow_anywhere": "This account is allowed to connect from anywhere",
+        "trusted": "An admin trusts this account; subscription places are not judged",
+        "no_fetches": "No subscription fetch in the window",
+        "retention_short": "Subscription logs are kept {{retention}} day(s), fewer than the {{needed}} needed",
+        "all_excluded": "All {{total}} fetch sources are excluded (shared {{shared}}, ignore list {{listed}}, own nodes / relays {{infra}}, internal {{internal}})",
+        "geo_unavailable": "Location lookup unavailable",
+        "low_placed": "Only {{placed}} of {{sources}} sources could be located ({{ratio}}% required)",
+        "no_regions": "Sources resolve to a country only, so provinces cannot be judged",
+        "spread": "{{groups}} unconnected groups of recurring provinces in {{country}} (tolerance {{tolerance}})",
+        "spread_building": "{{groups}} unconnected groups of provinces in {{country}}, not all seen on {{min_days}} days yet (tolerance {{tolerance}})",
+        "within": "{{groups}} group(s) of provinces, within tolerance {{tolerance}}"
+      },
+      "devices": {
+        "signal_off": "Devices is off for this account's scope",
+        "capture_off": "Device-id capture is switched off",
+        "no_fetches": "No subscription fetch in the window",
+        "retention_short": "Subscription logs are kept {{retention}} day(s), fewer than the {{needed}} needed",
+        "no_hwid": "No fetch in the window declared a device (x-hwid)",
+        "over": "{{recurrent}} recurring devices (limit {{max}})",
+        "over_building": "{{distinct}} devices, {{recurrent}} recurring (limit {{max}})",
+        "within": "{{distinct}} device(s), within the limit of {{max}}"
+      },
+      "usage_shift": {
+        "signal_off": "Usage change is off for this account's scope",
+        "retention_short": "Traffic history is kept {{retention}} day(s), fewer than the {{needed}} needed",
+        "no_usage": "No usage in the judged days",
+        "warmup": "Only {{history}} days of history; judged from {{warmup}}",
+        "sustained": "{{over}} of the last {{recent}} days above {{ratio}}× the account's own baseline",
+        "building": "{{over}} of the last {{recent}} days above {{ratio}}× the account's own baseline (flagged at {{flag}})",
+        "within": "{{over}} of the last {{recent}} days above {{ratio}}× the account's own baseline"
+      },
+      "login_country": {
+        "signal_off": "Login country is off for this account's scope",
+        "scope_off": "Concurrent-location granularity is \"off\"",
+        "allow_anywhere": "This account is allowed to connect from anywhere",
+        "trusted": "An admin trusts this account; login countries are not judged",
+        "no_recent_logins": "No recent panel login",
+        "geo_unavailable": "Location lookup unavailable",
+        "unplaced": "Recent logins came only from nodes, internal or unlocatable addresses",
+        "learning": "Fewer than {{warmup}} earlier logins; still learning",
+        "new_country": "Login from a new country: {{countries}}",
+        "known_countries": "Recent logins all came from known countries"
+      }
+    },
+    "code_bare": {
+      "sub_spread": {
+        "retention_short": "Subscription logs are not kept long enough to judge",
+        "all_excluded": "All fetch sources are excluded",
+        "low_placed": "Too few sources could be located",
+        "spread": "Several unconnected groups of recurring provinces, over the tolerance",
+        "spread_building": "Several unconnected groups of provinces, not all seen on enough days yet",
+        "within": "Groups of provinces within tolerance"
+      },
+      "devices": {
+        "retention_short": "Subscription logs are not kept long enough to judge",
+        "over": "Recurring devices over the limit",
+        "over_building": "Devices over the limit, but not yet the recurring ones",
+        "within": "Devices within the limit"
+      },
+      "usage_shift": {
+        "retention_short": "Traffic history is not kept long enough to judge",
+        "warmup": "Not enough usage history to judge yet",
+        "sustained": "Usage above the account's own baseline on too many recent days",
+        "building": "Usage above the account's own baseline on some recent days, not yet enough to flag",
+        "within": "Recent usage has not stayed above the account's own baseline"
+      },
+      "login_country": {
+        "learning": "Too few earlier logins; still learning",
+        "new_country": "Login from a new country"
+      }
+    }
+  },
+  "risk_center": {
+    "title": "Risk center",
+    "subtitle": "Accounts to review, live connections, what changed, and the detection policy.",
+    "tab_queue": "To review",
+    "tab_live": "Live",
+    "tab_records": "Records",
+    "tab_policy": "Policy",
+    "open_user": "Open user",
+    "pick_user": "Pick a user",
+    "help": {
+      "label": "About this tab",
+      "queue": "One row per account that needs a look, most urgent first: flagged and auto-suspended, flagged, auto-suspended, suspect, then latest change. The bell counts only accounts that need action now (flagged or auto-suspended). Dismissing removes an account until a new or more severe signal appears; trusting exempts it from location checks for good. Observe-only signals never change an account; the panel only suspends on its own when automatic suspension is on.",
+      "live": "The addresses connected on every panel at the last traffic poll or refresh. It is a snapshot and may be stale; its time is shown above. A refresh never counts as a detector sample.",
+      "records": "Every entry into or out of suspect or flagged, every automatic suspension applied or lifted, and every admin dismiss or trust action, each with the reason at the time and never an IP, a name or a note.",
+      "policy": "One card per detector: a switch, a preset, the key thresholds, the rest under Advanced. An empty field is the shipped default. Group exceptions are at the bottom and save separately."
+    },
+    "queue": {
+      "metric_online": "Online",
+      "metric_online_hint": "From the snapshot at {{time}}",
+      "metric_online_none": "No snapshot yet",
+      "metric_flagged": "Flagged",
+      "metric_suspect": "Suspect",
+      "metric_auto": "Auto-suspended (locations)",
+      "metric_dismissed": "Dismissed",
+      "filter_status": "Status",
+      "status_open": "To review",
+      "status_dismissed": "Dismissed",
+      "status_trusted": "Trusted",
+      "status_all": "All",
+      "filter_source": "Source",
+      "filter_urgent": "Needs action now only",
+      "search": "Search users",
+      "col_user": "User",
+      "col_level": "Level",
+      "col_sources": "Signals",
+      "col_reason": "Reason",
+      "col_changed": "Last change",
+      "col_review": "Review",
+      "row_open": "Open risk details for {{upn}}",
+      "places_more": "and {{count}} more",
+      "headline_no_signal": "No signals now",
+      "empty": "No accounts need review",
+      "empty_dismissed": "No dismissed accounts",
+      "empty_trusted": "No trusted accounts",
+      "empty_filtered": "No accounts match",
+      "global_off": "Every detector is off globally (group exceptions may still turn some on).",
+      "geoip_unavailable": "The IP location database is unavailable: concurrent locations, subscription spread and login country all read \"cannot tell\" and never appear here.",
+      "geoip_open": "Open IP location settings",
+      "geo_unknown": "{{count}} account(s) cannot be placed right now",
+      "open_policy": "Open policy"
+    },
+    "state": {
+      "flagged": "Flagged",
+      "suspect": "Suspect",
+      "clean": "Clean",
+      "idle": "No data",
+      "unknown": "Cannot tell",
+      "exempt": "Exempt",
+      "trusted": "Trusted",
+      "disabled": "Off",
+      "not_computed": "Not computed yet"
+    },
+    "live": {
+      "snapshot_poll": "Snapshot {{time}} ({{ago}}, from the scheduled poll)",
+      "snapshot_refresh": "Snapshot {{time}} ({{ago}}, manual refresh)",
+      "snapshot_none": "No snapshot yet: one appears after the first traffic poll since start, or refresh now.",
+      "stale": "The snapshot is over {{minutes}} minutes old and may be out of date.",
+      "refresh": "Refresh now",
+      "refresh_hint": "Asks each panel once for its live addresses. Not a detector sample; nothing is written to connection history or flag records.",
+      "refreshed": "Refreshed: {{connections}} connections from {{panels}} panels",
+      "just_polled": "A poll just finished; showing its snapshot",
+      "cooldown": "Refreshing too often; try again in {{seconds}} s",
+      "in_progress": "A refresh is already running",
+      "unread": "{{count}} panel(s) could not be read; their connections are not listed: {{names}}",
+      "unsupported": "{{count}} panel(s) do not report live addresses (such as S-UI); their connections cannot be listed: {{names}}",
+      "unreferenced": "{{count}} node(s) have no previous reference yet (the first reading since start), so there is no telling whether they are still scanning, and each is treated as if it were: a node that has stopped may show the addresses of its last scan (up to 30 minutes old) as connected.",
+      "truncated": "{{count}} connection(s) over the per-account cap of {{max}} are not listed",
+      "empty": "Nobody is connected right now",
+      "empty_filtered": "No matching connections",
+      "empty_unread": "Nothing listed, but {{count}} panel(s) could not be read; connections there are unknown",
+      "filter_user": "User",
+      "filter_panel": "Panel",
+      "filter_sources": "Sources",
+      "opt_all": "All",
+      "opt_kept": "Judged",
+      "opt_excluded": "Excluded",
+      "col_user": "User",
+      "col_connections": "Connections",
+      "col_ip": "IP",
+      "col_panel": "Panel / node",
+      "col_region": "Region",
+      "col_status": "Judgement",
+      "col_seen": "Still connected",
+      "col_device": "Inferred device",
+      "kept": "Judged",
+      "exclusion": {
+        "internal": "Internal",
+        "listed": "Ignore list",
+        "infra": "PSP node / relay",
+        "shared": "Shared exit"
+      },
+      "source_key": "Source {{key}}",
+      "still_connected": "Still connected (as of {{time}})",
+      "still_connected_hint": "3X-UI only reports addresses that still have an open connection; this is the panel's scan time, not when the address was last used.",
+      "seen_none": "No timestamp",
+      "node_hint": "3X-UI node id, shown as is",
+      "device_inferred": "Inferred",
+      "device_hint": "Inferred from this account's subscription fetches from the same source (IPv4 address or IPv6 /64) in the last {{hours}} hours; the connection itself carries no device. Accounts that fetch through their proxy cannot be inferred.",
+      "device_none": "Not inferable",
+      "device_via_relay": "Via a relay; not inferable",
+      "devices_unavailable": "Subscription fetches could not be read; no devices inferred on this page",
+      "device_fetches": "{{count}} fetches, last {{time}}",
+      "stale_addresses": "{{count}} more address(es) seen earlier in the upstream window",
+      "incomplete": "A panel could not be read; this account's list may be incomplete",
+      "show_connections": "Show connections",
+      "hide_connections": "Hide connections"
+    },
+    "flags": {
+      "empty": "No matching records",
+      "filter_source": "Source",
+      "filter_level": "Level",
+      "filter_event": "Change",
+      "filter_since": "From",
+      "filter_until": "To",
+      "source": {
+        "geo": "Concurrent locations",
+        "geo_auto": "Auto-suspension",
+        "sub_spread": "Subscription spread",
+        "devices": "Devices",
+        "usage_shift": "Usage change",
+        "login_country": "Login country",
+        "review": "Admin review"
+      },
+      "level": {
+        "flagged": "Flagged",
+        "suspect": "Suspect",
+        "suspended": "Suspended",
+        "cleared": "Cleared"
+      },
+      "event": {
+        "enter_suspect": "Became suspect",
+        "enter_flagged": "Became flagged",
+        "leave_suspect": "Suspect cleared",
+        "leave_flagged": "Flag cleared",
+        "auto_suspended": "Automatically suspended",
+        "auto_lifted_expiry": "Lifted on expiry",
+        "auto_lifted_admin": "Resumed by staff",
+        "auto_replaced": "Replaced by another suspension",
+        "dismissed": "Dismissed",
+        "undismissed": "Dismiss undone",
+        "trusted": "Trusted",
+        "untrusted": "Trust withdrawn"
+      },
+      "col_at": "Time",
+      "col_user": "User",
+      "col_source": "Source",
+      "col_event": "Change",
+      "col_detail": "Reason at the time",
+      "geo_auto": {
+        "country": "In {{spread}} countries at once; suspended for {{minutes}} min",
+        "region": "In {{spread}} regions of one country at once; suspended for {{minutes}} min",
+        "city": "In {{spread}} cities of one country at once; suspended for {{minutes}} min",
+        "expired": "The {{minutes}}-minute suspension expired",
+        "admin_resume": "Staff resumed the service",
+        "replaced": "Replaced by a “{{reason}}” suspension"
+      },
+      "geo_auto_bare": {
+        "country": "In several countries at once; suspended automatically",
+        "region": "In several regions of one country at once; suspended automatically",
+        "city": "In several cities of one country at once; suspended automatically"
+      },
+      "hold": {
+        "geo_anomaly": "Suspended for locations (manual)"
+      },
+      "evidence_show": "Show evidence",
+      "evidence_hide": "Hide evidence",
+      "review": {
+        "dismissed": "Dismissed by {{by}} (at the time: {{levels}})",
+        "undismissed": "Dismiss undone by {{by}}",
+        "trusted": "Trusted by {{by}}",
+        "untrusted": "Trust withdrawn by {{by}}"
+      },
+      "more_filters": "More filters",
+      "raw_show": "Raw data",
+      "raw_hide": "Hide raw data",
+      "browser_time": "(browser time)",
+      "value_yes": "Yes",
+      "value_no": "No",
+      "param": {
+        "over": "Checks over",
+        "under": "Checks within",
+        "ban_over": "Checks over the suspend line",
+        "tier": "Tier",
+        "flagged": "Latched",
+        "spread": "Places",
+        "duration_minutes": "Suspension (minutes)",
+        "suspended_at_ms": "Suspended at",
+        "replaced_by": "Replaced by",
+        "by": "By",
+        "levels": "Levels at the time"
+      }
+    },
+    "load_failed": "Could not load: {{error}}",
+    "retry": "Retry",
+    "drawer": {
+      "title": "Risk details",
+      "close": "Close",
+      "not_found": "User not found or deleted",
+      "tab_overview": "Overview",
+      "tab_connections": "Connections",
+      "tab_devices": "Devices",
+      "tab_timeline": "Timeline",
+      "detector_geo": "Concurrent locations",
+      "open_traffic": "Open usage trend",
+      "open_users": "Handle in Users",
+      "no_geo": "The location detector has no record for this account",
+      "last_judged": "Last judged {{time}}",
+      "stale_verdict": "Not re-judged within the freshness window; not counted for review",
+      "suspended_since": "Suspended at {{time}}",
+      "trust_scope": "Trusted: locations, subscription spread and login country are not judged; devices and usage change still are.",
+      "online": "Online",
+      "last_seen": "Last seen {{time}}",
+      "seen_detail": "First seen {{first}} · {{count}} samples",
+      "history_capped": "Showing the latest {{shown}} of {{total}} history rows",
+      "connections_empty": "No connections on record",
+      "devices_intro": "Inferred from subscription fetches in the last {{hours}} hours, grouped by device id (else by client string).",
+      "device_fetches": "{{count}} fetches",
+      "sources_more": "+{{count}} more",
+      "devices_empty": "No fetches in this window",
+      "devices_unavailable": "The subscription log could not be read",
+      "open_sub_logs": "See every fetch in Logs",
+      "open_records": "See all in Records",
+      "records_capped": "Showing the latest {{shown}} of {{total}} records",
+      "logins_title": "Recent logins",
+      "open_auth_logs": "Open in auth logs"
+    },
+    "actions": {
+      "pause": "Suspend proxy service",
+      "resume": "Resume proxy service",
+      "convert_manual": "Keep suspended (manual)",
+      "dismiss": "Dismiss",
+      "redismiss": "Dismiss again",
+      "undismiss": "Undo dismiss",
+      "trust": "Trust this account",
+      "untrust": "Stop trusting",
+      "more": "More actions",
+      "pause_title": "Suspend proxy service for {{upn}}?",
+      "pause_message": "Suspends proxy and subscription only; panel login stays. Recorded as \"{{state}}\"; it does not lift by itself.",
+      "pause_note": "Message to the user (optional)",
+      "pause_note_hint": "Shown in the user's portal and mail; do not include places, IPs or other users.",
+      "convert_title": "Keep {{upn}} suspended manually?",
+      "convert_message": "The automatic suspension will not lift by itself; it is recorded as \"Suspended for locations (manual)\" until an admin resumes it.",
+      "resume_title": "Resume proxy service for {{upn}}?",
+      "resume_message": "Clears the \"{{reason}}\" suspension and pushes it to every panel.",
+      "resume_geo_auto_warning": "If the account is still used from several places at once, it is suspended again when the rule is met. For a confirmed false positive, also trust the account.",
+      "resume_also_trust": "Also trust this account",
+      "dismiss_title": "Dismiss {{upn}}'s current signals?",
+      "dismiss_message": "Leaves the queue and the bell until a new or more severe signal appears; a signal that fully cleared and comes back counts as new. Evidence and records are kept.",
+      "dismiss_trust_hint": "For long-term, confirmed-harmless use from several places, trust the account instead.",
+      "dismiss_note": "Note (optional, admins only)",
+      "undismiss_title": "Undo dismiss for {{upn}}?",
+      "undismiss_message": "The account returns to the queue with its current signals.",
+      "trust_title": "Trust {{upn}}?",
+      "trust_message": "Locations, subscription spread and login country are no longer judged for this account, and automatic suspension never applies to it; devices and usage change still are.",
+      "trust_resume": "Also resume proxy service (auto-suspended for locations now)",
+      "untrust_title": "Stop trusting {{upn}}?",
+      "untrust_message": "From the next check it is judged by its group's policy again.",
+      "done_pause": "Proxy service suspended",
+      "done_convert": "Now suspended manually",
+      "done_resume": "Proxy service resumed",
+      "done_dismiss": "Dismissed",
+      "done_undismiss": "Dismiss undone",
+      "done_trust": "Account trusted",
+      "done_trust_resumed": "Account trusted and proxy service resumed",
+      "done_untrust": "Trust withdrawn",
+      "conflict": "Someone else changed this; refreshed",
+      "changed": "The signals just changed; refreshed — check them and try again",
+      "reason_changed": "The suspension reason changed; refreshed",
+      "nothing_to_dismiss": "Nothing to dismiss right now; refreshed",
+      "resume_failed": "Trusted, but resuming proxy service failed: {{error}}",
+      "resume_warning": "Trusted and resumed, but the push to the panels failed and could not be queued: {{error}}",
+      "note_too_long": "At most 200 characters"
+    },
+    "review": {
+      "badge_dismissed": "Dismissed",
+      "badge_reopened": "Escalated after dismiss",
+      "badge_lapsed": "Dismiss expired",
+      "badge_trusted": "Trusted",
+      "dismissed_by": "Dismissed by {{by}} at {{time}}",
+      "reopened": "Escalated since dismissed: {{sources}}",
+      "lapsed": "This dismissal is older than the flag-record retention and no longer applies",
+      "trusted_by": "Trusted by {{by}} at {{time}}",
+      "note": "Note: {{note}}"
+    },
+    "unwired": "The risk center is not enabled in this deployment.",
+    "policy": {
+      "card": {
+        "geo": "Concurrent locations",
+        "geo_desc": "One account connected from several places at once. Relies on the database under System settings › IP location; without it every verdict is \"cannot tell\".",
+        "sub_spread": "Subscription spread",
+        "sub_spread_desc": "Fetches across days from provinces no single client links; uses the concurrent-location granularity, region tolerance and allow-anywhere.",
+        "devices": "Devices",
+        "devices_desc": "More recurring declared devices than the limit. Recurring days are shared with subscription spread ({{days}} now) and follow its preset.",
+        "usage_shift": "Usage change",
+        "usage_shift_desc": "Daily usage staying above the account's own baseline.",
+        "login_country": "Login country",
+        "login_country_desc": "A panel login from a country the subscription fetches never established. No key threshold; warm-up and hold are under Advanced.",
+        "data": "Data and refresh",
+        "data_desc": "Retention, snapshots and cadence that belong to no single detector; global only.",
+        "groups": "Group exceptions",
+        "groups_desc": "Override the detector settings above for one group; anything not overridden is inherited."
+      },
+      "enabled": "On",
+      "disabled": "Off",
+      "preset": "Preset",
+      "preset_loose": "Loose",
+      "preset_standard": "Standard",
+      "preset_strict": "Strict",
+      "preset_custom": "Custom",
+      "preset_hint": "A preset fills the key thresholds only; Standard is the shipped default. Country tolerance is 1 in every preset, and Loose does not shorten the checks needed to clear.",
+      "advanced": "Advanced",
+      "disposal": "Action",
+      "default_adornment": "Default",
+      "reset_default": "Reset to default",
+      "range_default": "Range {{min}}–{{max}}, default {{d}}",
+      "min_default": "At least {{min}}, default {{d}}",
+      "default_only": "Default {{d}}",
+      "out_of_range": "Out of range",
+      "invalid": "{{count}} field(s) out of range; cannot save",
+      "save": "Save policy",
+      "discard": "Discard changes",
+      "saved": "Policy saved",
+      "save_failed": "Save failed: {{error}}",
+      "stale": "Someone else updated the policy.",
+      "load_latest": "Load latest (keep my changes)",
+      "dirty_parts": "Unsaved: {{parts}}",
+      "part_policy": "policy",
+      "part_group": "exceptions of group \"{{name}}\"",
+      "leave_title": "Leave this page?",
+      "leave_message": "You have unsaved changes; leaving discards them.",
+      "leave_confirm": "Leave",
+      "switch_group_title": "Switch group?",
+      "pick_group": "Pick a group",
+      "group_save": "Save this group's exceptions",
+      "group_saved": "Group exceptions saved",
+      "group_dirty": "This group's exceptions have unsaved changes",
+      "no_groups": "No groups yet",
+      "hwid_on_devices": "Devices relies on device-id capture under Data and refresh.",
+      "geoip_status": "Location database: {{state}}",
+      "geoip_city": "city level",
+      "geoip_country": "countries only",
+      "geoip_off": "unavailable",
+      "geoip_open": "Open settings"
+    }
   },
   "logs": {
     "title": "Logs",
@@ -937,7 +1541,6 @@
     "tab_auth": "Auth logs",
     "tab_email": "Email logs",
     "tab_certs": "Certificates",
-    "tab_geo": "Locations",
     "cert_table": {
       "at": "Time",
       "cert": "Certificate",
@@ -980,6 +1583,8 @@
       "ip": "IP / region",
       "client_type": "Client",
       "ua": "User-Agent",
+      "device": "Device",
+      "device_hint": "The device a client declared via x-hwid: only a keyed per-account digest (first 4 characters shown) and the OS / model are kept, visible to admins only",
       "at": "Time"
     },
     "audit_table": {
@@ -1001,7 +1606,8 @@
       "audit_search": "Search actor / action / target",
       "auth_search": "Search user / IP / reason",
       "sub_search": "Search user / IP / UA / client",
-      "email_search": "Search user / recipient / kind"
+      "email_search": "Search user / recipient / kind",
+      "user_chip": "User: {{upn}}"
     },
     "detail": {
       "before": "Before",
@@ -1088,7 +1694,6 @@
     },
     "members": {
       "groups_title": "Proxy groups",
-      "groups_hint": "Shown in the project default order; drag or use the arrow buttons to reorder",
       "order_unsaved": "Proxy group order has unsaved changes",
       "restore_group_order": "Restore default proxy group order",
       "move_group_up": "Move proxy group up",
@@ -1132,14 +1737,33 @@
       "client_compatibility": "sing-box subscriptions support only Manual selection and Automatic latency test; Automatic fallback and Load balancing are downgraded to manual selectors.",
       "add_title": "Add member",
       "add": "Add",
-      "kind_node": "Specific node",
-      "kind_remaining": "Remaining nodes",
-      "kind_region": "Region nodes",
-      "kind_tag": "Tagged nodes",
+      "kind_node": "Select by node",
+      "kind_line": "Select by line",
+      "kind_node_hint": "Includes every publishable direct, relay and VLESS routing line under this node; future lines join automatically.",
+      "kind_line_hint": "Includes only the selected line. Renaming or reordering keeps its identity; other new lines do not join automatically.",
+      "kind_remaining_hint": "Includes all publishable lines in the current subscription scope, deduplicated in member order. New nodes and lines join automatically.",
+      "kind_region_hint": "Includes every publishable line of nodes in the selected region. Future matching nodes and lines join automatically within the current subscription scope.",
+      "kind_tag_hint": "Includes every publishable line of nodes with the selected tag. Future matching nodes and lines join automatically within the current subscription scope.",
+      "kind_builtin_hint": "Adds a client built-in outbound such as DIRECT or REJECT, without referencing a server node or line.",
+      "kind_proxy_group_hint": "References another proxy group in this rule set without copying its members. Self-references and circular references are not allowed.",
+      "kind_rematch_hint": "References a Rematch outbound configured in the main rules, for Mihomo subscriptions only. sing-box subscriptions skip this member.",
+      "line_direct": "Direct line",
+      "line_relay": "Relay",
+      "line_vless_route": "VLESS routing line",
+      "select_line_node": "Node",
+      "select_line": "Line",
+      "line_type_direct": "Direct line",
+      "line_type_relay": "Relay",
+      "line_type_vless_route": "VLESS route",
+      "line_unavailable": "Currently unavailable",
+      "missing_line": "Deleted line {{id}}",
+      "kind_remaining": "Remaining lines",
+      "kind_region": "Match by region",
+      "kind_tag": "Match by tag",
       "kind_builtin": "Built-in outbound",
-      "kind_group": "Another proxy group",
+      "kind_group": "Reference proxy group",
       "kind_rematch": "Rematch outbound",
-      "remaining": "Remaining nodes (deduplicated)",
+      "remaining": "Remaining lines (deduplicated)",
       "region_set": "Region: {{value}}",
       "tag_set": "Tag: {{value}}",
       "missing_node": "Deleted node #{{id}}",
@@ -1161,12 +1785,14 @@
         "missing_group": "Referenced proxy group does not exist: {{value}}",
         "invalid_node_id": "The node reference has no valid node_id",
         "missing_node": "Node #{{id}} no longer exists and will be skipped while rendering",
+        "invalid_line": "A specific line requires both a node and a stable line ID",
+        "missing_line": "The referenced line no longer exists and will be skipped while rendering",
         "disabled_node": "{{name}} is disabled and will be skipped while rendering",
         "invalid_node_set": "Invalid node set: {{value}}",
         "empty_node_set": "The node set currently has no matches: {{value}}",
         "unknown_kind": "Unknown member type: {{value}}",
         "missing_rematch": "Referenced Rematch outbound does not exist: {{value}}",
-        "missing_remaining": "Without “Remaining nodes”, newly added nodes will not enter this proxy group automatically",
+        "missing_remaining": "Without “Remaining lines”, newly added nodes will not enter this proxy group automatically",
         "cycle": "Proxy-group references form a cycle",
         "unknown_group_options": "The proxy-group type configuration does not occur in the current main rules",
         "invalid_group_type": "Unknown proxy-group type: {{value}}",
@@ -1176,7 +1802,7 @@
         "invalid_tolerance": "The switch tolerance cannot be negative",
         "invalid_strategy": "Unknown load-balancing strategy: {{value}}",
         "insufficient_auto_members": "Automatic latency testing or load balancing usually needs at least two available members",
-        "auto_group_builtin_member": "url-test / fallback / load-balance members cannot include built-in or Rematch outbounds; use a specific node or another proxy group instead"
+        "auto_group_builtin_member": "url-test / fallback / load-balance members cannot include built-in or Rematch outbounds; select members by node or line, or reference a proxy group instead"
       }
     },
     "table": {
@@ -1224,6 +1850,27 @@
     "duplicate": "Duplicate as a new rule set"
   },
   "nodes": {
+    "vless_route": {
+      "title": "VLESS routing lines",
+      "tabs": "Additional line type",
+      "hint": "Create separate proxy entries from this inbound using existing 3X-UI outbounds. Lines use the original endpoint, not relays. Rules are appended last; existing custom rules take priority.",
+      "unsupported": "Initially supports VLESS on 3X-UI 3.7.0 with Xray 26.7.28 only. Refresh outbounds to probe again.",
+      "read_error": "Cannot read lines. A failed read must not be treated as an empty list.",
+      "catalog_error": "Cannot read existing outbounds. Refresh before selecting a destination.",
+      "hidden_direct": "The direct line is hidden, so VLESS routing lines are also withheld to avoid exposing the direct endpoint.",
+      "add": "Add VLESS route",
+      "empty": "No VLESS routing lines added yet",
+      "refresh": "Refresh existing outbounds",
+      "name": "Line name",
+      "outbound": "Line outbound",
+      "unknown_protocol": "unknown protocol",
+      "missing_outbound": "Not currently found",
+      "partial_failure": "Node metadata was saved, but routing is not confirmed. The editor remains open; check its status before retrying.",
+      "state_applied": "Routing readback confirmed; actual traffic still needs testing.",
+      "state_applying": "Remote application is not confirmed; lines are withheld. Saving again first reads the current state.",
+      "state_unknown": "Remote result unknown; lines are withheld. Save again to retry synchronization.",
+      "state_drift": "Remote routing changed; lines are withheld. Review it before saving again."
+    },
     "load_failed": "Nodes are temporarily unavailable",
     "retry": "Retry",
     "cert_source": {
@@ -1429,6 +2076,7 @@
       "reality_scan_use": "Use",
       "reality_scan_empty": "No scan results",
       "reality_fingerprint": "Fingerprint",
+      "reality_fingerprint_mlkem_locked": "This server runs Xray-core 26.9.8 or newer, so the REALITY fingerprint is fixed to Chrome.",
       "reality_spider_x": "spiderX path",
       "reality_min_client": "Min client version",
       "reality_min_client_hint": "Xray-core 26.7.11–26.7.28 defaults an empty value to 26.3.27; 26.9.8+ leaves the version floor disabled when empty. Set 1.0.0 to avoid the older cores' default floor. This does not bypass REALITY's ML-KEM requirements.",
@@ -1592,6 +2240,7 @@
     "refresh": "Refresh",
     "field": {
       "upn": "UPN",
+      "upn_edit_hint": "Login name; use the new UPN to sign in. SSO binding remains linked by identity.",
       "email": "Email",
       "display_name": "Display name",
       "password": "Initial password (auto-generated if blank)",
@@ -1667,6 +2316,7 @@
       "traffic": "Traffic",
       "expire": "Expires",
       "status": "Status",
+      "risk": "Risk",
       "last_online": "Last online",
       "actions": "Actions"
     },
@@ -1696,7 +2346,9 @@
       "manual_disabled": "Manually disabled",
       "service_suspended": "Proxy service suspended",
       "account_disabled": "Account disabled",
-      "emergency_active": "Emergency active"
+      "emergency_active": "Emergency active",
+      "geo_auto": "Auto-suspended (locations)",
+      "geo_manual": "Suspended for locations (manual)"
     },
     "action": {
       "edit": "Edit",
@@ -1760,7 +2412,8 @@
       "passkeys": "Manage passkeys",
       "resume_service": "Resume proxy service",
       "suspend_service": "Suspend proxy service",
-      "account_security": "Account security"
+      "account_security": "Account security",
+      "risk_details": "Risk details"
     },
     "security": {
       "subtitle": "Admins can reset / revoke / regenerate credentials, but can't enroll 2FA or passkeys for a user (that needs their own device).",
@@ -1849,7 +2502,9 @@
       "revoked_all": "Revoked {{count}} passkey(s)",
       "load_failed": "Failed to load passkeys",
       "close": "Close"
-    }
+    },
+    "risk_lookup": "Risk lookup",
+    "risk_chip_hint": "Open risk details"
   },
   "groups": {
     "title": "Groups",
@@ -1904,13 +2559,50 @@
       "sub_block_count": "Auto-disable threshold (count)",
       "sub_block_notify": "Notify user on violation",
       "sub_block_notify_max": "Max notifications per day",
+      "cat_geo": "Concurrent-location detection",
+      "cat_geo_ban": "Concurrent locations · auto-suspension",
+      "geo_scope": "Granularity",
+      "geo_scope_city": "City, tiered",
+      "geo_scope_region": "Region / state",
+      "geo_scope_country": "Country only",
+      "geo_scope_off": "Off",
+      "geo_max_countries": "Country tolerance",
+      "geo_max_regions": "Region tolerance",
+      "geo_max_cities": "City tolerance",
+      "geo_flag_after": "Checks to flag",
+      "geo_clear_after": "Checks to clear",
+      "geo_co_travel": "Countries that count as one",
+      "geo_allow_anywhere": "Allow anywhere (no detection)",
+      "geo_ban_enabled": "Enable auto-suspension",
+      "geo_ban_max_countries": "Suspend at: countries",
+      "geo_ban_max_regions": "Suspend at: regions",
+      "geo_ban_max_cities": "Suspend at: cities",
+      "geo_ban_after": "Checks to suspend",
+      "geo_ban_duration": "Suspension (minutes)",
+      "cat_risk": "Risk signals (observe only)",
+      "risk_sub_spread_off": "Off: subscription spread",
+      "risk_devices_off": "Off: devices",
+      "risk_usage_shift_off": "Off: usage change",
+      "risk_login_country_off": "Off: login country",
+      "risk_min_days": "Recurring days",
+      "risk_max_devices": "Device limit",
+      "risk_usage_ratio": "Usage ratio",
+      "risk_usage_floor_gb": "Daily floor (GB)",
+      "risk_usage_warmup_days": "Usage warm-up (days)",
+      "risk_usage_flag_days": "Over-days to flag",
+      "risk_usage_suspect_days": "Over-days for suspect",
+      "risk_login_warmup_logins": "Login warm-up",
+      "risk_login_hold_days": "New-country hold (days)",
+      "default_suffix": " (default)",
       "override": "Override",
       "inherit": "Inherit",
       "global_prefix": "Global",
       "on": "On",
       "off": "Off",
       "save_error": "Some overrides failed to save — reopen to verify",
-      "create_hint": "Save the group first, then set per-group overrides here."
+      "create_hint": "Save the group first, then set per-group overrides here.",
+      "policy_pointer": "Group exceptions for locations and risk signals are set in Risk center › Policy.",
+      "open_policy": "Open in a new tab"
     },
     "tabs": {
       "node_access": "Node access",
@@ -2177,13 +2869,14 @@
       "warning": "Upgrading briefly interrupts proxy connections on this server. Confirm the release and maintenance window. Server, node and user identities remain unchanged.",
       "requirements": "Requires an enabled upgrade helper: Linux/systemd, or Docker generated with the Advanced remote-upgrade option enabled. Older agents need one manual maintenance update. Success requires the new process to synchronize and converge configuration; Docker automatically restores the retained previous container on failure. State-schema changes require manual migration.",
       "current": "Current Passwall Node release (last reported)",
-      "version_hint": "Choose an exact reviewed, published release from the selected channel. Floating latest or beta tags and downgrades are refused. Channel changes here are temporary; save the server's update channel in Edit.",
+      "version_hint": "Choose an exact reviewed, published release from the selected channel. Floating latest or beta tags are refused. Releases older than the one this node runs are marked but remain selectable — the panel does not block a downgrade; the release signature, its checksum and the node’s own state-schema check are what guard it. Channel changes here are temporary; save the server’s update channel in Edit.",
       "confirm": "Confirm and request upgrade",
       "retry": "Retry the same upgrade request",
       "refresh": "Check the original task again",
       "request_failed": "The request outcome could not be confirmed. Retrying reuses the same identity and does not create another task.",
       "poll_failed": "Status lookup failed; the original upgrade is not cancelled. Check it again.",
       "task": "Task: {{id}}",
+      "reason": "Reason reported by the node",
       "state": {
         "queued": "Queued, waiting for an upgrade-capable agent. Not upgraded yet.",
         "offered": "Dispatched, awaiting evidence of the actual outcome.",
@@ -2192,7 +2885,8 @@
         "manual_attention": "The outcome cannot be confirmed automatically. Inspect agent and upgrade-helper logs.",
         "awaiting_observation": "Upgrade receipt received; waiting for a fresh target-version report.",
         "verified": "Target restart, synchronization, configuration convergence and binary checksum verified."
-      }
+      },
+      "blocked_fallback": "This panel cannot remotely upgrade this server’s node agent right now."
     },
     "sui_update": {
       "available": "View S-UI {{version}} release",
@@ -2262,8 +2956,10 @@
         "unknown": "Compatibility unknown",
         "compatible_detail": "Compatible · remote upgrade ready.",
         "limited_detail": "Node synchronization is compatible, but remote upgrade is unavailable. Update this Node manually once or enable its upgrade helper.",
-        "incompatible_detail": "This Node protocol has not been reviewed for this Passwall Sub Panel release. Remote upgrade is blocked.",
-        "unknown_detail": "No authenticated protocol observation has been saved yet. Wait for a successful Node check-in."
+        "incompatible_detail": "This Node reports protocol generation {{reported}}; this panel has reviewed {{min}}..{{max}}, so its reports are being refused (since {{since}}). The last generation verified was {{accepted}}. The Node keeps forwarding traffic on its last applied configuration; remote upgrade is blocked and needs a person.",
+        "report_refused_detail": "This panel cannot read this Node’s reports and is refusing them (since {{since}}). The Node keeps forwarding traffic on its last applied configuration; nothing can be delivered until this is looked at.",
+        "unknown_never_observed": "No authenticated protocol observation has been saved yet. Wait for a successful Node check-in.",
+        "unknown_observation_stale": "The last verified protocol observation was {{observed}}, which is too old to act on. A high-risk action needs a fresh successful check-in."
       },
       "outbound_hint": "Passwall Node connects outbound to Passwall Sub Panel. It needs no inbound management URL or upstream-panel credential. Enter server details and select an installation method, then generate files for that server. Configure inbounds separately on the Nodes page.",
       "create_record_hint": "Create the server record first; the next page generates its installation command. Configure inbounds separately on Nodes.",
@@ -2444,7 +3140,8 @@
       "upgrade_in_place_needed": "This node reports version {{version}}. Without replacing the release in place the installer refuses at the host.",
       "replace_identity": "Replace with a different identity",
       "replace_identity_hint": "Takes over an incompatible installation — a node another panel left behind, for instance — with this panel's identity. The one that is there is stopped and moved into the host's backups/.",
-      "replace_identity_warning": "After this: usage for this node starts from zero (the old counters stay in the host's backup), and if it belonged to another panel, that panel's server record has to be deleted by hand."
+      "replace_identity_warning": "After this: usage for this node starts from zero (the old counters stay in the host's backup), and if it belonged to another panel, that panel's server record has to be deleted by hand.",
+      "release_older_than_current": "older than current"
     },
     "table": {
       "name": "Server name",
@@ -2572,116 +3269,805 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "subtitle": "In-process measurements. Counters reset on restart or when cleared by hand, so every number has to be read together with its window.",
-    "refresh": "Refresh",
-    "load_failed": "Could not load diagnostics.",
-    "window": "Measured over {{window}} · process up {{uptime}}",
-    "was_reset": "counters were cleared by hand, so the window is shorter than the uptime",
-    "blackout": "The window is under one poll interval ({{interval}}), so not even one cycle need have finished. A zero here is not evidence of health, so the numbers are withheld — anything already observed is still listed above.",
-    "verdict": {
-      "problems": "{{count}} finding(s)",
-      "blackout": "Measuring — the window is under one poll interval",
-      "measuring": "Measuring — the window is still too short for a zero to mean anything",
-      "ok": "Nothing found in this window"
+    "subtitle": "Troubleshoot traffic polling, user status sync and panel connections.",
+    "help_label": "About this page",
+    "help_label_card": "About {{title}}",
+    "help": "This page summarises what PSP's background jobs record about themselves, to troubleshoot traffic polling, user status sync and panel connections. Every number is a running total over the statistics window, which opens when the panel starts and again whenever the statistics are cleared, so \"17 times\" does not mean it is still happening. The page refreshes every minute, and most problems show whether they have grown since you opened the page. A zero proves little while the window is short, so no verdict is given until the window spans three poll intervals; errors that have already happened are listed at once. \"Typical\" means half the cases were faster; \"95% within X\" means only 5% were slower; both are estimated from buckets. All raw metrics are kept at the bottom of the page and can be copied or downloaded for support.",
+    "load_failed": "Could not load diagnostics. Refresh to try again.",
+    "actions": {
+      "refresh": "Refresh",
+      "more": "More actions",
+      "copy_json": "Copy all data (JSON)",
+      "download_json": "Download all data (JSON)",
+      "export_note": "Includes deployment size such as user and panel counts; no hostnames, user names or secrets.",
+      "reset": "Clear statistics…",
+      "reset_disabled_blackout": "The window is shorter than one poll interval; nothing to clear yet",
+      "reset_disabled_empty": "The statistics have only just started; nothing to clear"
     },
-    "precondition": {
-      "poll_running": {
-        "label": "Poll running",
-        "help": "The traffic poll drives everything below. If it is not running, that is the single reason for every zero on this page."
-      },
-      "push_capacity": {
-        "label": "Push gate built",
-        "help": "Capacity is set once at construction. Reading 0 does not mean a small pool — it means the traffic service was never built and this whole family describes nothing."
-      },
-      "push_reaching": {
-        "label": "Pushes executing",
-        "help": "Whether quota-floor pushes actually reach execution. Nothing attempted means no success rate — an absent denominator, not 0%."
-      },
-      "lifecycle_running": {
-        "label": "Lifecycle syncing",
-        "help": "Whether enable/expiry/quota are being written to shared clients at all."
-      },
-      "liveip_complete": {
-        "label": "Live-IP read complete",
-        "help": "If any panel went unread, every figure downstream is a floor rather than a total."
-      }
+    "links": {
+      "open": "Open {{page}}"
+    },
+    "status": {
+      "window": "Statistics window: since {{since}}, {{window}}",
+      "window_after_reset": "Statistics window: since the manual clear at {{since}}, {{window}} (panel up {{uptime}})",
+      "interval": "traffic polled every {{interval}}",
+      "interval_unknown": "traffic poll interval unknown",
+      "read_at": "Read at {{time}} · refreshes every minute",
+      "list_separator": ", "
+    },
+    "verdict": {
+      "critical": "Critical: {{cards}}",
+      "action": "Needs action: {{cards}}",
+      "attention": "Needs attention: {{cards}}",
+      "ok": "No problems found",
+      "ok_notices": "No problems found · notices: {{count}}",
+      "measuring": "Measuring: the window is still too short; a verdict in about {{remaining}}",
+      "measuring_unknown": "Measuring: the traffic poll interval is unknown, so no verdict yet",
+      "blackout": "Just started: the window is shorter than one poll interval ({{interval}}), so no verdict yet"
+    },
+    "state": {
+      "failing": "Needs action",
+      "attention": "Attention",
+      "ok": "Running",
+      "idle": "No activity",
+      "measuring": "Measuring",
+      "inhibited": "Can't tell",
+      "not_applicable": "Not in use",
+      "none": "Nothing recorded",
+      "recorded": "Recorded"
+    },
+    "severity": {
+      "critical": "Critical",
+      "error": "Needs action",
+      "warn": "Attention",
+      "notice": "Notice"
+    },
+    "problems": {
+      "title": "Needs attention",
+      "notices_title": "Notices",
+      "show_data": "Show data",
+      "log_label": "Log keywords",
+      "session_new": "{{count}} more since you opened this page ({{minutes}} min ago)",
+      "session_none": "No new ones since you opened this page ({{minutes}} min ago)",
+      "session_wait": "Just opened; the next refresh will show whether it is still growing",
+      "session_new_rebuilt": "The statistics restarted after you opened this page; {{count}} more since then ({{minutes}} min)",
+      "session_none_rebuilt": "The statistics restarted after you opened this page; none since then ({{minutes}} min)",
+      "session_wait_rebuilt": "The statistics restarted just after you opened this page; the next refresh will show whether it is still growing"
     },
     "findings": {
-      "title": "Findings ({{count}})",
       "push_capacity_zero": {
-        "title": "Push semaphore capacity is 0",
-        "detail": "Capacity is set once at construction, so 0 means the traffic service was never built. Every metric in the push family is currently describing nothing real. Check the startup log."
+        "title": "The traffic service did not start",
+        "impact": "Neither traffic polling nor quota safety refreshes will run: metering, over-quota suspension and live-IP collection have all stopped, so the numbers for those areas mean nothing.",
+        "action": "Check the server's startup log for errors, fix them and restart the panel."
       },
       "poll_dead": {
-        "title": "The traffic poll has not entered a cycle in {{minutes}} min",
-        "detail": "It is dead, was never started, or panics on entry. Metering, quota enforcement and live-IP collection are all stopped. Look for the traceback in the server log."
-      },
-      "push_errors": {
-        "title": "{{errors}} quota-floor pushes failed of {{attempted}} attempted",
-        "detail": "This path has no retry queue — only a log line, and the next attempt requires that user to move bytes again. Search the log for 'traffic floor push failed' and 'shared-client lifecycle push failed', then check panel reachability."
+        "title": "Traffic polling has stopped: not one poll in {{window}}",
+        "impact": "Traffic is no longer metered, over-quota users are not suspended automatically, and quota safety refreshes, live-IP collection and location checks have stopped too. Expiry does not depend on traffic polling and is unaffected.",
+        "action": "Check the server's log for errors or a crash, fix the cause and restart the panel.",
+        "log": "traffic loop started · traffic poll"
       },
       "poll_errors": {
-        "title": "{{errors}} traffic poll cycles failed",
-        "detail": "Note this counts only the user-list read. An unreachable panel or a failed snapshot write is not counted here."
+        "title": "{{errors}} of {{polls}} polls were skipped entirely because the user list could not be read",
+        "impact": "Those polls metered no traffic and checked no quotas. An unreachable panel is not counted here.",
+        "action": "Check that the database is reachable and its disk is not full.",
+        "log": "traffic poll"
+      },
+      "poll_behind": {
+        "title": "About {{missing}} polls are missing ({{polls}} ran; the interval implies at least {{expected}})",
+        "impact": "Some polls were skipped: a poll plus the rollup after it may have taken longer than the interval, or polling was briefly held back. No traffic is lost, since the next poll picks it up, but over-quota suspensions are delayed.",
+        "action": "Check the longest poll duration under Traffic polling and the slowest operations under Panel requests on this page; if needed, lengthen the traffic poll interval in Settings."
       },
       "lifecycle_errors": {
-        "title": "{{errors}} shared-client lifecycle writes failed",
-        "detail": "Enable state, expiry or quota did not reach the panel. This is the path a disable travels."
+        "title": "{{errors}} of {{checks}} status checks failed ({{pct}})",
+        "impact": "These carry enable and disable, expiry and traffic caps. Where the status did not reach the panel, a disabled, expired or over-quota user may still be able to connect through it.",
+        "origin": "Quota safety refreshes had no failures in this window, so none of these came from them. They came from admin actions, automatic suspend and resume (including over-quota and location suspensions triggered by polling), sync-task retries, or the startup and periodic repairs.",
+        "breakdown": "By step: {{stages}}; by panel type: {{kinds}}. \"Panel not found\" and \"Write\" mean the write itself failed; \"Read-back\" and \"Read-back mismatch\" mean the write went out but could not be confirmed; \"Saving the result\" means the panel was updated and confirmed, and only PSP's own record failed.",
+        "retry": "Failures caused by admin actions, membership changes or automatic suspend and resume are recorded in Sync tasks, where you can see the error and retry. The periodic repair also re-checks every user and fixes whatever is still out of step. Every failed retry counts again, so this is not the number of affected users.",
+        "action": "Open Sync tasks and look for unfinished or cancelled user tasks and their errors; then check on Servers that the panels are reachable and native nodes are online.",
+        "log": "shared-client lifecycle push failed",
+        "log_note": "This finds two kinds of line: one per user, carrying only the first error; and one per failed client, whose message reads \"shared-client lifecycle push failed for a client\", carrying the panel id (panel_id) and the step that failed (stage), so failures on different panels can be told apart."
       },
-      "push_suppressed": {
-        "title": "{{suppressed}} pushes suppressed by the cross-cycle guard",
-        "detail": "The previous cycle's pushes had not drained, so a whole cycle of floor pushes was skipped. Occasional is tolerable; sustained means the push side is falling behind."
+      "push_errors": {
+        "title": "{{errors}} of {{attempted}} quota safety refreshes failed ({{pct}})",
+        "impact": "The remaining allowance stored on the panel is out of date for those users. While PSP is running it still suspends over-quota users at the next poll; the panel relies on this allowance only while PSP is offline. The part that failed to write to a panel is also counted under status sync failures, so the two counts overlap.",
+        "retry": "These failures are not queued as sync tasks: the user is refreshed again the next time they use traffic, and the periodic repair also catches up.",
+        "action": "Check on Servers that the panels involved are reachable.",
+        "log": "traffic floor push failed"
       },
-      "push_carryover": {
-        "title": "Pushes spilled into the next cycle {{carryover}} times",
-        "detail": "One of the three reopen triggers for a self-hosted data plane in data-plane-plan.md. Note it is counted at cycle open, so one or two right after a restart are expected."
-      },
-      "capability_gaps": {
-        "title": "{{gaps}} capability gaps",
-        "detail": "A panel cannot store a field PSP writes. Note the device-limit row: a clean reading means the panel can STORE the field, not that any device cap is enforced — nothing in PSP's architecture enforces one on any panel version."
+      "push_backlog": {
+        "title": "{{cycles}} polls skipped their quota refreshes because refreshes from an earlier poll were still queued ({{suppressed}} refreshes skipped)",
+        "impact": "Panels are not keeping up with the polling pace. Skipped users are refreshed in a later poll once they use traffic again; enable, disable and expiry do not travel this path and are unaffected.",
+        "action": "Under Panel requests on this page, see which kind of operation is slowest, and use Test connection on Servers; if it keeps happening, lengthen the traffic poll interval."
       },
       "liveip_incomplete": {
-        "title": "Live-IP read incomplete for {{incomplete}} users",
-        "detail": "A panel did not answer. Their live-IP counts and location verdicts are floors, not totals, and must not be read as totals."
+        "title": "Live IPs were incomplete {{incomplete}} times (user × poll)",
+        "impact": "A panel returned no live IPs during polling, so those users' live-IP counts and location verdicts are only \"at least\". The same user counts again every poll.",
+        "sui": "S-UI panels are connected: S-UI does not report live IPs, so users on those panels count every poll and this number keeps growing. If only S-UI users are affected, this is expected.",
+        "action": "Check on Servers that the other panels are reachable, and search the server log for the keywords below to see which panel did not answer.",
+        "log": "live client IPs unavailable for this panel"
       },
-      "invariant_poll_ms": {
-        "title": "Poll-duration samples disagree with the cycle count",
-        "detail": "{{observed}} samples observed against {{expected}} recorded cycles. A difference of one is snapshot non-atomicity; more means cycles are exiting early."
+      "history_write_errors": {
+        "title": "Live connections could not be written to the connection history in {{errors}} polls",
+        "impact": "The Risk Center's connection history has gaps for those periods; they are not backfilled. Polling itself is unaffected.",
+        "action": "Check that the database accepts writes and its disk is not full.",
+        "log": "connection history: could not record"
       },
-      "invariant_push_enqueue": {
-        "title": "More pushes executed than were enqueued",
-        "detail": "{{started}} started against {{enqueued}} enqueued. Every execution is enqueued first, so a difference in this direction should not occur."
+      "flag_write_errors": {
+        "title": "Flag records failed to save {{errors}} times (each failure may cover several records)",
+        "impact": "The flags, automatic suspensions or resumes themselves took effect; only their entries are missing from the Risk Center's Records.",
+        "action": "Check that the database accepts writes and its disk is not full.",
+        "log": "flag records: could not record"
+      },
+      "geo_auto_errors": {
+        "title": "Automatic location suspension failed {{suspend}} times; automatic lifting failed {{lift}} times",
+        "impact": "When a suspension fails, the user judged to be elsewhere keeps working until the trigger builds up again; a failed lift is retried at the next poll.",
+        "action": "Review the automatically suspended users in the Risk Center and act on them by hand if needed.",
+        "log": "geo auto-suspension: suspend failed · geo auto-suspension: lift failed"
+      },
+      "node_sync_refused": {
+        "title": "Native-node sync reports were refused {{count}} times (incompatible version {{proto}}, invalid report {{invalid}})",
+        "impact": "A refused sync brings back no user changes, and the traffic and online state it carried are not recorded. An incompatible version gets every sync refused, so that node is effectively offline.",
+        "action": "Check the node's compatibility on Servers and upgrade the node agent or the panel so their versions match.",
+        "log": "native node sync refused"
+      },
+      "sso_claim_silent": {
+        "title": "Single sign-on brought back nothing the role or group rules read (counted per kind: role {{role}}, group {{group}})",
+        "impact": "Those users kept their existing role and group; if the identity provider has revoked their access, the panel still keeps it.",
+        "action": "Check the single sign-on attribute mapping in Settings, and confirm the identity provider actually sends those attributes."
+      },
+      "capability_gaps": {
+        "title": "Some users have limits their panel cannot apply (IP limit {{ip}} times, device limit {{device}} times)",
+        "impact": "These limits are written to the panel but have no effect: S-UI and PSP native nodes support neither the IP limit nor the device limit, and 3X-UI below 3.7.0 cannot store the device limit. Every check counts again while this lasts; it is a standing condition, not a fault.",
+        "note": "Also, the device limit is not enforced on any panel today; 3X-UI 3.7.0 and later only store the value. A zero here does not mean device limits are in effect.",
+        "action": "On Servers, check each panel's type and version against the explanation above to see which cannot apply these limits; the limit fields in the user editor also name those panels. Move these users to a panel that can, or upgrade the panel.",
+        "log": "panel cannot enforce a setting PSP is pushing"
+      }
+    },
+    "self_check": {
+      "title": "Consistency checks",
+      "note": "Checks that related numbers agree. Only for troubleshooting the statistics themselves; they do not affect the verdict above.",
+      "pass": "Pass",
+      "fail": "Mismatch",
+      "poll_ms": {
+        "pass": "{{observed}} poll-duration records match the {{expected}} polls started (a difference of 1 is allowed).",
+        "fail": "{{observed}} poll-duration records against {{expected}} polls started, a difference of more than 1: more than one poll was running when this was read, usually a \"Poll now\" overlapping a scheduled poll, or a manual poll started while another was stuck."
+      },
+      "push_enqueue": {
+        "pass": "{{started}} quota safety refreshes ran, no more than the {{enqueued}} queued.",
+        "fail": "{{started}} quota safety refreshes ran, more than the {{enqueued}} queued. Refreshes still queued when the statistics were cleared were counted as queued before the clear and as run after it, so the excess, the number that were queued then, stays for the whole window; it is harmless. Report it to the developers only if it appears in a window that has not been cleared since the panel started."
+      }
+    },
+    "cards": {
+      "section_title": "How each part is doing",
+      "common": {
+        "failing": "Something needs action; see the top of the page.",
+        "attention": "Something needs attention; see the top of the page.",
+        "notices": "There are notices; see the top of the page.",
+        "measuring": "The window is still short; a verdict in about {{remaining}}.",
+        "measuring_unknown": "The traffic poll interval is unknown, so no verdict yet.",
+        "blackout": "The window is shorter than one poll interval; numbers are held back.",
+        "inhibited": "Traffic polling is not running, so this part can't be judged.",
+        "depends": "Depends on traffic polling: {{state}}",
+        "details": "Detailed data ({{count}})",
+        "copy_group": "Copy this group (JSON)"
+      },
+      "poll": {
+        "title": "Traffic polling",
+        "purpose": "Reads usage from every panel at the poll interval, meters traffic from it and suspends over-quota users, then runs the quota safety refresh and collects live IPs for the Risk Center. When it stops, the quota safety refresh and the live-IP and risk data stop with it; the other areas keep counting.",
+        "ok": "On schedule: one poll every {{interval}}, {{polls}} in this window.",
+        "kpi": {
+          "polls": "Polls run",
+          "polls_expected": "The interval implies at least {{expected}}",
+          "duration": "Poll duration",
+          "scope": "Per poll (average)",
+          "scope_value": "{{users}} users · {{panels}} panels",
+          "scope_active": "about {{active}} with traffic"
+        },
+        "stages": {
+          "title": "Where a poll's time goes (average)",
+          "db": "Read users and records",
+          "panels": "Read panels",
+          "compute": "Aggregate, meter and judge",
+          "write": "Write to database",
+          "geo": "Location suspensions",
+          "note": "\"Read panels\" covers each panel's traffic and live IPs. Suspensions triggered during a poll are written to the panel on the spot, so \"Aggregate, meter and judge\" and \"Location suspensions\" can also include time spent waiting on panels."
+        }
+      },
+      "lifecycle": {
+        "title": "User status sync",
+        "purpose": "Writes each user's enabled state, expiry, traffic cap and connection limits to every panel they are on. Disabling, pausing and over-quota cut-off all take effect through this step. Each time, the panel's current state is read first: if it matches, nothing is written.",
+        "ok": "{{checks}} checks in this window; {{skipped}} needed no change.",
+        "idle": "No user was checked in this window: users' clients may not be set up on the panels yet, or there were no admin actions and no users to refresh in this period.",
+        "kpi": {
+          "checks": "Checks",
+          "skipped": "Already in sync",
+          "skipped_caption": "matched the panel; nothing written",
+          "writes": "Writes",
+          "writes_caption": "reasons below",
+          "errors": "Sync failures",
+          "errors_caption": "{{pct}} of checks"
+        },
+        "not_provisioned": "Another {{count}} checks were skipped because the client is not yet set up on the panel.",
+        "errors_by_stage": "Sync failures by step: {{list}}",
+        "errors_by_kind": "Sync failures by panel type: {{list}}",
+        "reasons_title": "Why writes happened",
+        "limits": {
+          "title": "Can the limits be applied?",
+          "ip_gaps": "IP limit: {{count}} checks involved a panel without IP-limit support",
+          "ip_none": "IP limit: no limit set on an unsupported panel in this window",
+          "device": "Device limit: PSP does not enforce it on any panel today; the value is only stored on the panel",
+          "device_gaps": "Another {{count}} checks involved a panel that cannot even store the device limit",
+          "servers_note": "Whether each node can actually enforce the IP limit is shown on the Servers page."
+        }
+      },
+      "floor": {
+        "title": "Quota safety refresh",
+        "purpose": "After each poll, writes the remaining allowance of users who used traffic, have a traffic cap and are still under it to the panels. That way a panel can cut a user off by itself when the allowance runs out, even while PSP is offline. While PSP is running, over-quota suspension is done by traffic polling and does not depend on this step.",
+        "ok": "{{count}} refreshes in this window, about {{perPoll}} per poll.",
+        "idle": "No user needed a refresh in this window: nobody with a traffic cap, still under it, used traffic.",
+        "kpi": {
+          "pushes": "Refreshes",
+          "errors": "Failures",
+          "errors_caption": "{{pct}}",
+          "concurrency": "Concurrent (highest)",
+          "concurrency_value": "{{peak}} / {{capacity}}",
+          "concurrency_caption": "at most {{waiting}} waiting",
+          "wait": "Queue wait",
+          "backlog": "Skipped for backlog",
+          "backlog_caption": "{{suppressed}} refreshes skipped"
+        }
+      },
+      "panel_api": {
+        "title": "Panel requests (3X-UI)",
+        "purpose": "Count, failures and duration of every request PSP sends to 3X-UI panels, by kind of operation, without telling panels apart.",
+        "ok": "{{count}} requests to 3X-UI panels in this window, {{pct}} failed.",
+        "idle": "No requests were sent to 3X-UI panels in this window.",
+        "not_applicable": "No 3X-UI panels are connected.",
+        "table": {
+          "op": "Operation",
+          "requests": "Requests",
+          "errors": "Failed",
+          "p50": "Typical",
+          "p95": "95% within",
+          "max": "Longest"
+        },
+        "show_all": "Show all ({{count}})",
+        "show_less": "Show less",
+        "note_scope": "3X-UI panels only; S-UI and PSP native nodes are not counted. Each automatic retry counts separately.",
+        "note_get_client": "\"Read client\" failures include normal lookups for clients not yet created, which are not necessarily faults.",
+        "note_timeout": "A longest time close to 30 s means the request hit its timeout."
+      },
+      "liveip": {
+        "title": "Live IPs and risk data",
+        "purpose": "How well the Risk Center's data is being collected: whether live IPs are read in full, whether records are saved, and whether automatic suspensions go through. For the verdicts themselves, see the Risk Center.",
+        "ok": "Every poll read live IPs from every panel; about {{judged}} users judged per poll on average.",
+        "idle": "No user was judged for live IPs in this window. Users are judged even when nobody is online, so this usually means no user has a client set up on any panel yet, or polling could not list users' clients: search the server log for \"traffic poll shared-client list failed\"; where it appears, shared clients' traffic went unmetered in those polls too.",
+        "kpi": {
+          "judged": "Users judged per poll (average)",
+          "judged_value": "about {{count}}",
+          "incomplete": "Incomplete live-IP reads",
+          "incomplete_caption": "the same user counts every poll",
+          "risk": "Risk signal runs",
+          "risk_value": "{{ok}} OK of {{total}}",
+          "risk_none": "did not run in this window",
+          "records": "Record writes failed",
+          "records_value": "connection history {{history}} · flag records {{flags}}",
+          "auto": "Auto suspend / lift failures",
+          "auto_value": "{{suspend}} / {{lift}}"
+        },
+        "sui_note": "S-UI panels are connected: S-UI does not report live IPs, so users on those panels count as incomplete every poll."
+      },
+      "node": {
+        "title": "Native nodes",
+        "purpose": "Whether host metric reports and sync requests from PSP native nodes are received and saved.",
+        "ok": "{{count}} host metric reports received in this window.",
+        "idle": "No reports from native nodes in this window.",
+        "not_applicable": "No PSP native nodes are connected.",
+        "kpi": {
+          "accepted": "Host metric reports",
+          "accepted_value": "{{count}} received",
+          "accepted_caption": "{{other}} other outcomes",
+          "refused": "Sync reports refused",
+          "refused_caption": "incompatible version {{proto}} · invalid {{invalid}}",
+          "storage": "Save failures",
+        "storage_caption": "{{history}} of them carried a history sample",
+          "persist": "Save time",
+          "persist_caption": "budget 500 ms"
+        }
+      },
+      "sso": {
+        "title": "Single sign-on",
+        "purpose": "Single sign-ins that were refused or arrived without information.",
+        "none": "Nothing related to single sign-on was recorded in this window.",
+        "recorded": "{{count}} SAML sign-ins were refused in this window; reasons below.",
+        "kpi": {
+          "saml": "SAML sign-ins refused",
+          "claims": "Missing role or group",
+          "claims_value": "role {{role}} · group {{group}}"
+        }
+      }
+    },
+    "system": {
+      "title": "System information",
+      "version": "Version",
+      "build": "Build",
+      "build_local": "Local build",
+      "copy_build": "Copy build",
+      "uptime": "Panel up for",
+      "since": "Statistics since",
+      "window": "Statistics window",
+      "interval": "Actual poll interval",
+      "interval_peak": "longest in this window {{peak}}",
+      "interval_setting": "Poll interval in settings",
+      "goroutines": "Background goroutines",
+      "goroutines_note": "Developer information: only worth a look if it keeps rising across refreshes while the load stays flat."
+    },
+    "raw": {
+      "title": "All raw metrics",
+      "summary": "{{families}} metrics · {{series}} series",
+      "search": "Search by name, label or description",
+      "filter_all": "All",
+      "filter_nonzero": "Non-zero only",
+      "view_current": "Current",
+      "view_previous": "Before clearing ({{window}})",
+      "previous_note": "Viewing the data from before clearing (up to {{time}}), read-only.",
+      "blackout_note": "The window is shorter than one poll interval; numbers are for reference only, and a zero does not mean healthy.",
+      "absence_note": "Metrics without labels always appear, so a missing one means an older server. Labelled metrics appear only once something has happened, so a missing one means zero.",
+      "group_count": "{{series}} series, {{nonzero}} non-zero",
+      "group_other": "Other metrics",
+      "no_match": "No matching metrics",
+      "col": {
+        "name": "Name",
+        "type": "Type",
+        "value": "Value",
+        "desc": "Description"
+      },
+      "type": {
+        "counter": "Count",
+        "gauge": "Current value",
+        "histogram": "Distribution"
+      },
+      "absent": "This server version does not have this metric",
+      "no_children": "No values yet (all zero)",
+      "family_total": "Total {{value}}",
+      "family_total_samples": "{{value}} samples in total",
+      "gauge_value": "now {{value}} · peak {{peak}}",
+      "peak_note": "The peak is the highest value in this statistics window.",
+      "hist_value": "{{count}} samples · typical {{p50}} · 95% within {{p95}}",
+      "server_help": "Server description",
+      "copy_name": "Copy metric name",
+      "stats": {
+        "unit": "Unit",
+        "count": "Samples",
+        "sum": "Sum",
+        "mean": "Mean",
+        "max": "Max",
+        "p50": "p50 (median)",
+        "p90": "p90",
+        "p95": "p95",
+        "p99": "p99"
+      },
+      "quantile_note": "Percentiles are estimated from buckets; under 10 samples, read the maximum instead.",
+      "buckets": "Buckets",
+      "bucket": {
+        "le": "≤ upper bound",
+        "inf": "above the last bucket",
+        "cumulative": "Cumulative",
+        "count": "In this bucket"
       }
     },
     "reset": {
-      "action": "Clear and restart the window",
-      "title": "Clear the counters?",
-      "message": "This discards the {{window}} already measured and starts a new window. The pre-reset snapshot is returned in the response, but this page does not keep it.",
-      "done": "Counters cleared; a new measurement window has started",
-      "nothing": "The window is empty — nothing to clear"
+      "title": "Clear the statistics and start again?",
+      "message": "All {{window}} of statistics will be cleared, including the risk and native-node counts shown on this page; the Risk Center's own data is not affected. Afterwards this page keeps the data from before clearing for download until you leave it.",
+      "confirm": "Clear",
+      "done": "Cleared. New statistics start at {{time}}.",
+      "kept": "Cleared. The {{window}} of statistics from before can be downloaded until you leave this page.",
+      "download_previous": "Download data from before clearing"
     },
-    "table": {
-      "metric": "Metric",
-      "value": "Value",
-      "means": "Means"
+    "fmt": {
+      "duration_s": "{{s}} s",
+      "duration_m": "{{m}} min",
+      "duration_hm": "{{h}} h {{m}} min",
+      "duration_dh": "{{d}} d {{h}} h",
+      "times": "{{count}}",
+      "polls": "{{count}}",
+      "occurrences": "{{count}}",
+      "per_hour": "about {{rate}} per hour",
+      "per_hour_times": "about {{rate}} per hour",
+      "per_poll": "about {{rate}} per poll",
+      "typical": "typical {{value}}",
+      "p95_within": "95% within {{value}}",
+      "p95_over": "the slowest 5% exceed {{ceiling}}, beyond the measured buckets",
+      "pct_of_interval": "about {{pct}} of the poll interval",
+      "few_samples": "only {{count}} samples · longest {{max}}",
+      "no_samples": "no samples in this window",
+      "no_denominator": "nothing attempted, so no rate",
+      "pct_tiny": "<0.01%"
     },
-    "never_observed": "never observed in this window",
-    "too_few_samples": "only {{count}} samples · max {{max}}",
-    "footer": "version {{version}} · commit {{commit}} · goroutines {{goroutines}} · push gate capacity {{capacity}}",
     "metric": {
-      "psp_poll_total": "Traffic-poll cycles completed",
-      "psp_poll_error_total": "Cycles that failed (counts only the user-list read)",
-      "psp_poll_ms": "Wall time for one poll cycle",
-      "panel_fetch": "The waiting-on-panels part of a cycle, normally most of it",
-      "psp_push_client_config_total": "Quota-floor pushes that began executing (traffic-poll path only)",
-      "psp_push_client_config_error_total": "How many of those failed",
-      "psp_push_suppressed_total": "Pushes skipped by the cross-cycle guard",
-      "psp_push_sem_carryover_total": "Times pushes spilled into the next cycle",
-      "psp_push_sem_wait_ms": "Wait on the push semaphore (written only by pushes that escaped the queue, so it is a floor)",
-      "psp_lifecycle_sync_total": "Shared-client lifecycle checks",
-      "psp_lifecycle_sync_write_total": "How many of those actually wrote to a panel",
-      "psp_lifecycle_sync_error_total": "How many of those writes failed",
-      "psp_capability_gap_total": "Times a panel could not store a field PSP writes"
+      "psp_poll_total": {
+        "label": "Traffic polls",
+        "desc": "Traffic polls started, scheduled and manual (\"Poll now\") alike. Normally about the window divided by the poll interval."
+      },
+      "psp_poll_error_total": {
+        "label": "Polls that failed outright",
+        "desc": "Polls abandoned because the user list could not be read, usually a database problem. An unreachable panel or a single user's error is not counted here."
+      },
+      "psp_poll_ms": {
+        "label": "Poll duration",
+        "desc": "Time from the start to the end of one poll, excluding the quota safety refreshes that run afterwards in the background. Should stay well below the poll interval."
+      },
+      "psp_poll_stage_ms": {
+        "label": "Poll duration by stage",
+        "desc": "How long each stage of a poll took. \"Read panels\" is usually the largest share; it is time spent waiting on the network."
+      },
+      "psp_poll_interval_ms": {
+        "label": "Current poll interval",
+        "desc": "The interval traffic polling actually runs on. After the setting changes, the new interval applies once the next poll has run; the peak is the longest interval used in this window."
+      },
+      "psp_poll_users": {
+        "label": "Users read per poll",
+        "desc": "All users read per poll, including admins and disabled users."
+      },
+      "psp_poll_active_users": {
+        "label": "Users with traffic per poll",
+        "desc": "Users whose traffic changed in a poll, whether or not they have a traffic cap."
+      },
+      "psp_poll_panels": {
+        "label": "Panels read per poll",
+        "desc": "Panels read per poll; only panels that host at least one user's client are counted."
+      },
+      "psp_lifecycle_sync_total": {
+        "label": "Status checks",
+        "desc": "Checks comparing a user's intended status with what a panel actually holds, counted once per client per panel. Triggered by the post-poll quota safety refresh, admin actions, automatic suspend and resume, sync tasks and the periodic repair."
+      },
+      "psp_lifecycle_sync_skipped_total": {
+        "label": "Already in sync",
+        "desc": "Checks where the panel already matched, so nothing was written. The higher the share, the fewer writes the panels receive."
+      },
+      "psp_lifecycle_sync_write_total": {
+        "label": "Writes to panels",
+        "desc": "Writes issued because something differed, or because the panel's current state could not be read. These are attempts; failures are also counted under \"Sync failures\"."
+      },
+      "psp_lifecycle_sync_write_reason_total": {
+        "label": "Why writes happened",
+        "desc": "The reason for each write, taken from the first field that differed. \"Panel state unreadable\" means the read failed or the client was missing, so PSP wrote without comparing."
+      },
+      "psp_lifecycle_sync_not_provisioned_total": {
+        "label": "Skipped: not set up yet",
+        "desc": "Checks skipped because the user's client is not yet confirmed on the panel. Normal briefly after adding nodes or users; steady growth means setting up clients keeps failing."
+      },
+      "psp_lifecycle_sync_error_total": {
+        "label": "Sync failures",
+        "desc": "User status syncs that failed: panel not found, write failed, read-back failed or did not match, or PSP could not save the result (the panel was already updated then). Counted per client; every failed retry counts again."
+      },
+      "psp_lifecycle_sync_error_stage_total": {
+        "label": "Sync failures by step",
+        "desc": "Sync failures by the step that failed: panel not found, the write, reading back after the write, a read-back that does not match, saving the result. The steps add up to \"Sync failures\". Each failed client is also logged once with its panel id."
+      },
+      "psp_lifecycle_sync_error_panel_kind_total": {
+        "label": "Sync failures by panel type",
+        "desc": "Sync failures by the type of panel the client is on: 3X-UI, S-UI, PSP native node; \"Unknown\" when the panel could not be found. The types add up to \"Sync failures\"."
+      },
+      "psp_lifecycle_quota_delta_bytes": {
+        "label": "Panel cap drift",
+        "desc": "How far the traffic cap stored on the panel was from the intended value at each check. Used to size the tolerance; not something to watch day to day."
+      },
+      "psp_lifecycle_quota_band_skip_total": {
+        "label": "Within tolerance",
+        "desc": "Checks where the panel's traffic cap differed but stayed within tolerance, so it did not by itself cause a write (another field may still have)."
+      },
+      "psp_capability_gap_total": {
+        "label": "Limits the panel cannot apply",
+        "desc": "Checks where a user has an IP or device limit their panel does not support. Counted again at every check while the situation lasts."
+      },
+      "psp_ip_limit_enforcement_total": {
+        "label": "IP-limit enforcement probes",
+        "desc": "Results of probing each 3X-UI node's fail2ban, which decides whether an IP limit can actually be enforced. Per-node results are on the Servers page."
+      },
+      "psp_user_client_count": {
+        "label": "Clients per user",
+        "desc": "How many clients a user has across all panels, recorded each time the user is synced. Usually about the number of panels the user's group spans."
+      },
+      "psp_user_clients_per_panel": {
+        "label": "Clients per user per panel",
+        "desc": "How many clients one user needs on a single panel. Above 1, each client carries its own copy of the IP limit, so the effective allowance is multiplied."
+      },
+      "psp_sync_user_lifecycle_ms": {
+        "label": "Per-user sync time",
+        "desc": "Time to sync one user's status to all of their panels. Panels are handled in parallel, so this is roughly the slowest panel."
+      },
+      "psp_push_client_config_total": {
+        "label": "Quota safety refreshes",
+        "desc": "Refreshes of the remaining allowance on the panels for users who used traffic, have a traffic cap and are still under it; at most once per user per poll."
+      },
+      "psp_push_client_config_error_total": {
+        "label": "Quota safety refresh failures",
+        "desc": "Quota safety refreshes that failed. They are not queued as sync tasks; the user is refreshed again the next time they use traffic or at the next periodic repair."
+      },
+      "psp_push_client_config_ms": {
+        "label": "Quota safety refresh duration",
+        "desc": "Time one quota safety refresh took once it started, excluding time spent queued."
+      },
+      "psp_push_sem_capacity": {
+        "label": "Concurrent refresh limit",
+        "desc": "The most quota safety refreshes that run at once. Fixed at 8; 0 means the traffic service did not start."
+      },
+      "psp_push_sem_inflight": {
+        "label": "Refreshes running",
+        "desc": "Quota safety refreshes running right now; the peak is the highest in this window."
+      },
+      "psp_push_sem_waiting": {
+        "label": "Refreshes waiting",
+        "desc": "Quota safety refreshes waiting for a slot right now; a peak that keeps growing means the panels cannot keep up."
+      },
+      "psp_push_sem_wait_ms": {
+        "label": "Queue wait",
+        "desc": "Time each quota safety refresh waited before starting, including those that did not wait (about 0). Refreshes still queued when read are not yet included, so this understates a backlog."
+      },
+      "psp_push_sem_carryover_total": {
+        "label": "Polls skipped for backlog",
+        "desc": "Polls that skipped all their quota safety refreshes because refreshes from an earlier poll were still queued. Cannot happen on the first poll after start; normally 0."
+      },
+      "psp_push_suppressed_total": {
+        "label": "Refreshes skipped for backlog",
+        "desc": "Individual quota safety refreshes skipped because of that backlog. A skipped user is refreshed in a later poll once they use traffic again."
+      },
+      "psp_poll_floor_push_enqueued_total": {
+        "label": "Quota safety refreshes queued",
+        "desc": "Quota safety refreshes handed to the queue. Normally almost equal to \"Quota safety refreshes\"; the difference is still queued."
+      },
+      "psp_panel_rtt_ms": {
+        "label": "Panel request time",
+        "desc": "Time of one request from PSP to a 3X-UI panel, by operation, including automatic re-login. Close to 30 s means the request hit its timeout."
+      },
+      "psp_panel_op_total": {
+        "label": "Panel requests",
+        "desc": "Requests PSP sent to 3X-UI panels, by operation; each automatic retry counts separately. S-UI and native nodes are not counted."
+      },
+      "psp_panel_op_error_total": {
+        "label": "Panel request failures",
+        "desc": "3X-UI requests that returned an error: connection failure, HTTP error or refusal by the panel. \"Read client\" also counts a lookup for a client not yet created, which is not necessarily a fault."
+      },
+      "psp_user_live_ips": {
+        "label": "Live IPs per user",
+        "desc": "Distinct source IPs per judged user per poll, from the panels' memory of roughly the last 30 minutes. Only \"at least\" when the read was incomplete."
+      },
+      "psp_live_ip_users_incomplete_total": {
+        "label": "Incomplete live-IP reads",
+        "desc": "User-poll occurrences where a panel holding the user's clients returned no live IPs; the same user counts again every poll. S-UI panels do not report live IPs, so this keeps growing while users are on S-UI."
+      },
+      "psp_user_concurrent_ips": {
+        "label": "Concurrent sources per user",
+        "desc": "Concurrent sources per judged user per poll (IPv6 folded by /64, ignored addresses excluded): the number the location check judges."
+      },
+      "psp_live_ip_stale_total": {
+        "label": "Stale live addresses",
+        "desc": "Addresses treated as stale at judging time (not seen within the freshness window of their node's latest scan). Zero for hours on a busy 3X-UI fleet may mean timestamps stopped arriving."
+      },
+      "psp_live_ip_excluded_total": {
+        "label": "Excluded sources",
+        "desc": "Sources set aside before judging, by rule: shared, on the ignore list, PSP's own nodes or relays, internal addresses."
+      },
+      "psp_geo_verdict_total": {
+        "label": "Location verdicts",
+        "desc": "Distribution of per-user location verdicts per poll. See the Risk Center for the users themselves."
+      },
+      "psp_geo_over_tier_total": {
+        "label": "Tolerance exceeded, by level",
+        "desc": "Judged samples beyond tolerance, by the coarsest level exceeded (country, region, city)."
+      },
+      "psp_geo_spread_km": {
+        "label": "Source spread",
+        "desc": "Distance between the two farthest concurrent sources of one user, after subtracting location accuracy; only users with two or more located sources."
+      },
+      "psp_geo_samples_spaced_total": {
+        "label": "Skipped: judged too recently",
+        "desc": "Users not judged again because their last verdict was less than half a poll interval ago, usually after a manual \"Poll now\"."
+      },
+      "psp_geo_auto_suspension_total": {
+        "label": "Automatic location suspensions",
+        "desc": "Outcomes of automatic location suspension and lifting. \"Suspend failed\" and \"Lift failed\" are failures; \"Lifted by admin\" against \"Suspended\" estimates the false-positive rate."
+      },
+      "psp_infra_addresses": {
+        "label": "Infrastructure addresses",
+        "desc": "Addresses currently excluded from location checks as PSP's own nodes or relays. Zero while nodes are configured means the refresh is failing."
+      },
+      "psp_infra_address_resolve_failures_total": {
+        "label": "Node hostname lookups failed",
+        "desc": "Node or relay hostnames that failed to resolve during the infrastructure refresh; the previous addresses are kept. If it persists, check node hostnames and DNS."
+      },
+      "psp_live_connections": {
+        "label": "Live connections",
+        "desc": "Connections in the latest stored live snapshot: what the Risk Center's Live tab shows."
+      },
+      "psp_live_conn_refresh_total": {
+        "label": "Live snapshot refreshes",
+        "desc": "Outcomes of the Risk Center's \"Refresh now\". \"Failed\" or \"Partial\" means some panels could not be read on demand."
+      },
+      "psp_connection_history_write_errors_total": {
+        "label": "Connection history write failures",
+        "desc": "Polls whose judged connections could not be written to the connection history. Those periods stay missing; they are not backfilled."
+      },
+      "psp_flag_record_write_errors_total": {
+        "label": "Flag record write failures",
+        "desc": "Flag-record writes that failed; each may carry several records. The flags, automatic suspensions or resumes themselves took effect; only their records are missing."
+      },
+      "psp_risk_refresh_total": {
+        "label": "Risk signal runs",
+        "desc": "Outcomes of risk-signal recomputation (hourly by default). Repeated \"Partial\", \"Waiting for node addresses\" or \"Failed\" means the Risk Center is judging from old data."
+      },
+      "psp_node_host_report_total": {
+        "label": "Host metric reports",
+        "desc": "Outcomes of handling native-node host metric reports. A failed report never fails the node's sync itself."
+      },
+      "psp_node_host_history_total": {
+        "label": "Host metric history",
+        "desc": "Results of writing host metric history: inserted, throttled, duplicate, storage error."
+      },
+      "psp_node_host_persist_ms": {
+        "label": "Host metric save time",
+        "desc": "Time to save one host metric report; the budget is 500 ms."
+      },
+      "psp_node_host_snapshot_bytes": {
+        "label": "Host metric size",
+        "desc": "Encoded size of one stored host metric snapshot; the limit is 128 KiB."
+      },
+      "psp_node_host_rollup_total": {
+        "label": "Hourly host metric rollups",
+        "desc": "Results of the hourly per-node host metric rollup; \"error\" should be 0."
+      },
+      "psp_node_host_pruned_rows_total": {
+        "label": "Host metrics pruned",
+        "desc": "Host metric rows removed by retention; steady growth is normal."
+      },
+      "psp_node_sync_refused_total": {
+        "label": "Node sync reports refused",
+        "desc": "Authenticated native-node sync reports this panel refused. \"Incompatible version\" means the node is effectively offline."
+      },
+      "psp_saml_acs_failure_total": {
+        "label": "SAML sign-ins refused",
+        "desc": "Refused SAML sign-ins (and sign-in starts), by reason. Configuration reasons point at identity-provider settings; \"Assertion replayed\" needs investigating."
+      },
+      "psp_sso_claim_silent_total": {
+        "label": "Single sign-ins without role or group",
+        "desc": "Single sign-ins where role or group rules exist but the identity provider sent none of the attributes they read, counted per kind: one sign-in can count once for each. The existing role and group were kept."
+      }
+    },
+    "labels": {
+      "stage": {
+        "list_users": "Read user list",
+        "latest_prefetch": "Read latest traffic records",
+        "ownership_prefetch": "Read client ownership",
+        "panel_fetch": "Read panels (traffic and live IPs)",
+        "live_ips": "Aggregate live IPs and judge locations",
+        "inbound_processing": "Process inbound traffic",
+        "node_snapshots": "Save node traffic",
+        "shared_metering": "Meter shared clients",
+        "user_loop": "Meter users and check quotas",
+        "baseline_reseed": "Reseed new-period baselines",
+        "sink_flush": "Write to database",
+        "geo_enforce": "Apply location suspensions and lifts"
+      },
+      "write_reason": {
+        "total_gb": "Traffic cap",
+        "ip_limit": "IP limit",
+        "device_limit": "Device limit",
+        "enable": "Enabled state",
+        "expiry": "Expiry",
+        "id": "User ID (UUID)",
+        "password": "Password",
+        "flow": "Flow",
+        "auth": "Auth",
+        "panel_unread": "Panel state unreadable"
+      },
+      "write_reason_group": {
+        "quota": "Traffic cap refresh",
+        "limits": "IP or device limit change",
+        "state": "Enable or expiry change",
+        "credentials": "Credential change",
+        "unread": "Panel state unreadable"
+      },
+      "capability": {
+        "client_iplimit": "IP limit",
+        "client_devicelimit": "Device limit"
+      },
+      "lifecycle_stage": {
+        "pool_get": "Panel not found",
+        "update": "Write",
+        "confirm_read": "Read-back",
+        "confirm_mismatch": "Read-back mismatch",
+        "record_credentials": "Saving the result"
+      },
+      "panel_kind": {
+        "3xui": "3X-UI",
+        "sui": "S-UI",
+        "psp": "PSP native node",
+        "unknown": "Unknown (panel not found)"
+      },
+      "op": {
+        "AddClient": "Add client",
+        "AddClientToInbounds": "Add client to inbounds",
+        "AddInbound": "Add inbound",
+        "AttachClient": "Attach client",
+        "BulkAttach": "Bulk attach clients",
+        "BulkCreateClients": "Bulk create clients",
+        "BulkDelByEmail": "Bulk delete clients",
+        "DelClientByEmail": "Delete client",
+        "DelInbound": "Delete inbound",
+        "DetachClient": "Detach client",
+        "GetClient": "Read client",
+        "GetCoreVersionList": "List core versions",
+        "GetFail2banStatus": "Read fail2ban status",
+        "GetInbound": "Read inbound",
+        "GetPanelUpdateInfo": "Read panel update info",
+        "GetServerStatus": "Read server status",
+        "GetWebCertFiles": "Read panel certificate",
+        "GetXrayVersionList": "List Xray versions",
+        "InstallCore": "Install core",
+        "InstallXray": "Install Xray",
+        "ListClientInbounds": "List a client's inbounds",
+        "ListInbounds": "List inbounds",
+        "ListInboundsSlim": "Read traffic (inbound list)",
+        "ListLiveClientIPs": "Read live IPs",
+        "ScanRealityTargets": "Scan REALITY targets",
+        "SetInboundEnable": "Enable or disable inbound",
+        "UpdateClient": "Update client",
+        "UpdateInbound": "Update inbound",
+        "UpdatePanel": "Upgrade panel",
+        "other": "Other (untagged)"
+      },
+      "node_refused": {
+        "protocol_generation": "Incompatible version",
+        "report_invalid": "Invalid report"
+      },
+      "node_host_report": {
+        "accepted": "Accepted",
+        "no_host": "No host data",
+        "invalid": "Invalid",
+        "identity_conflict": "Identity conflict",
+        "storage_error": "Storage error"
+      },
+      "geo_auto": {
+        "suspended": "Suspended",
+        "skipped_held": "Skipped: already held",
+        "skipped_unwired": "Skipped: not wired",
+        "deferred": "Deferred",
+        "suspend_error": "Suspend failed",
+        "lifted_expiry": "Lifted on expiry",
+        "lifted_admin": "Lifted by admin",
+        "lift_skipped": "Lift skipped",
+        "lift_deferred": "Lift deferred",
+        "lift_error": "Lift failed"
+      },
+      "risk_refresh": {
+        "ok": "OK",
+        "partial": "Partial",
+        "infra_pending": "Waiting for node addresses",
+        "error": "Failed"
+      },
+      "live_conn_refresh": {
+        "ok": "OK",
+        "partial": "Partial",
+        "just_polled": "Just polled",
+        "cooldown": "Cooling down",
+        "in_progress": "In progress",
+        "error": "Failed"
+      },
+      "saml": {
+        "saml_assertion_invalid": "Invalid assertion",
+        "saml_assertion_replayed": "Assertion replayed",
+        "saml_replay_store_error": "Replay store error",
+        "saml_weak_signature": "Weak signature",
+        "saml_multiple_assertions": "Multiple assertions",
+        "saml_destination": "Wrong destination",
+        "saml_request_invalid": "Invalid request",
+        "saml_entry_point": "Could not start sign-in"
+      },
+      "sso_kind": {
+        "role": "Role",
+        "group": "Group"
+      }
     }
   },
   "nodeMetrics": {

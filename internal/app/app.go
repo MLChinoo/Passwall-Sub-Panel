@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -31,6 +30,8 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/metrics"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/operationgate"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/subdevice"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xraycompat"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
@@ -48,12 +49,16 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/nodesync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/reconcile"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/render"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/risk"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/riskcenter"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/riskreview"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/rollup"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/servermigration"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/sharedclient"
 	syncsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/sync"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/vlessroute"
 	httptransport "github.com/KazuhaHub/passwall-sub-panel/internal/transport/http"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/version"
 	"golang.org/x/crypto/bcrypt"
@@ -129,6 +134,8 @@ type App struct {
 	health        *health.Service
 	geo           *geo.Service
 	render        *render.Service
+	vlessRoute    *vlessroute.Service
+	risk          *risk.Service
 	settings      ports.SettingsRepo
 	syncTasks     ports.SyncTaskRepo
 	// trafficRepo / nodeTraffic kept for the retention cron — PruneBefore is
@@ -142,6 +149,22 @@ type App struct {
 	// maintenance loop: the refresh window lives in that instance's memory, and a
 	// second one would have a window nobody could close.
 	nodeMetrics *nodemetrics.Service
+	// connHistory is the connection_history store as the hourly cleanup
+	// sees it: prune by age, purge deleted accounts. The table holds IP
+	// addresses, so the cleanup is what keeps its retention a promise; a
+	// nil store compiles and the table grows for ever, which
+	// TestBuildPrunesConnectionHistory guards against.
+	connHistory connectionHistoryPruner
+	// flagRecords is the flag_records store as the hourly cleanup sees it,
+	// for the same two passes. Nothing else keeps that history bounded, so a
+	// nil store compiles and it grows for ever: TestBuildPrunesFlagRecords.
+	flagRecords flagRecordPruner
+	// riskReviews is the risk_reviews store as the hourly cleanup sees it:
+	// the orphan purge only. A review row is current state, not history, so
+	// it has no retention; but it has no foreign key either, and a deleted
+	// account's row — an admin's note about somebody nobody can open — would
+	// otherwise stay for ever: TestBuildPrunesRiskReviewOrphans.
+	riskReviews riskReviewPruner
 	saml        *auth.SAMLService
 	// repos kept around so Run() can call initAdminIfNeeded AFTER the
 	// listen socket is bound — that way a bind failure (port busy / TLS
@@ -217,6 +240,13 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("db schema: %w", err)
 	}
 	sqlstore.ConfigureSecretKey(cfg.SecretKeyMaterial())
+	// The key for the subscription device digest comes from the same panel
+	// secret, under its own label (subdevice.NewHasher), so it is neither
+	// the at-rest AES key just configured nor anything a JWT signature can
+	// equal. Rotating the secret therefore changes every device id; old and
+	// new ids coexist until sub_logs retention ages the old ones out. A
+	// blank secret yields nil, which the /sub handler treats as capture off.
+	deviceHasher := subdevice.NewHasher(cfg.SecretKeyMaterial())
 	// Surface advisory key-material warnings (weak jwt_secret/encryption_key,
 	// or the coupled-key fallback where jwt_secret doubles as the at-rest key).
 	for _, w := range cfg.SecurityWarnings() {
@@ -428,6 +458,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	syncSvc.SetPSPClientRepo(repos.PSPClient)
 	userSvc := user.New(repos.User, repos.Group, repos.Ownership, repos.SyncTask, groupSvc, syncSvc, pool, repos.ScopedSettings)
 	nodeSvc := node.New(repos.Node, repos.Separator, pool, syncSvc, repos.SyncTask, repos.Group, repos.User)
+	nativeSync.SetRealityFingerprintNormalizer(nodeSvc.NormalizeRealityFingerprintsForPanel)
 	trafficSvc := traffic.New(repos.User, repos.Ownership, repos.Traffic, repos.Node, repos.NodeTraffic, pool, userSvc).WithSettings(repos.ScopedSettings)
 	// traffic needs user to push the per-client floor into 3X-UI after each
 	// poll. The reverse edge is gone: user used to take a late-wired usage
@@ -476,6 +507,9 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 	nativeSync.SetRenderInvalidator(invalidateSubscriptions)
 	nodeSvc.SetSubscriptionInvalidator(invalidateSubscriptions)
+	sharedClientSvc.SetSubscriptionInvalidator(invalidateSubscriptions)
+	vlessRouteSvc := vlessroute.New(repos, pool, invalidateSubscriptions)
+	nodeSvc.SetRouteCleaner(vlessRouteSvc.RemoveForNode)
 	// Geo IP resolution for access-log region display — fully offline against a
 	// local .mmdb in <ConfigDir>/geoip/. No per-IP external calls. Reads
 	// enabled/active-file live from settings and hot-reloads the DB on change.
@@ -509,6 +543,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		bgCancel:      cancel,
 		bgRootCtx:     bgCtx,
 		render:        renderSvc,
+		vlessRoute:    vlessRouteSvc,
 	}
 	dispatcher := &asyncDispatcher{ctx: bgCtx, wg: &a.bgWG, gate: a.operationGate}
 	// Wire traffic.Service into the panel-wide WaitGroup. Its async
@@ -525,10 +560,11 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Link the geo updater's background download to the app lifecycle so
 	// Shutdown cancels + drains an in-flight DB download instead of leaking it.
 	geoSvc.SetBackground(bgCtx, &a.bgWG)
-	// Concurrent-location observation on the traffic poll. Late-bound like the
+	// Concurrent-location detection on the traffic poll. Late-bound like the
 	// shared-client repo: without it the poll still meters, and every verdict
 	// reads Unknown rather than Clean — the honest answer when nothing can be
-	// placed. Observation only; no automatic response is armed.
+	// placed. By default it only observes (the Geo tab); a group can arm the
+	// time-boxed automatic suspension (geo_auto), wired below.
 	trafficSvc.SetGeoResolver(geoSvc)
 	trafficSvc.SetGeoPolicy(domain.DefaultGeoPolicy())
 	// The hysteresis state has to outlive the process. The detector latches a
@@ -537,6 +573,100 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	// would make every deploy a free acquittal for anyone being watched.
 	geoStreaks := sqlstore.NewGeoStreakRepo(db)
 	trafficSvc.SetGeoStreakStore(geoStreaks)
+	// The automatic suspension's writer and its audit log. user.Service is
+	// the writer because its conditional writes are the only path that
+	// never replaces another reason, and it holds the per-user lock and the
+	// emergency lock the push and a concurrent grant need. Both setters are
+	// nil-tolerant, so leaving either out would compile and quietly disable
+	// the feature (bans counted skipped_unwired, no lifts, no audit rows);
+	// TestBuildWiresTheGeoAutoSuspension guards that.
+	trafficSvc.SetGeoSuspender(userSvc)
+	trafficSvc.SetAuditRepo(repos.Audit)
+	// The flag records: the history of every change of attention level,
+	// append-only for everyone handed it. The poll appends the location
+	// verdict's changes and the geo_auto suspensions and expiry lifts it
+	// makes; the user service appends the two ways one ends outside the
+	// poll (a staff resume, another hold written over it). The risk
+	// signals' changes are written by riskSignals.Save itself, in the
+	// transaction of the upsert that made them, and the hourly cleanup below
+	// prunes the table. Both setters are nil-tolerant, so leaving either out
+	// compiles and that side's records are simply missing;
+	// TestBuildWiresTheFlagRecorders guards them.
+	flagRecords := sqlstore.NewFlagRecordRepo(db)
+	trafficSvc.SetFlagRecorder(flagRecords)
+	userSvc.SetFlagRecorder(flagRecords)
+	// The admins' review of accounts in the risk center: a dismissal until
+	// something new or worse happens, and a trust that exempts an account
+	// from the location judgements. Built the same way, so each consumer is
+	// handed only the narrow view it declares; the hourly cleanup below
+	// purges what deleted accounts left. The one guard that matters
+	// most needs no wiring: the user repo refuses a geo_auto suspension of a
+	// trusted account inside its own conditional write
+	// (TestBuildNeverGeoAutoSuspendsATrustedAccount).
+	//
+	// The detectors read the trusted accounts from it, once per judging
+	// step: the poll here, the risk worker through its Deps below. Both are
+	// nil-tolerant, so leaving either out compiles and the detector just
+	// goes on judging a trusted account's location — the guard above still
+	// stops the suspension, so nothing would look broken;
+	// TestBuildWiresTheTrustedAccounts guards both.
+	riskReviews := sqlstore.NewRiskReviewRepo(db)
+	trafficSvc.SetTrustedLister(riskReviews)
+	// The observe-only risk signals' store: a concrete repo built from the
+	// database handle like the geo streak store, not a ports.Repos field, so
+	// each consumer is handed only the narrow interface it declares — the
+	// worker below writes it, the admin view lists it, the bell counts it.
+	riskSignals := sqlstore.NewRiskSignalRepo(db)
+	// The connection history: the one table the detector's data keeps IP
+	// addresses in. Built the same way, so its only consumers are the ones
+	// handed a narrow view of it — the traffic poll records each judged
+	// sample into it, and the hourly cleanup below prunes it. Its statements
+	// log without their bound values (sqlstore.redactParams). The setter is
+	// nil-tolerant, so leaving it out compiles and the history just stays
+	// empty; TestBuildWiresTheConnectionRecorder guards it.
+	connHistory := sqlstore.NewConnectionHistoryRepo(db)
+	trafficSvc.SetConnectionRecorder(connHistory)
+	// The risk center's read side, over the very sources the detectors
+	// write: the traffic service's live snapshot and its on-demand refresh
+	// (never a detector sample), the connection history and flag records
+	// built above, the page of fetches it infers devices from, and the
+	// attention queue's sources — the geo verdicts, the risk signals, the
+	// review rows and the detector's holds (read from the users table).
+	// Every field is a narrow read interface (riskcenter.Deps); the users,
+	// panels and groups repos are handed whole but only their reads are
+	// reachable through them. The router dep is optional, so leaving this
+	// out compiles and every risk-center route answers 503; and each
+	// attention source is optional too — left out, it contributes nothing,
+	// and the queue silently never lists what it would have said.
+	// TestBuildWiresTheRiskCenter drives each through the assembled router.
+	riskCenterSvc := riskcenter.New(riskcenter.Deps{
+		Live:     trafficSvc,
+		Settings: repos.Settings,
+		Users:    repos.User,
+		Panels:   repos.XUIPanel,
+		Fetches:  repos.SubLog,
+		History:  connHistory,
+		Flags:    flagRecords,
+		Geo:      geoStreaks,
+		Signals:  riskSignals,
+		Reviews:  riskReviews,
+		Holds:    repos.User,
+		Groups:   repos.Group,
+	})
+	// The review actions — dismiss and trust — write the review rows the
+	// risk center reads, and judge each action on the attention the risk
+	// center computes (so a dismissal accepts exactly what the queue shows).
+	// The one account write they may make is the user service's geo_auto-only
+	// lift, when a trust asks for it. The router dep is optional, so leaving
+	// this out compiles and the drawer's buttons just answer 503;
+	// TestBuildWiresTheRiskReview drives both actions through the assembled
+	// router.
+	reviewSvc := riskreview.New(riskreview.Deps{
+		Store:     riskReviews,
+		Attention: riskCenterSvc,
+		Users:     repos.User,
+		Resumer:   userSvc,
+	})
 
 	// --- transport layer ---
 	// The Node installation template is fetched from the release that published it
@@ -553,7 +683,20 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		Cfg:           cfg,
 		Repos:         repos,
 		GeoRecords:    geoStreaks,
-		Pool:          pool,
+		// The risk view's rows. Optional, so leaving it out would compile —
+		// TestBuildWiresTheRiskSignals reads it through the assembled router.
+		RiskSignals: riskSignals,
+		RiskCenter:  riskCenterSvc,
+		// The risk center again, as the bell's count of the accounts that
+		// need action now — the queue's own number, so the bell and the
+		// queue cannot disagree. Optional like every alert source;
+		// TestBuildWiresTheRiskQueueBell reads it through the assembled router.
+		RiskQueue:  riskCenterSvc,
+		RiskReview: reviewSvc,
+		// Optional like RiskQueue, so leaving it out would compile and quietly
+		// record every subscription fetch as anonymous.
+		DeviceHasher: deviceHasher,
+		Pool:         pool,
 		// Same service the push path uses, so the capabilities the edit form
 		// reports are read through the identical check that gates the write.
 		SharedClients: sharedClientSvc,
@@ -567,21 +710,22 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 			}
 			return cli.GetServerStatus(ctx)
 		},
-		Auth:      authSvc,
-		SAML:      samlSvc,
-		OIDC:      oidcSvc,
-		User:      userSvc,
-		Group:     groupSvc,
-		Node:      nodeSvc,
-		Cert:      certSvc,
-		Render:    renderSvc,
-		Audit:     auditSvc,
-		Sync:      syncSvc,
-		Traffic:   trafficSvc,
-		Mail:      mailSvc,
-		Reconcile: reconcileSvc,
-		Geo:       geoSvc,
-		NodeSync:  nativeSync,
+		Auth:       authSvc,
+		SAML:       samlSvc,
+		OIDC:       oidcSvc,
+		User:       userSvc,
+		Group:      groupSvc,
+		Node:       nodeSvc,
+		VlessRoute: vlessRouteSvc,
+		Cert:       certSvc,
+		Render:     renderSvc,
+		Audit:      auditSvc,
+		Sync:       syncSvc,
+		Traffic:    trafficSvc,
+		Mail:       mailSvc,
+		Reconcile:  reconcileSvc,
+		Geo:        geoSvc,
+		NodeSync:   nativeSync,
 		// THE SAME INSTANCE THAT INGESTS AND ROLLS UP. Its routes are the read
 		// side of the telemetry the server list already shows, and the field is
 		// optional so an omission here is silent: the writes and the list keep
@@ -623,6 +767,35 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 	a.trafficRepo = repos.Traffic
 	a.nodeTraffic = repos.NodeTraffic
 	a.nodeMetrics = nodeMetrics
+	a.connHistory = connHistory
+	a.flagRecords = flagRecords
+	a.riskReviews = riskReviews
+	// The observe-only risk signals. The worker is handed read-only views and
+	// one store that writes only risk_signals (and, in the same transaction,
+	// the flag records of what each save changed) — the store built above,
+	// the one the router reads, so nothing else is handed its writer.
+	// TestBuildWiresTheRiskSignals guards the wiring: a worker left out
+	// compiles, and the table just stays empty.
+	//
+	// The infrastructure set arrives as method values, not as the traffic
+	// service: the worker needs "is this PSP's own address", "has the set
+	// been built yet" and "which of them are landing nodes", and nothing
+	// else that service can do. The login log is handed over as the whole
+	// repo, but the worker's field is an interface with List alone; the
+	// review store likewise, behind an interface with ListTrusted alone.
+	a.risk = risk.New(risk.Deps{
+		Users:        repos.User,
+		Store:        riskSignals,
+		Settings:     repos.ScopedSettings,
+		Traffic:      repos.Traffic,
+		SubLogs:      repos.SubLog,
+		Geo:          geoSvc,
+		IsInfra:      trafficSvc.IsInfra,
+		InfraLoaded:  trafficSvc.InfraLoaded,
+		AuthEvents:   repos.AuthEvent,
+		LandingAddrs: trafficSvc.LandingAddresses,
+		Trust:        riskReviews,
+	})
 	a.trafficInterval = time.Duration(sysSettings.CronTrafficPullMinutes) * time.Minute
 	// Rollup's gap heartbeat is derived from the poll cadence so a coarse poll
 	// interval doesn't make every segment exceed a fixed heartbeat (blank charts).
@@ -766,6 +939,8 @@ func (a *App) Run() error {
 	safego.GoTracked(&a.bgWG, "audit-cleanup-loop", func() { a.runAuditCleanupLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "geo-update-loop", func() { a.runGeoUpdateLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "traffic-loop", func() { a.runTrafficLoop(bgCtx) })
+	safego.GoTracked(&a.bgWG, "infra-address-loop", func() { a.runInfraAddressLoop(bgCtx) })
+	safego.GoTracked(&a.bgWG, "risk-signal-loop", func() { a.runRiskLoop(bgCtx, a.riskFirstDelay(bgCtx)) })
 	safego.GoTracked(&a.bgWG, "mail-loop", func() { a.runMailLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "reconcile-loop", func() { a.runReconcileLoop(bgCtx) })
 	safego.GoTracked(&a.bgWG, "health-loop", func() { a.runHealthLoop(bgCtx) })
@@ -915,19 +1090,44 @@ func (a *App) probePanelVersionsOnce(ctx context.Context) {
 				"compat", compatStatus.String(),
 				"detail", version.CompatMessage(status.PanelVersion, compatStatus))
 		}
-		if uerr := a.repos.XUIPanel.UpdateVersion(ctx, p.ID, status.PanelVersion, status.XrayVersion, &now); uerr != nil {
-			log.Warn("compat probe: write version", "panel_id", p.ID, "err", uerr)
-		} else if a.render != nil && p.XrayVersion != status.XrayVersion {
-			// Mihomo REALITY output changes at the Xray 26.9.8 boundary.
-			// Drop the 60s render cache as soon as a manual/out-of-band core
-			// upgrade is observed, otherwise a freshly refreshed subscription
-			// can keep the pre-upgrade handshake shape until cache expiry.
-			a.render.InvalidateAll()
-		}
+		a.recordProbedPanelVersion(ctx, p, status, now)
 		// Rides the same tick and the same authenticated client. One extra GET
 		// against a panel we are already talking to, once per traffic poll
 		// (cron_traffic_pull_minutes, default 5).
 		a.probeIPLimitEnforcement(ctx, p, c, now)
+	}
+	if a.vlessRoute != nil {
+		if err := a.vlessRoute.CheckAll(ctx); err != nil {
+			log.Warn("vlessRoute read-only verification", "err", err)
+		}
+	}
+}
+
+// recordProbedPanelVersion is shared by the boot and periodic probe paths. Its
+// convergence decision intentionally uses only the trusted current observation,
+// not a one-shot version transition: an installation may already have 26.9.8+
+// stored when this PSP first starts, and repeating the idempotent operation is
+// what retries partial failures.
+func (a *App) recordProbedPanelVersion(ctx context.Context, panel *domain.XUIPanel, status *ports.ServerStatus, now time.Time) {
+	if panel == nil || status == nil {
+		return
+	}
+	if err := a.repos.XUIPanel.UpdateVersion(ctx, panel.ID, status.PanelVersion, status.XrayVersion, &now); err != nil {
+		log.Warn("compat probe: write version", "panel_id", panel.ID, "err", err)
+		return
+	}
+	if xraycompat.RequiresMLKEMFirst(status.XrayVersion) && a.node != nil {
+		changed, err := a.node.NormalizeRealityFingerprintsForPanel(ctx, panel.ID, status.XrayVersion)
+		if err != nil {
+			log.Warn("compat probe: normalize REALITY fingerprints", "panel_id", panel.ID, "changed", changed, "err", err)
+		} else if changed > 0 {
+			log.Info("normalized REALITY fingerprints for observed Xray version", "panel_id", panel.ID, "nodes", changed)
+		}
+	}
+	if panel.XrayVersion != status.XrayVersion && a.render != nil {
+		// The compatibility transition changes Mihomo's explicit ML-KEM option.
+		// Drop the render cache as soon as an out-of-band core change is observed.
+		a.render.InvalidateAll()
 	}
 }
 
@@ -1086,18 +1286,6 @@ func (a *App) runGeoUpdateLoop(ctx context.Context) {
 // The heavy ACME work runs in the sync-task processor; this loop only scans +
 // enqueues. Interval (and the renew-before-days threshold) are re-read from
 // settings each cycle, so cadence changes take effect without a restart.
-// policyRefreshInterval is the plan's initial value. It is not a setting: nothing
-// reads a policy faster than it can be published, and a knob nobody turns is a
-// knob nobody can reason about.
-const policyRefreshInterval = 30 * time.Minute
-
-// policyRefreshJitter spreads refreshes over ±10% of the interval, so a fleet of
-// panels configured from one document does not fetch it in lockstep.
-func policyRefreshJitter(d time.Duration) time.Duration {
-	spread := float64(d) * 0.1
-	return d - time.Duration(spread) + time.Duration(rand.Float64()*2*spread)
-}
-
 func (a *App) runCertRenewalLoop(ctx context.Context) {
 	if a.cert == nil {
 		return
@@ -1161,6 +1349,9 @@ func (a *App) runAuditCleanupLoop(ctx context.Context) {
 		a.pruneTrafficSnapshots(ctx)
 		a.pruneMailSent(ctx)
 		a.pruneSubLogs(ctx)
+		a.pruneConnectionHistory(ctx)
+		a.pruneFlagRecords(ctx)
+		a.pruneRiskReviews(ctx)
 		a.pruneCertEvents(ctx)
 		select {
 		case <-ctx.Done():
@@ -1343,6 +1534,146 @@ func (a *App) pruneSubLogs(ctx context.Context) {
 	}
 	if deleted > 0 {
 		log.Info("sub log cleanup", "deleted", deleted, "retention_days", settings.SubLogRetentionDays)
+	}
+}
+
+// connectionHistoryPruner is what the hourly cleanup needs of the
+// connection_history store, and all it is handed.
+type connectionHistoryPruner interface {
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	PurgeOrphans(ctx context.Context) (int64, error)
+}
+
+// pruneConnectionHistory ages connection_history out and deletes what deleted
+// accounts left. The table holds IP addresses, so both passes are promises
+// rather than housekeeping, and each deliberately differs from its sub-log
+// counterpart:
+//
+//   - Retention is risk.connection_retention_days by LAST sighting, resolved
+//     by domain.RiskRuntimeFromSettings: a week unless set, at most 90 days,
+//     and 0 or a negative value is the week — NEVER "keep forever", which is
+//     what pruneSubLogs does on <= 0. An IP-bearing table must always age out.
+//   - An unreadable setting skips the retention pass (with a Warn) rather
+//     than pruning at the default: an admin who keeps 90 days would lose 83
+//     of them to one failed read, and the next hour retries. No settings
+//     repo at all (a harness) is the default, like the loops' cadences.
+//   - The orphan purge needs no setting and runs whatever else failed, so a
+//     deleted account's addresses are gone within the hour.
+//
+// Counts only in the log, never a row's content.
+func (a *App) pruneConnectionHistory(ctx context.Context) {
+	if a.connHistory == nil {
+		return
+	}
+	var set ports.UISettings
+	settingsOK := true
+	if a.settings != nil {
+		loaded, err := a.settings.Load(ctx, ports.UISettings{})
+		if err != nil {
+			log.Warn("connection history cleanup load settings; retention pass skipped", "err", err)
+			settingsOK = false
+		}
+		set = loaded
+	}
+	if settingsOK {
+		days := domain.RiskRuntimeFromSettings(set.RiskRuntimeSettings()).ConnectionRetentionDays
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		deleted, err := a.connHistory.DeleteBefore(ctx, cutoff)
+		switch {
+		case err != nil:
+			log.Warn("connection history cleanup", "err", err)
+		case deleted > 0:
+			log.Info("connection history cleanup", "deleted", deleted, "retention_days", days)
+		}
+	}
+	purged, err := a.connHistory.PurgeOrphans(ctx)
+	switch {
+	case err != nil:
+		log.Warn("connection history orphan purge", "err", err)
+	case purged > 0:
+		log.Info("connection history orphan purge", "deleted", purged)
+	}
+}
+
+// flagRecordPruner is what the hourly cleanup needs of the flag_records
+// store, and all it is handed.
+type flagRecordPruner interface {
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	PurgeOrphans(ctx context.Context) (int64, error)
+}
+
+// pruneFlagRecords ages flag_records out and deletes what deleted accounts
+// left, with pruneConnectionHistory's rules and for its reasons:
+//
+//   - Retention is risk.flag_record_retention_days by the record's time,
+//     resolved by domain.RiskRuntimeFromSettings: 90 days unless set, at most
+//     ten years, and 0 or a negative value is the 90 days — never "keep
+//     forever". Everything this detector writes ages out.
+//   - An unreadable setting skips the retention pass (with a Warn) rather
+//     than pruning at the default: an admin who keeps a year would lose most
+//     of it to one failed read, and the next hour retries. No settings repo
+//     at all (a harness) is the default.
+//   - The orphan purge needs no setting and runs whatever else failed. The
+//     records keep no name, so a deleted account's history belongs to
+//     nobody an admin can open.
+//
+// Counts only in the log.
+func (a *App) pruneFlagRecords(ctx context.Context) {
+	if a.flagRecords == nil {
+		return
+	}
+	var set ports.UISettings
+	settingsOK := true
+	if a.settings != nil {
+		loaded, err := a.settings.Load(ctx, ports.UISettings{})
+		if err != nil {
+			log.Warn("flag record cleanup load settings; retention pass skipped", "err", err)
+			settingsOK = false
+		}
+		set = loaded
+	}
+	if settingsOK {
+		days := domain.RiskRuntimeFromSettings(set.RiskRuntimeSettings()).FlagRecordRetentionDays
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		deleted, err := a.flagRecords.DeleteBefore(ctx, cutoff)
+		switch {
+		case err != nil:
+			log.Warn("flag record cleanup", "err", err)
+		case deleted > 0:
+			log.Info("flag record cleanup", "deleted", deleted, "retention_days", days)
+		}
+	}
+	purged, err := a.flagRecords.PurgeOrphans(ctx)
+	switch {
+	case err != nil:
+		log.Warn("flag record orphan purge", "err", err)
+	case purged > 0:
+		log.Info("flag record orphan purge", "deleted", purged)
+	}
+}
+
+// riskReviewPruner is what the hourly cleanup needs of the risk_reviews
+// store, and all it is handed.
+type riskReviewPruner interface {
+	PurgeOrphans(ctx context.Context) (int64, error)
+}
+
+// pruneRiskReviews deletes the review rows of accounts that no longer exist.
+// No retention pass: a review row is an admin's standing decision, which
+// only an admin clears (a dismissal's lapse is decided when it is read, never
+// by deleting the row). The reads JOIN users, so a deleted account's row is
+// invisible from the moment of the delete; this makes it gone within the
+// hour. Counts only in the log.
+func (a *App) pruneRiskReviews(ctx context.Context) {
+	if a.riskReviews == nil {
+		return
+	}
+	purged, err := a.riskReviews.PurgeOrphans(ctx)
+	switch {
+	case err != nil:
+		log.Warn("risk review orphan purge", "err", err)
+	case purged > 0:
+		log.Info("risk review orphan purge", "deleted", purged)
 	}
 }
 
@@ -1611,6 +1942,172 @@ func (a *App) runTrafficLoop(ctx context.Context) {
 				defer a.compatProbeInflight.Store(false)
 				a.probePanelVersionsOnce(ctx)
 			})
+		}
+	}
+}
+
+// infraIntervalFrom is how often the node and relay addresses the location
+// detector excludes are rebuilt: geo_anomaly.infra_refresh_minutes, as
+// domain.GeoRuntimeFromSettings sanitises it (five minutes by default, at
+// most an hour — how long a relay an admin just added can go on being judged
+// as a user's location). Hostname answers are cached for their own TTL
+// (geo_anomaly.infra_host_ttl_minutes, ten by default), so at the defaults
+// roughly every other refresh is a node-list read and no DNS at all.
+//
+// A settings read that failed gives the default, not the interval the loop
+// held: unlike the traffic cadence (nextTrafficInterval), which paces
+// metering and must not move on an outage, this is upkeep whose every value
+// in range is safe, and the default is the one the domain vouches for.
+func infraIntervalFrom(s ports.UISettings, err error) time.Duration {
+	if err != nil {
+		s = ports.UISettings{}
+	}
+	return domain.GeoRuntimeFromSettings(s.GeoRuntimeSettings()).InfraRefresh
+}
+
+// infraInterval reads the infrastructure refresh cadence for the next wait.
+// Nil-safe on a.settings: an App assembled without settings (a test harness)
+// runs on the default.
+func (a *App) infraInterval(ctx context.Context) time.Duration {
+	if a.settings == nil {
+		return infraIntervalFrom(ports.UISettings{}, nil)
+	}
+	return infraIntervalFrom(a.settings.Load(ctx, ports.UISettings{}))
+}
+
+// runInfraAddressLoop keeps traffic's infrastructure-address set current.
+//
+// It refreshes once as soon as it starts, before the first tick: the first
+// scheduled traffic poll runs one interval after boot, and a loop that
+// waited out its own first tick would let that poll judge every relay
+// address as a user's location. Kept out of the poll entirely because
+// resolving relay hostnames is DNS, and DNS latency or failure has no
+// business inside the cycle that meters traffic.
+//
+// The cadence is re-read after every refresh, so an admin's edit takes
+// effect without a restart — one wait late, the same bargain the traffic,
+// health, geo and cert loops make.
+func (a *App) runInfraAddressLoop(ctx context.Context) {
+	if a.traffic == nil {
+		return
+	}
+	refresh := func() {
+		if err := a.operationGate.RunRead(ctx, a.traffic.RefreshInfraAddresses); err != nil && ctx.Err() == nil {
+			log.Warn("infra address refresh failed; keeping the previous set", "err", err)
+		}
+	}
+	refresh()
+	interval := a.infraInterval(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			refresh()
+			if next := a.infraInterval(ctx); next != interval {
+				interval = next
+				t.Reset(interval)
+				log.Info("infra address refresh interval changed", "interval", interval.String())
+			}
+		}
+	}
+}
+
+// riskIntervalFrom is how often the risk signals are recomputed:
+// risk.refresh_interval_minutes, as domain.RiskRuntimeFromSettings sanitises
+// it (an hour by default; at least ten minutes, because every run streams a
+// week of fetches and weeks of hourly traffic per account; at most a day).
+// The signals are day-scale, so an hour is fresh enough, and none of them
+// sits on the poll path.
+//
+// A settings read that failed gives the default, not the interval the loop
+// held — the same bargain as infraIntervalFrom: this is observation whose
+// every value in range is safe, and the default is the one the domain
+// vouches for.
+func riskIntervalFrom(s ports.UISettings, err error) time.Duration {
+	if err != nil {
+		s = ports.UISettings{}
+	}
+	return domain.RiskRuntimeFromSettings(s.RiskRuntimeSettings()).RefreshInterval
+}
+
+// riskFirstDelayFrom is how long after start the first refresh runs:
+// risk.first_delay_minutes (two by default, at most an hour). Long enough
+// for the boot probes and the infrastructure-address refresh (which runs as
+// soon as its loop starts) to settle, so the first run does not compete
+// with them; short enough that a fresh install's risk view is not empty for
+// a whole interval. Correctness does not depend on it: every run skips the
+// place signals while the infrastructure set has never been built
+// (traffic.Service.InfraLoaded), keeping their previous rows. An unreadable
+// setting is the default, as above.
+func riskFirstDelayFrom(s ports.UISettings, err error) time.Duration {
+	if err != nil {
+		s = ports.UISettings{}
+	}
+	return domain.RiskRuntimeFromSettings(s.RiskRuntimeSettings()).FirstDelay
+}
+
+// riskInterval reads the risk worker's cadence for the next wait, and
+// riskFirstDelay its first delay (read once, in Run: a change takes effect
+// on the next restart). Both nil-safe on a.settings: an App assembled
+// without settings (a test harness) runs on the defaults.
+func (a *App) riskInterval(ctx context.Context) time.Duration {
+	if a.settings == nil {
+		return riskIntervalFrom(ports.UISettings{}, nil)
+	}
+	return riskIntervalFrom(a.settings.Load(ctx, ports.UISettings{}))
+}
+
+func (a *App) riskFirstDelay(ctx context.Context) time.Duration {
+	if a.settings == nil {
+		return riskFirstDelayFrom(ports.UISettings{}, nil)
+	}
+	return riskFirstDelayFrom(a.settings.Load(ctx, ports.UISettings{}))
+}
+
+// runRiskLoop recomputes the observe-only risk signals: once after
+// firstDelay, then every risk.refresh_interval_minutes. A failed run keeps
+// the previous rows (the service writes nothing on error) and is retried on
+// the next tick; RefreshOnce counts every run it starts in
+// psp_risk_refresh_total. Runs under the operation gate like every other
+// background pass, so a backend switch drains it.
+//
+// The cadence is re-read after every refresh, so an admin's edit takes
+// effect without a restart — one wait late, as the infrastructure loop's
+// does.
+func (a *App) runRiskLoop(ctx context.Context, firstDelay time.Duration) {
+	if a.risk == nil {
+		return
+	}
+	refresh := func() {
+		if err := a.operationGate.RunRead(ctx, a.risk.RefreshOnce); err != nil && ctx.Err() == nil {
+			log.Warn("risk signal refresh failed; previous rows kept", "err", err)
+		}
+	}
+	first := time.NewTimer(firstDelay)
+	defer first.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-first.C:
+	}
+	refresh()
+	interval := a.riskInterval(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			refresh()
+			if next := a.riskInterval(ctx); next != interval {
+				interval = next
+				t.Reset(interval)
+				log.Info("risk signal refresh interval changed", "interval", interval.String())
+			}
 		}
 	}
 }

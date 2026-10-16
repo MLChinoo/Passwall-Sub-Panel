@@ -137,6 +137,10 @@ func (s *Service) buildSingBoxOutbounds(ctx context.Context, u *domain.User, ite
 			continue
 		}
 		renderUser, userEmail, appliedPassword := renderIdentityForNode(u, it.node.ID, emailRules, appliedCredentials)
+		renderUser, lineErr := it.userForLine(renderUser)
+		if lineErr != nil {
+			continue
+		}
 		block, err := emitSingBoxOutbound(it.name, it.node, renderUser, inb, userEmail, appliedPassword, it.relay)
 		if err != nil {
 			log.Warn("render: skip node, emit sing-box failed", "node_id", it.node.ID, "err", err)
@@ -449,29 +453,6 @@ func singBoxResolvedChoices(raw []string) []string {
 		}
 		seen[tag] = true
 		out = append(out, tag)
-	}
-	return out
-}
-
-func singBoxSelectorChoices(raw []string, nodeTags []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	add := func(tag string) {
-		if tag == "" || seen[tag] {
-			return
-		}
-		seen[tag] = true
-		out = append(out, tag)
-	}
-	for _, item := range raw {
-		switch item {
-		case "@all":
-			for _, tag := range nodeTags {
-				add(tag)
-			}
-		default:
-			add(singBoxOutboundTag(item))
-		}
 	}
 	return out
 }

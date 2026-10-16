@@ -266,10 +266,29 @@ type WebCertProvider interface {
 // must say "IP", never "device", or it will promise something it cannot
 // deliver — the exact mistake that let the device cap look enforced.
 type LiveIPReader interface {
-	// ListLiveClientIPs returns each client email's currently-live source
-	// IPs on this panel. Upstream applies its own staleness window, so an
-	// email with no live connections is absent rather than empty.
+	// ListLiveClientIPs returns each client email's source IPs within the
+	// upstream's own staleness window (3X-UI: 30 minutes after the address
+	// was last seen), so an email with no recent connections is absent
+	// rather than empty. "In the window" is not "connected now"; see
+	// LiveIPDetailReader for the read that can tell the two apart.
 	ListLiveClientIPs(ctx context.Context) (map[string][]string, error)
+}
+
+// LiveIPDetailReader is LiveIPReader with the node and last-seen time kept.
+//
+// The upstream's list is 30 minutes of memory, not a picture of now: an
+// address stays in it long after its stream closed, so one commuter reads as
+// several places "at once". The per-address timestamp is what tells live
+// from remembered (domain.FreshLiveIPs), and the node guid is needed because
+// each node scans on its own clock. An adapter that has neither implements
+// only LiveIPReader, and its addresses are all treated as live — the
+// behaviour before this interface existed.
+type LiveIPDetailReader interface {
+	// ListLiveClientIPDetails returns each client email's sightings: one
+	// per (node, address), SeenAt in unix seconds on the panel's clock, 0
+	// when the upstream gave none. An idle panel is a non-nil empty map,
+	// never an error; a failed read is an error, never an empty map.
+	ListLiveClientIPDetails(ctx context.Context) (map[string][]domain.LiveIPSighting, error)
 }
 
 // Fail2banReader is the optional "will the IP cap actually do anything"
@@ -596,6 +615,16 @@ type PanelPool interface {
 // reject unknown adapter kinds before persisting a panel row.
 type PanelKindValidator interface {
 	SupportsKind(kind domain.PanelKind) bool
+}
+
+// PanelKindResolver is an optional pool capability: the adapter kind behind a
+// registered panel id, without handing out the panel definition. The lifecycle
+// failure breakdown labels each failure by it, because "17 failures" means one
+// thing on a native node whose agent is offline and another on a 3X-UI panel
+// that rejects writes. A pool that does not implement it, or an id it does not
+// hold, reads as unknown; nothing guesses a kind.
+type PanelKindResolver interface {
+	KindOf(panelID int64) (domain.PanelKind, bool)
 }
 
 // XUIPool is a source-compatibility alias for the generic pool contract.

@@ -1,4 +1,5 @@
 import { client } from './client'
+import type { ReadOptions } from './requestOptions'
 import type { LoginMode } from './types'
 
 export type SubPlatform = 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'other'
@@ -59,6 +60,21 @@ export interface GlobalAnnouncement {
   popup: boolean
   updated_at: string
 }
+
+/** The 23 geo and risk runtime knobs, by the json tag the server keys
+ *  runtime_effective / runtime_defaults with (ports.RuntimeEffective). */
+export type RuntimeKnob =
+  | 'geo_anomaly_fresh_window_seconds' | 'geo_anomaly_shared_exit_min_users'
+  | 'geo_anomaly_ban_max_per_poll' | 'geo_anomaly_lift_max_per_poll'
+  | 'geo_anomaly_infra_refresh_minutes' | 'geo_anomaly_infra_host_ttl_minutes'
+  | 'risk_refresh_interval_minutes' | 'risk_first_delay_minutes' | 'risk_alert_freshness_hours'
+  | 'risk_window_days' | 'risk_usage_baseline_days' | 'risk_usage_recent_days'
+  | 'risk_usage_warmup_days' | 'risk_usage_flag_days' | 'risk_usage_suspect_days'
+  | 'risk_login_warmup_logins' | 'risk_login_hold_days' | 'risk_login_lookback_days'
+  | 'risk_connection_retention_days' | 'risk_flag_record_retention_days'
+  | 'risk_live_snapshot_stale_minutes' | 'risk_live_refresh_cooldown_seconds' | 'risk_device_infer_hours'
+
+export type RuntimeKnobValues = Partial<Record<RuntimeKnob, number>>
 
 export interface UISettings {
   login_mode: LoginMode
@@ -150,21 +166,121 @@ export interface UISettings {
    *  0 disables auto-prune. Default 30. */
   mail_sent_retention_days: number
 
-  // ---- IP geolocation (offline .mmdb region display in access logs) ----
-  /** Master toggle. Off by default; resolution is fully offline against a
-   *  local .mmdb in <ConfigDir>/geoip/ (no per-IP external calls). */
-  // Concurrent-location anomaly policy. Every field is per-group
-  // overridable; see docs/connection-limits.md §12.3 for why each knob
-  // exists — each one is there because a specific real user would
-  // otherwise be misjudged.
+  // ---- Concurrent-location anomaly detection ----
+  // READ-ONLY here, like every geo_anomaly_* and risk_* field below: the
+  // risk center's policy endpoint (api/riskCenter, PUT /risk-center/policy)
+  // is their one writer, and a PUT of these settings keeps the stored values
+  // whatever it sends. They are still served because the group scope editor
+  // reads its inherited baseline from this record.
+  //
+  // Every field is per-group overridable EXCEPT geo_anomaly_ignore_addresses,
+  // which names fleet infrastructure rather than a population's tolerance and
+  // is global only; see docs/connection-limits.md §12.3 for why each knob
+  // exists. A stored 0 (or '' for the scope) means "the shipped default",
+  // never "zero tolerance" — the policy page's effectiveGeo
+  // (views/admin/risk/policy/effective.ts) mirrors how the server resolves
+  // them, from the served defaults.
+  /** The FINEST tier judged; '' = the default, city (all three tiers). */
   geo_anomaly_scope: 'off' | 'country' | 'region' | 'city' | ''
+  /** COUNTRY tolerance (the key predates tiers). 0 = default 1. */
   geo_anomaly_max_places: number
+  /** Regions allowed at once in the widest country. 0 = default 1. */
+  geo_anomaly_max_regions: number
+  /** Cities allowed at once in the widest country. 0 = default 2. */
+  geo_anomaly_max_cities: number
   geo_anomaly_flag_after_polls: number
   geo_anomaly_clear_after_polls: number
   geo_anomaly_min_placed_ratio: number
-  // One place set per LINE, members comma-separated ("JP,TW").
+  // One COUNTRY set per LINE, members comma-separated ("JP,TW"). Tokens
+  // containing "/" are dropped server-side: only countries fold.
   geo_anomaly_co_travel: string
   geo_anomaly_allow_anywhere: boolean
+  /** IPs/CIDRs, newline/comma separated, '#' comments, <=256. GLOBAL only.
+   *  The one geo field the policy PUT validates: a bad entry is a 400 naming
+   *  it. */
+  geo_anomaly_ignore_addresses: string
+  // Automatic temporary suspension (off by default). Its own thresholds,
+  // raised server-side to at least the flag tolerances per tier.
+  geo_anomaly_ban_enabled: boolean
+  /** 0 = default 1. */
+  geo_anomaly_ban_max_countries: number
+  /** 0 = default 2. */
+  geo_anomaly_ban_max_regions: number
+  /** 0 = default 3. */
+  geo_anomaly_ban_max_cities: number
+  /** Consecutive over-the-line checks before suspending. 0 = default 6. */
+  geo_anomaly_ban_after_polls: number
+  /** 0 = default 60; clamped to 1..10080 (7 days). */
+  geo_anomaly_ban_duration_minutes: number
+
+  // ---- Risk signals (observe only) ----
+  // Four signals beside concurrent locations, recomputed at the risk refresh
+  // interval (hourly by default); none of them acts on an account. The switches are NEGATIVE keys, so the zero value of
+  // an install that never saved them is "on". A stored 0 in a number means
+  // "the shipped default" — the policy page's effectiveRisk mirrors how the
+  // server resolves them. Every field is per-group overridable EXCEPT
+  // risk_hwid_capture_off, which /sub reads before it knows the account's
+  // group and is global only.
+  risk_sub_spread_off: boolean
+  risk_devices_off: boolean
+  risk_usage_shift_off: boolean
+  risk_login_country_off: boolean
+  /** Days of the fetch window a province or device must recur on. 0 = default
+   *  3; clamped to 1..7. */
+  risk_min_days: number
+  /** Recurring declared devices allowed. 0 = default 3. */
+  risk_max_devices: number
+  /** A day over median × this is an over-day. 0 = default 3; raised to 1.5. */
+  risk_usage_ratio: number
+  /** GiB below which a day is never an over-day. 0 = default 3. */
+  risk_usage_floor_gb: number
+  /** Stops recording the x-hwid a subscription client declares. GLOBAL only;
+   *  stored digests expire with the sub log. */
+  risk_hwid_capture_off: boolean
+  // login_country's and usage_shift's thresholds, per-group like the
+  // tolerances above. 0 = the shipped default (3 logins, 7 days; 14, 4 and 2
+  // days); the server raises and bounds them (runtime_effective says to what).
+  risk_login_warmup_logins: number
+  risk_login_hold_days: number
+  risk_usage_warmup_days: number
+  risk_usage_flag_days: number
+  risk_usage_suspect_days: number
+
+  // ---- The detectors' fleet-wide runtime (GLOBAL only) ----
+  // What used to be constants in the poll, the enforcement, the infrastructure
+  // refresh, the risk worker and the bell, plus the risk center's retentions
+  // and live view. 0 = the shipped default; the server clamps a stored value
+  // when it reads it and never rejects one on save. The numbers in effect and
+  // the defaults come back in runtime_effective / runtime_defaults — the SPA
+  // keeps no copy of either.
+  geo_anomaly_fresh_window_seconds: number
+  geo_anomaly_shared_exit_min_users: number
+  geo_anomaly_ban_max_per_poll: number
+  geo_anomaly_lift_max_per_poll: number
+  geo_anomaly_infra_refresh_minutes: number
+  geo_anomaly_infra_host_ttl_minutes: number
+  risk_refresh_interval_minutes: number
+  risk_first_delay_minutes: number
+  risk_alert_freshness_hours: number
+  risk_window_days: number
+  risk_usage_baseline_days: number
+  risk_usage_recent_days: number
+  risk_login_lookback_days: number
+  risk_connection_retention_days: number
+  risk_flag_record_retention_days: number
+  risk_live_snapshot_stale_minutes: number
+  risk_live_refresh_cooldown_seconds: number
+  risk_device_infer_hours: number
+  /** Read-only (the PUT ignores them): for each runtime knob, the number the
+   *  panel runs with — the server's clamps, floors and bounds applied to what
+   *  is stored — and the shipped default an unset knob falls back to. Absent
+   *  from an older server, so every reader tolerates a missing map or key. */
+  runtime_effective?: RuntimeKnobValues
+  runtime_defaults?: RuntimeKnobValues
+
+  // ---- IP geolocation (offline .mmdb region display in access logs) ----
+  /** Master toggle. Off by default; resolution is fully offline against a
+   *  local .mmdb in <ConfigDir>/geoip/ (no per-IP external calls). */
   geo_ip_enabled: boolean
   /** Active database filename when several .mmdb are present. Empty = first by
    *  name. Only one is ever active (no merging → no conflict). */
@@ -303,8 +419,18 @@ export interface GeoIPStatus {
   update: GeoUpdateState
 }
 
-export async function getGeoIPStatus() {
-  const { data } = await client.get<GeoIPStatus>('/admin/settings/geoip/status')
+export async function getGeoIPStatus(opts: ReadOptions = {}) {
+  // Options only when asked for: the settings page (which polls this during an
+  // update) keeps the exact request it has always made, while the risk
+  // center's notice read passes its query signal and stays quiet on failure —
+  // a failed read there just means no notice, not a toast over the page's real
+  // data.
+  const { data } = opts.signal || opts.silent
+    ? await client.get<GeoIPStatus>('/admin/settings/geoip/status', {
+      signal: opts.signal,
+      _skipErrorToast: opts.silent,
+    })
+    : await client.get<GeoIPStatus>('/admin/settings/geoip/status')
   return data
 }
 

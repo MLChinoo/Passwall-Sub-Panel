@@ -528,6 +528,11 @@ type setServiceStatusRequest struct {
 	Enabled bool   `json:"enabled"`
 	Reason  string `json:"reason,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+	// ExpectReason, on a resume, is the hold the caller SHOWED: the resume
+	// then lifts only while the row still carries it (409 reason_changed
+	// otherwise). The risk center's drawer always sends it; without it (the
+	// Users page, older SPAs) the resume stays unconditional.
+	ExpectReason string `json:"expect_reason,omitempty"`
 }
 
 func (h *AdminUserHandler) SetEnabled(c *gin.Context) {
@@ -605,7 +610,25 @@ func (h *AdminUserHandler) SetServiceStatus(c *gin.Context) {
 		return
 	}
 	if req.Enabled {
-		if err := h.user.ResumeServiceAndSync(c.Request.Context(), id); err != nil {
+		if expect := domain.AutoDisabledReason(strings.TrimSpace(req.ExpectReason)); expect != "" {
+			if !domain.ServiceSuspensionReason(expect) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service status reason"})
+				return
+			}
+			// A stale drawer, or a second admin who paused the account after
+			// this one opened it, must not lift a hold the caller never saw.
+			// The service decides on the fresh row under the user lock and
+			// clears conditionally; "not lifted" is that refusal, not an error.
+			lifted, err := h.user.ResumeServiceIfReason(c.Request.Context(), id, expect)
+			if err != nil {
+				respondError(c, err)
+				return
+			}
+			if !lifted {
+				c.JSON(http.StatusConflict, gin.H{"error": "Service state changed", "code": "reason_changed"})
+				return
+			}
+		} else if err := h.user.ResumeServiceAndSync(c.Request.Context(), id); err != nil {
 			respondError(c, err)
 			return
 		}
@@ -616,6 +639,17 @@ func (h *AdminUserHandler) SetServiceStatus(c *gin.Context) {
 		}
 		if !domain.ServiceSuspensionReason(reason) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service status reason"})
+			return
+		}
+		// geo_auto is valid for the COLUMN but not from a person. The location
+		// detector owns it end to end: it is the only writer, and its
+		// time-based lift keys on this reason, so a hand-written one would be a
+		// "manual" suspension that silently expires. An admin resume of it is
+		// also the detector's false-positive count, which a person's own
+		// suspensions would pollute. geo_anomaly is the human decision for the
+		// same evidence.
+		if reason == domain.DisabledGeoAutoSuspend {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Geo_auto is applied by the location detector only; use geo_anomaly for a manual geo suspension"})
 			return
 		}
 		if err := h.user.SetServiceSuspendedAndSync(c.Request.Context(), id, reason, strings.TrimSpace(req.Detail)); err != nil {
@@ -734,6 +768,7 @@ func (h *AdminUserHandler) RegenerateUser2FARecovery(c *gin.Context) {
 }
 
 type updateUserRequest struct {
+	UPN      *string    `json:"upn,omitempty"`
 	GroupID  *int64     `json:"group_id,omitempty"`
 	Role     *string    `json:"role,omitempty"`
 	Email    *string    `json:"email,omitempty"`
@@ -802,6 +837,7 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 		}
 	}
 	in := user.UpdateInput{
+		UPN:         req.UPN,
 		GroupID:     req.GroupID,
 		Email:       req.Email,
 		ExpireAt:    expireAt,

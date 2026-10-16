@@ -13,6 +13,7 @@ import (
 
 	"github.com/KazuhaHub/passwall-sub-panel/internal/domain"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/realitykey"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xraycompat"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	certsvc "github.com/KazuhaHub/passwall-sub-panel/internal/service/cert"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/node"
@@ -34,6 +35,26 @@ type AdminNodeHandler struct {
 
 func NewAdminNodeHandler(nodeSvc *node.Service, syncSvc *syncsvc.Service, ownership ports.OwnershipRepo, users ports.UserRepo, panels ports.XUIPanelRepo, pspClients ports.PSPClientRepo, certs ports.CertificateRepo) *AdminNodeHandler {
 	return &AdminNodeHandler{node: nodeSvc, sync: syncSvc, ownership: ownership, users: users, panels: panels, pspClients: pspClients, certs: certs}
+}
+
+// normalizeRealityFingerprint enforces the server-core compatibility rule at
+// the write boundary. The UI mirrors this by locking the selector, but API
+// callers and raw/advanced JSON must not be able to persist a contradictory
+// desired configuration. Unknown core versions remain untouched.
+func (h *AdminNodeHandler) normalizeRealityFingerprint(ctx context.Context, panelID int64, spec *ports.InboundSpec) error {
+	if h.panels == nil || spec == nil {
+		return nil
+	}
+	panel, err := h.panels.GetByID(ctx, panelID)
+	if err != nil {
+		return err
+	}
+	normalized, _, err := xraycompat.NormalizeRealityFingerprint(spec.StreamSettings, panel.XrayVersion)
+	if err != nil {
+		return fmt.Errorf("normalize REALITY fingerprint: %w", err)
+	}
+	spec.StreamSettings = normalized
+	return nil
 }
 
 // ---- DTOs ----
@@ -90,14 +111,16 @@ type nodeDTO struct {
 	// Relays are the node's transit / 中转 lines; HideDirect drops the direct
 	// entry when at least one line is enabled. Surfaced so the edit form can
 	// round-trip them. Always present (possibly empty) for real nodes.
-	Relays          []relayLineDTO `json:"relays"`
-	HideDirect      bool           `json:"hide_direct"`
-	ShowRelayStatus bool           `json:"show_relay_status"`
+	Relays          []relayLineDTO         `json:"relays"`
+	RouteState      *domain.NodeRouteState `json:"route_state,omitempty"`
+	HideDirect      bool                   `json:"hide_direct"`
+	ShowRelayStatus bool                   `json:"show_relay_status"`
 }
 
 // relayLineDTO is one transit front. Only the dialed endpoint differs from the
 // landing; SNI/Host are optional CDN-fronting overrides. See domain.RelayLine.
 type relayLineDTO struct {
+	ID      string `json:"id,omitempty"`
 	Name    string `json:"name"`
 	Address string `json:"address"`
 	Port    int    `json:"port"`
@@ -534,6 +557,10 @@ func (h *AdminNodeHandler) CreateInbound(c *gin.Context) {
 		n.CertSource = domain.CertSourceManaged
 		n.CertID = managed.ID
 	}
+	if err := h.normalizeRealityFingerprint(c.Request.Context(), n.PanelID, &spec); err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
 	if err := h.node.CreateInbound(c.Request.Context(), n, spec); err != nil {
 		mapNodeServiceError(c, err)
 		return
@@ -636,6 +663,15 @@ func (h *AdminNodeHandler) UpdateInboundConfig(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+	}
+	n, err := h.node.Get(c.Request.Context(), id)
+	if err != nil {
+		mapNodeServiceError(c, err)
+		return
+	}
+	if err := h.normalizeRealityFingerprint(c.Request.Context(), n.PanelID, &spec); err != nil {
+		mapNodeServiceError(c, err)
+		return
 	}
 	if err := h.node.UpdateInboundConfig(c.Request.Context(), id, spec); err != nil {
 		mapNodeServiceError(c, err)
@@ -939,6 +975,7 @@ func parseRelays(dtos []relayLineDTO) ([]domain.RelayLine, error) {
 			return nil, fmt.Errorf("relay line %d: port %d out of range (0-65535; 0 reuses the inbound port)", i+1, d.Port)
 		}
 		out = append(out, domain.RelayLine{
+			ID:      d.ID,
 			Name:    strings.TrimSpace(d.Name),
 			Address: addr,
 			Port:    d.Port,
@@ -955,6 +992,7 @@ func relayDTOs(relays []domain.RelayLine) []relayLineDTO {
 	out := make([]relayLineDTO, 0, len(relays))
 	for _, r := range relays {
 		out = append(out, relayLineDTO{
+			ID:      r.ID,
 			Name:    r.Name,
 			Address: r.Address,
 			Port:    r.Port,
@@ -1000,9 +1038,18 @@ func (h *AdminNodeHandler) toNodeDTO(n *domain.Node, panelNames map[int64]string
 		CertSource:         string(n.CertSource),
 		CertID:             n.CertID,
 		Relays:             relayDTOs(n.Relays),
+		RouteState:         routeStateDTO(n.RouteState),
 		HideDirect:         n.HideDirect,
 		ShowRelayStatus:    n.EffectiveShowRelayStatus(),
 	}
+}
+
+func routeStateDTO(state domain.NodeRouteState) *domain.NodeRouteState {
+	if state.Revision == 0 && len(state.Lines) == 0 {
+		return nil
+	}
+	visible := state.Visible()
+	return &visible
 }
 
 // forceRelayStatusForHiddenDirect is the server-side half of the node-editor

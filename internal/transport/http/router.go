@@ -17,6 +17,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/operationgate"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/panelpath"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/subdevice"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/alert"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/audit"
@@ -41,6 +42,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/traffic"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/twofa"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/user"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/service/vlessroute"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/handler"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/transport/http/middleware"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/version"
@@ -64,6 +66,7 @@ type AsyncDispatcher interface {
 // Deps bundles every dependency the HTTP layer needs. App-startup wiring
 // populates this and passes it to NewRouter.
 type Deps struct {
+	VlessRoute    *vlessroute.Service
 	OperationGate *operationgate.Gate
 	Cfg           *config.Config
 	Repos         ports.Repos
@@ -71,7 +74,38 @@ type Deps struct {
 	// same rows the traffic poll writes each cycle. Optional: a deployment
 	// without it gets a 503 from the endpoint rather than an empty list, so
 	// "nothing to report" stays distinguishable from "cannot report".
-	GeoRecords       handler.GeoRecordLister
+	GeoRecords handler.GeoRecordLister
+	// RiskSignals is the read side of the observe-only risk signals, the rows
+	// the hourly worker writes. Optional like GeoRecords: absent, the
+	// endpoint answers 503 rather than an empty list.
+	RiskSignals handler.RiskSignalLister
+	// RiskQueue counts the accounts that need action now, for the
+	// notification bell's one risk entry — in practice the same service as
+	// RiskCenter, a separate field because the bell needs a COUNT and the
+	// risk center the rows. Optional like every alert source: absent, the
+	// bell has no such entry; TestBuildWiresTheRiskQueueBell guards that
+	// Build does not leave it out.
+	RiskQueue alert.RiskQueueCounter
+	// RiskCenter is the risk center's read side (风控中心): the attention
+	// queue, one account's drawer and the levels, the live connections and
+	// their refresh, the connection history, the flag records. An
+	// interface, so a deployment that leaves it out passes a true nil and
+	// its routes answer 503 rather than an empty list;
+	// TestBuildWiresTheRiskCenter guards that Build does not.
+	RiskCenter handler.RiskCenterService
+	// RiskReview is the risk center's review actions: dismiss an account's
+	// signals until they escalate, trust an account (and, when asked, lift
+	// the location detector's own hold). An interface for RiskCenter's
+	// reason: left out, the four routes answer 503 rather than pretend;
+	// TestBuildWiresTheRiskReview guards that Build does not leave it out.
+	RiskReview handler.RiskReviewService
+	// DeviceHasher keys the device a subscription client declares (x-hwid)
+	// into the per-account digest sub_logs keeps. Nil disables capture: /sub
+	// serves exactly as before and every fetch logs as anonymous. Built by
+	// the composition root from the panel secret, so the handler never sees
+	// key material; TestBuildRecordsTheDeclaredDeviceOnEveryLoggedFetch
+	// guards that it is actually handed over.
+	DeviceHasher     *subdevice.Hasher
 	Pool             ports.XUIPool
 	Auth             *auth.Service
 	SAML             *auth.SAMLService
@@ -219,7 +253,11 @@ func NewRouter(d Deps) stdhttp.Handler {
 		if err != nil {
 			panic("configure native node authentication: " + err.Error())
 		}
-		nodeSync, err := handler.NewNodeSyncHandler(d.NodeSync, nodeAuth)
+		// The agent repository is already required by this branch for
+		// authentication; the recorder reuses it through a one-method interface so
+		// the sync handler cannot reach the rest of it.
+		nodeSync, err := handler.NewNodeSyncHandler(d.NodeSync, nodeAuth,
+			handler.WithNodeRefusalRecorder(d.Repos.NodeAgent))
 		if err != nil {
 			panic("configure native node sync: " + err.Error())
 		}
@@ -233,13 +271,18 @@ func NewRouter(d Deps) stdhttp.Handler {
 	// is satisfied structurally, so a ports declaration would add a name
 	// without adding a guarantee.
 	geoAnomalyH := handler.NewAdminGeoAnomalyHandler(d.GeoRecords, d.Repos.User)
+	// The risk signals, with each account's geo verdict beside them, read
+	// from the same rows the Geo tab lists rather than a second copy.
+	riskSignalsH := handler.NewAdminRiskSignalHandler(d.RiskSignals, d.GeoRecords)
+	riskCenterH := handler.NewAdminRiskCenterHandler(d.RiskCenter)
+	riskReviewH := handler.NewAdminRiskReviewHandler(d.RiskReview)
 	// Node self-enrollment handler. Constructed here rather than inside the
 	// admin block because one of its three routes is admin-only and two are
 	// public, and they must share the same token store.
 	enrollPublic := handler.NewNodeEnrollHandler(d.Repos.AuthToken, d.Repos.XUIPanel, d.Pool, d.EnrollProbe)
 	var bootstrapPublic *handler.NodeBootstrapHandler
 
-	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.ScopedSettings, d.Repos.User, d.Mail, d.Async)
+	subHandler := handler.NewSubHandler(d.User, d.Render, d.Repos.SubLog, d.Repos.ScopedSettings, d.Repos.User, d.Mail, d.Async, d.DeviceHasher)
 	subLimiter := middleware.NewPerIPLimiter(d.SubPerIPPerMin, time.Minute)
 	subLimiter.SetLimitFunc(newSettingsIntCache(d.Repos.Settings, d.SubPerIPPerMin, func(s ports.UISettings) int { return s.SubPerIPPerMin }).get)
 
@@ -422,6 +465,10 @@ func NewRouter(d Deps) stdhttp.Handler {
 		middleware.RequireRole(domain.RoleAdmin),
 		require2FAGate,
 	)
+	routeLines := handler.NewAdminVlessRouteHandler(d.VlessRoute)
+	staffGroup.GET("/nodes/:id/vless-route-lines", routeLines.Get)
+	adminGroup.GET("/nodes/:id/vless-route-outbounds", routeLines.Outbounds)
+	adminGroup.PUT("/nodes/:id/vless-route-lines", routeLines.Save)
 	{
 		users := handler.NewAdminUserHandler(d.User, d.Repos.Settings, d.Mail, d.Async, twofaSvc, passkeySvc).
 			WithLimitEnforcement(d.SharedClients, d.Repos.XUIPanel)
@@ -532,7 +579,7 @@ func NewRouter(d Deps) stdhttp.Handler {
 		adminGroup.PUT("/groups/:id/scope-settings", scopeSettings.SetOverride)
 		adminGroup.DELETE("/groups/:id/scope-settings/:type/:name", scopeSettings.DeleteOverride)
 
-		rules := handler.NewAdminRuleSetsHandler(d.Repos.RuleSet, d.Repos.Node, d.Group, d.Render.InvalidateAll, d.Cfg.ConfigDir, d.Repos.Template)
+		rules := handler.NewAdminRuleSetsHandler(d.Repos.RuleSet, d.Repos.Node, d.Group, d.Render.InvalidateAll, d.Cfg.ConfigDir, d.Repos.Template).WithRoutePanels(d.Repos.XUIPanel)
 		staffGroup.GET("/rules", rules.List)
 		adminGroup.POST("/rules/inspect-proxy-groups", rules.InspectProxyGroups)
 		staffGroup.GET("/rules/:slug", rules.Get)
@@ -565,12 +612,53 @@ func NewRouter(d Deps) stdhttp.Handler {
 		// not staffGroup: it names people on a signal rather than proof, and
 		// what to do about that is the owner's call.
 		adminGroup.GET("/geo-anomalies", geoAnomalyH.List)
+		// The observe-only risk signals. adminGroup for the same reason, and
+		// TestRiskSignalsRouteIsAdminOnly drives the assembled router: the
+		// staff and admin groups share this prefix, so the path alone says
+		// nothing about the gate.
+		adminGroup.GET("/risk-signals", riskSignalsH.List)
+		// The risk center: accounts beside their IP addresses (the live
+		// connections, and connection_history, the one table that keeps
+		// addresses), the flag records, and the attention reads — the queue,
+		// one account's drawer and the Users page's levels, which name
+		// accounts beside their verdicts. adminGroup for the Geo tab's
+		// reason, and more so: TestRiskCenterRoutesAreAdminOnly drives every
+		// one through the assembled router. The refresh is a POST, so every
+		// click — refused or not — leaves an audit row (AuditWrites).
+		adminGroup.GET("/risk-center/queue", riskCenterH.Queue)
+		adminGroup.GET("/risk-center/users/:id", riskCenterH.User)
+		adminGroup.GET("/risk-center/levels", riskCenterH.Levels)
+		adminGroup.GET("/risk-center/live", riskCenterH.Live)
+		adminGroup.POST("/risk-center/live/refresh", riskCenterH.Refresh)
+		adminGroup.GET("/risk-center/connections", riskCenterH.Connections)
+		adminGroup.GET("/risk-center/flags", riskCenterH.Flags)
+		// The review actions: what an admin decides about an account the
+		// queue lists. adminGroup for the same reason — deciding that an
+		// account's signals need no action is the owner's call, and a trust
+		// can lift the detector's hold. Each is a POST or DELETE, so each
+		// leaves one audit row, the note included (AuditWrites) — a row the
+		// staff-readable audit read leaves out for anyone but an admin, like
+		// every row under /risk-center/ (TestRiskCenterAuditRowsAreAdminOnly).
+		adminGroup.POST("/risk-center/users/:id/dismiss", riskReviewH.Dismiss)
+		adminGroup.DELETE("/risk-center/users/:id/dismiss", riskReviewH.Undismiss)
+		adminGroup.POST("/risk-center/users/:id/trust", riskReviewH.Trust)
+		adminGroup.DELETE("/risk-center/users/:id/trust", riskReviewH.Untrust)
+		// The policy: every concurrent-location and risk-signal setting,
+		// with the shipped defaults and the runtime values in effect.
+		// adminGroup for the same reason — it decides whom the detectors
+		// accuse and when one suspends somebody's service. The PUT is
+		// audited like every write here, and it shares the system
+		// settings PUT's write lock: both save the whole settings record.
+		riskPolicyH := handler.NewAdminRiskPolicyHandler(d.Repos.Settings)
+		adminGroup.GET("/risk-center/policy", riskPolicyH.Get)
+		adminGroup.PUT("/risk-center/policy", riskPolicyH.Put)
 		adminGroup.GET("/diagnostics/metrics", diagH.Metrics)
 		adminGroup.POST("/diagnostics/metrics/reset", diagH.ResetMetrics)
 
 		auditH := handler.NewAdminAuditHandler(d.Repos.Audit, d.Geo)
 		// Read so operators can review their own actions; only admin can
-		// wipe history.
+		// wipe history. The risk center's rows are admin-only like its
+		// routes: an operator's read leaves them out (adminOnlyAuditTargets).
 		staffGroup.GET("/audit", auditH.List)
 		adminGroup.DELETE("/audit", auditH.Clear)
 
@@ -614,6 +702,11 @@ func NewRouter(d Deps) stdhttp.Handler {
 			// it through the evaluator, so the bell and the node detail page can
 			// never disagree about whether a condition is active.
 			NodeResource: nodeHealthSource,
+			// The risk center's one admin-only entry: the accounts open and
+			// flagged or held by the detector, the queue's own count.
+			// Nil-tolerant, which is why TestBuildWiresTheRiskQueueBell
+			// drives the assembled router.
+			RiskQueue: d.RiskQueue,
 		})
 		staffGroup.GET("/alerts", handler.NewAdminAlertsHandler(alertSvc).List)
 
@@ -633,8 +726,11 @@ func NewRouter(d Deps) stdhttp.Handler {
 		if d.Render != nil {
 			invalidateRender = d.Render.InvalidateAll
 		}
-		servers := handler.NewAdminServersHandler(d.Repos.XUIPanel, d.Pool, d.Repos.Node, d.Repos.Audit, d.Async, invalidateRender).
-			WithNativeAgentProvisioning(d.Repos.NativeAgentProvisioning).
+		servers := handler.NewAdminServersHandler(d.Repos.XUIPanel, d.Pool, d.Repos.Node, d.Repos.Audit, d.Async, invalidateRender)
+		if d.Node != nil {
+			servers.WithRealityFingerprintNormalizer(d.Node)
+		}
+		servers.WithNativeAgentProvisioning(d.Repos.NativeAgentProvisioning).
 			WithNodeMetrics(d.Repos.NodeHostMetric).
 			WithNodeAgents(d.Repos.NodeAgent).
 			WithNodeSettings(d.Repos.Settings).

@@ -47,7 +47,12 @@ type Service struct {
 	nodes   ports.NodeRepo
 	// ownership is late-bound (SetOwnershipRepo): the migration's DeleteLegacyForUser
 	// reads + removes legacy per-node ownership rows. nil = legacy delete is skipped.
-	ownership ports.OwnershipRepo
+	ownership               ports.OwnershipRepo
+	invalidateSubscriptions func()
+}
+
+func (s *Service) SetSubscriptionInvalidator(invalidate func()) {
+	s.invalidateSubscriptions = invalidate
 }
 
 func New(clients ports.PSPClientRepo, pool ports.XUIPool, nodes ports.NodeRepo) *Service {
@@ -167,10 +172,10 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 	cur, _ := cli.GetClient(ctx, c.Email)
 	if cur != nil && sameInboundSet(cur.InboundIDs, desiredSet) {
 		for _, nodeID := range nodeByInbound {
-			if err := s.clients.UpdateInboundState(ctx, domain.PSPClientInbound{
+			if err := s.recordApplied(ctx, domain.PSPClientInbound{
 				ClientID: c.ID, NodeID: nodeID, State: domain.ClientApplyApplied,
 				AppliedEmail: cur.Email, AppliedUUID: appliedUUID(cur), AppliedPassword: cur.Password,
-			}); err != nil {
+			}, atts); err != nil {
 				log.Warn("sharedclient: mark provisioned", "client_id", c.ID, "node_id", nodeID, "err", err)
 				continue
 			}
@@ -234,10 +239,10 @@ func (s *Service) ProvisionClient(ctx context.Context, c *domain.PSPClient) (Pro
 		if !confirmed[inb] {
 			continue
 		}
-		if err := s.clients.UpdateInboundState(ctx, domain.PSPClientInbound{
+		if err := s.recordApplied(ctx, domain.PSPClientInbound{
 			ClientID: c.ID, NodeID: nodeID, State: domain.ClientApplyApplied,
 			AppliedEmail: detail.Email, AppliedUUID: appliedUUID(detail), AppliedPassword: detail.Password,
-		}); err != nil {
+		}, atts); err != nil {
 			log.Warn("sharedclient: mark provisioned", "client_id", c.ID, "node_id", nodeID, "err", err)
 			continue
 		}
@@ -270,13 +275,34 @@ func (s *Service) refreshAppliedCredentials(ctx context.Context, c *domain.PSPCl
 		if !attachment.Applied() {
 			continue
 		}
-		if err := s.clients.UpdateInboundState(ctx, domain.PSPClientInbound{
+		if err := s.recordApplied(ctx, domain.PSPClientInbound{
 			ClientID: c.ID, NodeID: attachment.NodeID, State: domain.ClientApplyApplied,
 			AppliedVersion: attachment.AppliedVersion, AppliedEmail: detail.Email,
 			AppliedUUID: uuid, AppliedPassword: detail.Password,
-		}); err != nil {
+		}, attachments); err != nil {
 			return fmt.Errorf("record applied credentials for client %d node %d: %w", c.ID, attachment.NodeID, err)
 		}
+	}
+	return nil
+}
+
+// recordApplied invalidates only when the actual credential snapshot changes.
+// A subscription may have cached an original entry while an asynchronous
+// attachment was still pending; route entries must appear immediately once
+// their source credential is confirmed, not after the normal cache TTL.
+func (s *Service) recordApplied(ctx context.Context, update domain.PSPClientInbound, previous []domain.PSPClientInbound) error {
+	changed := true
+	for _, old := range previous {
+		if old.NodeID == update.NodeID && old.ClientID == update.ClientID {
+			changed = old.AppliedUUID != update.AppliedUUID || old.AppliedEmail != update.AppliedEmail || old.AppliedPassword != update.AppliedPassword
+			break
+		}
+	}
+	if err := s.clients.UpdateInboundState(ctx, update); err != nil {
+		return err
+	}
+	if changed && s.invalidateSubscriptions != nil {
+		s.invalidateSubscriptions()
 	}
 	return nil
 }
@@ -293,12 +319,28 @@ func (s *Service) refreshAppliedCredentials(ctx context.Context, c *domain.PSPCl
 // the stored creds + the partition's flow are re-sent unchanged. A client with no
 // attachments (hence no flow) is skipped.
 func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient) error {
+	_, err := s.pushLifecycle(ctx, c)
+	return err
+}
+
+// stageListAttachments names, for the per-client log line only, the one
+// failure that happens before a call reaches the compare-then-write decision.
+// It is not a metric stage: psp_lifecycle_sync_error_total never counted it.
+const stageListAttachments = "list_attachments"
+
+// pushLifecycle is SyncLifecycle that also says which step failed, so
+// SyncUserLifecycle can log the step beside the panel. The step is the stage
+// the failure was counted under, except for the two failures the error total
+// has never counted (listing attachments, and saving credentials after a
+// skip), which are named for the log and counted nowhere — counting them now
+// would change what the existing total means.
+func (s *Service) pushLifecycle(ctx context.Context, c *domain.PSPClient) (stage string, err error) {
 	if c == nil {
-		return nil
+		return "", nil
 	}
 	atts, err := s.clients.ListInbounds(ctx, c.ID)
 	if err != nil {
-		return fmt.Errorf("list attachments: %w", err)
+		return stageListAttachments, fmt.Errorf("list attachments: %w", err)
 	}
 	// Only push once the shared client actually EXISTS in 3X-UI — i.e. at least
 	// one attachment is confirmed applied by the reconcile read-back. Before
@@ -319,7 +361,7 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient) error 
 	}
 	if !provisioned {
 		metrics.LifecycleNotProvisionedTotal.Inc()
-		return nil
+		return "", nil
 	}
 	// Counted from here rather than at function entry, so the denominator is
 	// "calls that reached the compare-then-write decision". Exactly one of
@@ -328,11 +370,16 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient) error 
 	// covers the pool failure below, which reaches neither. Skip rate is
 	// skipped/total; do not try to reconcile all three against the total.
 	metrics.LifecycleTotal.Inc()
+	// Every counted failure below goes through here, which is what keeps both
+	// breakdowns summing to the total.
+	fail := func(stage string, err error) (string, error) {
+		s.countLifecycleFailure(c.PanelID, stage)
+		return stage, err
+	}
 	want := clientdoc.Mint(c, atts).Lifecycle()
 	cli, err := s.pool.Get(c.PanelID)
 	if err != nil {
-		metrics.LifecycleErrorTotal.Inc()
-		return fmt.Errorf("xui pool get %d: %w", c.PanelID, err)
+		return fail(metrics.LifecycleErrorStagePoolGet, fmt.Errorf("xui pool get %d: %w", c.PanelID, err))
 	}
 	s.reportCapabilityGaps(cli, c.PanelID, want)
 
@@ -387,7 +434,11 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient) error 
 		reason := lifecycleWriteReason(cur, spec, capIP, capDevice, want.QuotaHeadroom)
 		if reason == "" {
 			metrics.LifecycleSkippedTotal.Inc()
-			return s.refreshAppliedCredentials(ctx, c, atts, cur)
+			// Not counted as a failure: it never was (see pushLifecycle).
+			if err := s.refreshAppliedCredentials(ctx, c, atts, cur); err != nil {
+				return metrics.LifecycleErrorStageRecordCredentials, err
+			}
+			return "", nil
 		}
 		metrics.LifecycleWriteReasonTotal.With(reason).Inc()
 		unreadReason = ""
@@ -400,23 +451,59 @@ func (s *Service) SyncLifecycle(ctx context.Context, c *domain.PSPClient) error 
 	}
 	metrics.LifecycleWriteTotal.Inc()
 	if err := cli.UpdateClient(ctx, spec); err != nil {
-		metrics.LifecycleErrorTotal.Inc()
-		return err
+		return fail(metrics.LifecycleErrorStageUpdate, err)
 	}
 	confirmed, err := cli.GetClient(ctx, c.Email)
 	if err != nil {
-		metrics.LifecycleErrorTotal.Inc()
-		return fmt.Errorf("confirm shared client %s credentials: %w", c.Email, err)
+		return fail(metrics.LifecycleErrorStageConfirmRead,
+			fmt.Errorf("confirm shared client %s credentials: %w", c.Email, err))
 	}
 	if confirmed == nil || confirmed.ID != spec.ID || confirmed.Password != spec.Password || confirmed.Auth != spec.Auth {
-		metrics.LifecycleErrorTotal.Inc()
-		return fmt.Errorf("confirm shared client %s credentials: read-back does not match desired identity", c.Email)
+		return fail(metrics.LifecycleErrorStageConfirmMismatch,
+			fmt.Errorf("confirm shared client %s credentials: read-back does not match desired identity", c.Email))
 	}
 	if err := s.refreshAppliedCredentials(ctx, c, atts, confirmed); err != nil {
-		metrics.LifecycleErrorTotal.Inc()
-		return err
+		return fail(metrics.LifecycleErrorStageRecordCredentials, err)
 	}
-	return nil
+	return "", nil
+}
+
+// countLifecycleFailure counts one failed SyncLifecycle in the unlabelled
+// total and in exactly one child of each breakdown, so the children of either
+// breakdown always sum to the total.
+func (s *Service) countLifecycleFailure(panelID int64, stage string) {
+	metrics.LifecycleErrorTotal.Inc()
+	metrics.LifecycleErrorStageTotal.With(stage).Inc()
+	metrics.LifecycleErrorPanelKindTotal.With(s.panelKindLabel(panelID)).Inc()
+}
+
+// panelKindLabel names the kind of panel a client is on, for the failure
+// breakdown. Reached only on a failure, so the pool lookup costs nothing on
+// the path every poll takes. A pool that cannot name kinds, or an id it does
+// not hold (exactly the pool_get failure), reads as unknown rather than as a
+// guess.
+func (s *Service) panelKindLabel(panelID int64) string {
+	if resolver, ok := s.pool.(ports.PanelKindResolver); ok {
+		if kind, ok := resolver.KindOf(panelID); ok {
+			return string(domain.NormalizePanelKind(kind))
+		}
+	}
+	return metrics.LifecycleErrorPanelKindUnknown
+}
+
+// logClientFailure writes one line per failed client. The user service logs
+// "shared-client lifecycle push failed" once per USER with only the first
+// error, which names neither the step nor, for a read-back failure, the panel.
+// This line carries both for EVERY failed client, so an operator can go from
+// the failure counter on the diagnostics page to the panel. It extends that
+// message on purpose, so one search finds both. Log only: the panel id would
+// grow the metrics' label space with the deployment.
+func logClientFailure(userID int64, c *domain.PSPClient, stage string, err error) {
+	if err == nil {
+		return
+	}
+	log.Warn("shared-client lifecycle push failed for a client",
+		"user_id", userID, "client_id", c.ID, "panel_id", c.PanelID, "stage", stage, "err", err)
 }
 
 // WithSettings attaches the settings repo so the per-user fan-out honours the
@@ -608,7 +695,9 @@ func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, want doma
 		if len(clients) == 0 {
 			return nil
 		}
-		return s.SyncLifecycle(ctx, clients[0])
+		stage, err := s.pushLifecycle(ctx, clients[0])
+		logClientFailure(userID, clients[0], stage, err)
+		return err
 	}
 
 	// Results are collected BY INDEX, not by arrival, so "the first error"
@@ -616,6 +705,7 @@ func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, want doma
 	// happened to fail first would make the returned error depend on panel
 	// latency, and callers surface it to an admin.
 	errs := make([]error, len(clients))
+	stages := make([]string, len(clients))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, s.panelConcurrency(ctx))
 	for i, c := range clients {
@@ -641,6 +731,7 @@ func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, want doma
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
+					stages[i] = "panic"
 					errs[i] = fmt.Errorf("sharedclient.SyncUserLifecycle: panic: %v", r)
 					log.Error("panic in shared lifecycle push",
 						"client_id", c.ID, "panel_id", c.PanelID, "panic", r,
@@ -649,11 +740,14 @@ func (s *Service) SyncUserLifecycle(ctx context.Context, userID int64, want doma
 			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			errs[i] = s.SyncLifecycle(ctx, c)
+			stages[i], errs[i] = s.pushLifecycle(ctx, c)
 		}(i, c)
 	}
 	wg.Wait()
 
+	for i, err := range errs {
+		logClientFailure(userID, clients[i], stages[i], err)
+	}
 	for _, err := range errs {
 		if err != nil {
 			return err

@@ -19,10 +19,11 @@ import (
 // identities; on a stock MySQL the second is refused by the index.
 //
 // These tests exist to make all three answer the SAME thing. They belong in
-// this package because only internal/adapters/sqlstore reads PSP_TEST_DB_KIND /
-// PSP_TEST_DB_DSN (see testdb_test.go) — service-level tests run against
-// in-memory fakes and are dialect-blind, which is exactly why the existing
-// suite never caught any of this. Run them on more than SQLite:
+// this package because it is where PSP_TEST_DB_KIND / PSP_TEST_DB_DSN select a
+// real backend for repository code (see testdb_test.go; the traffic rollup's
+// tests are the only other reader) — service-level tests run against in-memory
+// fakes and are dialect-blind, which is exactly why the existing suite never
+// caught any of this. Run them on more than SQLite:
 //
 //	go test ./internal/adapters/sqlstore/...
 //	PSP_TEST_DB_KIND=postgres PSP_TEST_DB_DSN='postgres://psp@127.0.0.1:5432/psptest?sslmode=disable' \
@@ -120,6 +121,33 @@ func TestCreateDuplicateUPNReportsAlreadyExists(t *testing.T) {
 	db.Raw("SELECT COUNT(*) FROM users WHERE upn = ?", "alice@corp.com").Scan(&n)
 	if n != 1 {
 		t.Fatalf("row count = %d, want 1", n)
+	}
+}
+
+func TestUpdateDuplicateUPNReportsAlreadyExists(t *testing.T) {
+	db, err := openTestDB(t)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := ensureTestSchema(db); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	repos := NewRepos(db)
+	ctx := context.Background()
+	alice := mkUser("alice@corp.com", "update-a")
+	bob := mkUser("bob@corp.com", "update-b")
+	for _, u := range []*domain.User{alice, bob} {
+		if err := repos.User.Create(ctx, u); err != nil {
+			t.Fatalf("create %q: %v", u.UPN, err)
+		}
+	}
+	bob.UPN = alice.UPN
+	if err := repos.User.Update(ctx, bob); !errors.Is(err, domain.ErrAlreadyExists) {
+		t.Fatalf("duplicate Update = %v, want ErrAlreadyExists", err)
+	}
+	stored, err := repos.User.GetByID(ctx, bob.ID)
+	if err != nil || stored.UPN != "bob@corp.com" {
+		t.Fatalf("failed update changed bob: user=%+v err=%v", stored, err)
 	}
 }
 

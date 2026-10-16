@@ -29,8 +29,14 @@ workflow re-checks them with `printenv`, which is a child too.
 | 3X-UI adapter | 9 | 2 | 0 |
 | S-UI adapter | 1 | 0 | 0 |
 
-Both ship at the exact versions `docs/compat/3x-ui-v4.json` records as the
-tested ceilings.
+CI pins the current tested ceilings recorded separately in
+`docs/compat/3x-ui-v4.json` and `docs/compat/sui-v4.json`. The historical container
+measurement above used 3X-UI 3.8.5; the 3.9.0 review used the official Windows
+release, and the **3.10.0** review ran the pinned Linux container end to end —
+all three passed the same nine required adapter tests, with the two fail2ban
+probes N/A. See [the review](../../../docs/3xui-compat.md) and
+[structured evidence](../../../docs/compat/evidence/3x-ui-3.10.0.json).
+The current 3.10.2 review used the official Windows release and the same nine required adapter tests, plus supplementary SS-2022 and lifecycle probes. See [3.10.2 evidence](../../../docs/compat/evidence/3x-ui-3.10.2.json). The 3.10.2 Linux container pin moves with the ceiling and is exercised by CI.
 
 ## The two probes that skip, and why a waiver has to be REQUIRED to count
 
@@ -86,6 +92,13 @@ broken adapter rather than a missing setup step.
 - The panels are pinned by the caller through `PSP_LIVE_3XUI_IMAGE` /
   `PSP_LIVE_SUI_IMAGE`. Nothing here chooses a version, and nothing writes to
   `docs/compat/3x-ui-v4.json` — that file is a record of what a human verified.
+  In CI the caller is `third-party-isolated` in `.github/workflows/test.yml`,
+  which defaults both to the recorded ceilings (`max_tested_xui`,
+  `max_tested_sui`) as `tag@sha256:digest` and writes what actually ran to
+  `evidence/images.txt`. Raising a ceiling means moving its image in the same
+  change; `deploy/test_workflow_test.mjs` fails when the two disagree. Whether
+  upstream has shipped past the ceiling is `compat-watch.yml`'s question, not
+  this job's.
 - `down` removes this case's containers only. It never prunes globally.
 - The runtime is discovered (`docker`, `nerdctl`, `podman`) with `sudo` added only
   when the runtime cannot be reached without it.

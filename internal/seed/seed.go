@@ -140,13 +140,40 @@ func Ensure(configDir string) error {
 	}); err != nil {
 		return err
 	}
-	return upgradeUnmodifiedRoutingDefaults(configDir)
+	if err := upgradeUnmodifiedRoutingDefaults(configDir); err != nil {
+		return err
+	}
+	if err := upgradeUnmodifiedDNSDefaults(configDir); err != nil {
+		return err
+	}
+	return upgradeUnmodifiedClaudeDefaults(configDir)
 }
 
 type managedDefaultUpdate struct {
 	relPath    string
 	oldSHA256s []string
 	newBody    []byte
+}
+
+// upgradeUnmodifiedClaudeDefaults adds Claude domains and inbound IP ranges
+// after the global QUIC policy and ahead of general UDP. Only the shared ruleset
+// changes, so a customized client template does not prevent an untouched
+// ruleset from receiving the fix.
+func upgradeUnmodifiedClaudeDefaults(configDir string) error {
+	const relPath = "rulesets/default-rules.yaml"
+	body, err := defaultsFS.ReadFile("files/" + relPath)
+	if err != nil {
+		return fmt.Errorf("read managed default files/%s: %w", relPath, err)
+	}
+	return upgradeManagedDefaults(configDir, []managedDefaultUpdate{{
+		relPath: relPath,
+		oldSHA256s: []string{
+			// Official LF and CRLF rules before Claude short-link/IP coverage.
+			"c01ee0f606137c543324517816117c30c9f3c5f5815073c10af81d81592dee8b",
+			"ebb8aab2ef90c66ecfc3e63fd7bec1a9cde62482c012465aab015211df32349d",
+		},
+		newBody: body,
+	}})
 }
 
 // upgradeUnmodifiedRoutingDefaults upgrades known official routing defaults to
@@ -167,6 +194,9 @@ func upgradeUnmodifiedRoutingDefaults(configDir string) error {
 			"caf6d32b70f2ae4a66b5879e409280caa3552a1121a8bc137164e1c32efa112d",
 			// UDP defaults PASS and QUIC defaults DIRECT, through v4.0.0-beta.10.
 			"1eab50bef8b214380cceaabacf89d1a4ec5b223193b853a53466274fac73fbe2",
+			// UDP defaults PASS and QUIC defaults REJECT, until UDP returned to DIRECT
+			// with QUIC following it.
+			"e97534ef1ca29916168f330ce70e422ceeecdd2c43b0be5aa76766d8608cd830",
 		}},
 	}
 	for i := range updates {
@@ -177,6 +207,35 @@ func upgradeUnmodifiedRoutingDefaults(configDir string) error {
 		updates[i].newBody = body
 	}
 	return upgradeManagedDefaults(configDir, updates)
+}
+
+// upgradeUnmodifiedDNSDefaults updates each untouched template independently,
+// so administrator edits to one template do not hold back the other.
+func upgradeUnmodifiedDNSDefaults(configDir string) error {
+	for _, update := range []managedDefaultUpdate{
+		{relPath: "templates/default-mihomo.yaml", oldSHA256s: []string{
+			// Official LF and CRLF checkouts of the previous default.
+			"f7e3a2784a67fcdf38ba580f51ba0ae577aac4bcfc1c72efc32c8c39ca4f3e4b",
+			"426353853592fb9a17afe5cbe801c8c674fc9394ad052b45b3b6ea20789b093d",
+			// The Gateway hostname update before selector-aware DNS routing.
+			"fbe93907df14dcfe5a6d26207c7fbd5b717be1734491bbeb5aa6de66d636af47",
+			"802667bf6c7caf954dc431bbd926b045583333a570320172a082621a6a635038",
+		}},
+		{relPath: "templates/default-sing-box.yaml", oldSHA256s: []string{
+			"e73031f8844a9bc54922510ff209286f3fb24f709de448427fb32f0ebef5cf27",
+			"6cfb82005a288b1b2a662cb91dd249337f0678b3ff0df4a10551b25f735439f8",
+		}},
+	} {
+		body, err := defaultsFS.ReadFile("files/" + update.relPath)
+		if err != nil {
+			return fmt.Errorf("read managed default files/%s: %w", update.relPath, err)
+		}
+		update.newBody = body
+		if err := upgradeManagedDefaults(configDir, []managedDefaultUpdate{update}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func upgradeManagedDefaults(configDir string, updates []managedDefaultUpdate) error {

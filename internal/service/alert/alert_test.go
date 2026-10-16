@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -83,7 +84,7 @@ func TestNodeHealthAlerts(t *testing.T) {
 		Settings: stubSettings{},
 	}, now)
 
-	alerts, _ := svc.List(context.Background())
+	alerts, _ := svc.List(context.Background(), true)
 	nh := byType(alerts, TypeNodeHealth)
 	if len(nh) != 2 {
 		t.Fatalf("want 2 node_health alerts (enabled+unhealthy only), got %d", len(nh))
@@ -113,7 +114,7 @@ func TestPanelUpgradeAlerts(t *testing.T) {
 			return "", false
 		},
 	}, now)
-	alerts, _ := svc.List(context.Background())
+	alerts, _ := svc.List(context.Background(), true)
 	up := byType(alerts, TypePanelUpgrade)
 	if len(up) != 1 {
 		t.Fatalf("want 1 panel_upgrade alert, got %d", len(up))
@@ -148,7 +149,7 @@ func TestPanelUpgradeAlertsSkipOtherProducts(t *testing.T) {
 					return "3.7.0", true
 				},
 			})
-			alerts, counts := svc.List(context.Background())
+			alerts, counts := svc.List(context.Background(), true)
 			if calls != 0 {
 				t.Fatalf("3X-UI upgrade callback called %d times for kind %q", calls, tt.kind)
 			}
@@ -179,7 +180,7 @@ func TestPanelUpgradeAlertsMixedKindsPreserve3XUIAndLegacy(t *testing.T) {
 		Certs:    stubCerts{active: []*domain.TLSCertificate{{ID: 8, Name: "expiring", Status: domain.CertStatusActive, NotAfter: tPtr(now.Add(3 * 24 * time.Hour))}}},
 		Settings: stubSettings{s: ports.UISettings{CertRenewBeforeDays: 14}},
 	}, now)
-	alerts, counts := svc.List(context.Background())
+	alerts, counts := svc.List(context.Background(), true)
 	if len(compared) != 3 || compared[0] != "3.4.2" || compared[1] != "3.4.2" || compared[2] != "3.7.0" {
 		t.Fatalf("only normalized 3X-UI versions should be compared, got %q", compared)
 	}
@@ -215,7 +216,7 @@ func TestCertAlerts(t *testing.T) {
 			},
 		},
 	}, now)
-	alerts, _ := svc.List(context.Background())
+	alerts, _ := svc.List(context.Background(), true)
 
 	failed := byType(alerts, TypeCertFailed)
 	if len(failed) != 1 || failed[0].Severity != SeverityError || failed[0].LastError != "dns timeout" {
@@ -260,7 +261,7 @@ func TestLoginSecurityAlert(t *testing.T) {
 	now := time.Now()
 	// Lockout off → no alert even if events exist.
 	off := newSvc(Deps{Settings: stubSettings{}, Events: stubEvents{count: 9}}, now)
-	if a, _ := off.List(context.Background()); len(byType(a, TypeLoginSecurity)) != 0 {
+	if a, _ := off.List(context.Background(), true); len(byType(a, TypeLoginSecurity)) != 0 {
 		t.Fatal("login_security must be silent when lockout is disabled")
 	}
 	// Lockout on + recent locked_out events → one aggregate alert.
@@ -282,15 +283,120 @@ func TestCountsAggregate(t *testing.T) {
 		Panels:     stubPanels{panels: []*domain.XUIPanel{{ID: 3, Name: "p", PanelVersion: "3.2.6"}}},
 		Settings:   stubSettings{s: ports.UISettings{CertRenewBeforeDays: 14}},
 		UpgradeFor: func(string) (string, bool) { return "3.2.8", true }, // 1 info
+		// The risk queue's singleton: one warning however many accounts are
+		// behind it — the badge counts things to look at, not accounts.
+		RiskQueue: &stubRiskQueue{n: 4},
 	}, now)
-	_, counts := svc.List(context.Background())
-	if counts.Error != 1 || counts.Warning != 1 || counts.Info != 1 {
-		t.Fatalf("counts wrong: %+v", counts)
+	_, counts := svc.List(context.Background(), true)
+	if counts.Error != 1 || counts.Warning != 2 || counts.Info != 1 {
+		t.Fatalf("counts wrong: %+v, want error 1, warning 2 (cert + the risk queue), info 1", counts)
 	}
 }
 
 func mustList(t *testing.T, s *Service) []Alert {
 	t.Helper()
-	a, _ := s.List(context.Background())
+	a, _ := s.List(context.Background(), true)
 	return a
+}
+
+// ---- the risk queue (riskqueue.go) ----
+
+type stubRiskQueue struct {
+	n     int64
+	err   error
+	calls int
+}
+
+func (s *stubRiskQueue) CountUrgent(context.Context) (int64, error) {
+	s.calls++
+	return s.n, s.err
+}
+
+// ONE entry for the risk center, whatever the number of accounts and signals
+// behind it: the count is the accounts the queue lists as needing action now
+// (open, and flagged or held by the detector), and the entry is a warning —
+// something to review, never an outage. A count and no name, because every
+// open admin tab polls the feed; one count per feed request for the same
+// reason. Admin-only, because the risk center it leads to names people on
+// signals rather than proof.
+func TestRiskQueueAlert_CountsAndIsAdminOnly(t *testing.T) {
+	q := &stubRiskQueue{n: 3}
+	got := byType(mustList(t, newSvc(Deps{RiskQueue: q}, time.Now())), TypeRiskQueue)
+	if len(got) != 1 {
+		t.Fatalf("risk_queue alerts = %+v, want exactly one singleton", got)
+	}
+	a := got[0]
+	if a.Key != "risk_queue" || string(a.Type) != "risk_queue" || a.Severity != SeverityWarning || a.Count != 3 {
+		t.Fatalf("risk_queue = %+v, want key and type risk_queue, severity warning, count 3", a)
+	}
+	if a.TargetID != 0 || a.TargetName != "" {
+		t.Fatalf("risk_queue = %+v names an account; the bell carries a count, the queue carries the names", a)
+	}
+	if q.calls != 1 {
+		t.Fatalf("CountUrgent called %d times for one feed request, want 1", q.calls)
+	}
+	if !TypeRiskQueue.AdminOnly() {
+		t.Fatal("risk_queue must be admin-only (the risk center is the owner's call, not an operator's)")
+	}
+}
+
+// Nobody needing action, no entry: a bell reading "0 accounts" is a bell
+// that is lit for nothing.
+func TestRiskQueueAlert_AbsentAtZero(t *testing.T) {
+	if got := byType(mustList(t, newSvc(Deps{RiskQueue: &stubRiskQueue{}}, time.Now())), TypeRiskQueue); len(got) != 0 {
+		t.Fatalf("risk_queue with nobody urgent = %+v, want none", got)
+	}
+}
+
+// A failing count costs only this entry: node health beside it must survive,
+// as it does for every other failing source here.
+func TestRiskQueueAlert_CounterErrorIsSkipped(t *testing.T) {
+	svc := newSvc(Deps{
+		RiskQueue: &stubRiskQueue{n: 5, err: errors.New("db down")},
+		Nodes:     stubNodes{nodes: []*domain.Node{{ID: 1, Enabled: true, HealthState: domain.NodeHealthUnreachable}}},
+	}, time.Now())
+	all := mustList(t, svc)
+	if got := byType(all, TypeRiskQueue); len(got) != 0 {
+		t.Fatalf("risk_queue on a count error = %+v, want none", got)
+	}
+	if len(byType(all, TypeNodeHealth)) != 1 {
+		t.Fatalf("a failing risk-queue count took the rest of the feed with it: %+v", all)
+	}
+}
+
+// A deployment that leaves the counter out gets no entry and a working feed —
+// every alert source is optional.
+func TestRiskQueueAlert_NilCounter(t *testing.T) {
+	svc := newSvc(Deps{
+		Nodes: stubNodes{nodes: []*domain.Node{{ID: 1, Enabled: true, HealthState: domain.NodeHealthUnreachable}}},
+	}, time.Now())
+	all := mustList(t, svc)
+	if got := byType(all, TypeRiskQueue); len(got) != 0 {
+		t.Fatalf("risk_queue without a counter = %+v, want none", got)
+	}
+	if len(byType(all, TypeNodeHealth)) != 1 {
+		t.Fatalf("feed without a risk-queue counter = %+v, want node health intact", all)
+	}
+}
+
+// The count is a fleet-wide read (every account's attention and review), and
+// an operator could never be shown its result — the handler drops admin-only
+// entries. So the service does not compute it at all for a non-admin, rather
+// than computing it on every operator tab's poll and throwing it away.
+func TestList_NonAdminNeverComputesTheRiskQueue(t *testing.T) {
+	q := &stubRiskQueue{n: 3}
+	svc := newSvc(Deps{
+		RiskQueue: q,
+		Nodes:     stubNodes{nodes: []*domain.Node{{ID: 1, Enabled: true, HealthState: domain.NodeHealthUnreachable}}},
+	}, time.Now())
+	alerts, counts := svc.List(context.Background(), false)
+	if q.calls != 0 {
+		t.Fatalf("CountUrgent called %d times for a non-admin feed, want 0", q.calls)
+	}
+	if got := byType(alerts, TypeRiskQueue); len(got) != 0 {
+		t.Fatalf("non-admin feed has risk_queue %+v", got)
+	}
+	if len(byType(alerts, TypeNodeHealth)) != 1 || counts != (Counts{Error: 1}) {
+		t.Fatalf("non-admin feed = %+v, counts %+v; want node health and error 1", alerts, counts)
+	}
 }

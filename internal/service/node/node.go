@@ -25,6 +25,7 @@ import (
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/crypto"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/log"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/safego"
+	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xraycompat"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/pkg/xrayspec"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/ports"
 	"github.com/KazuhaHub/passwall-sub-panel/internal/service/group"
@@ -54,14 +55,15 @@ type MemberResyncer interface {
 }
 
 type Service struct {
-	nodes      ports.NodeRepo
-	separators ports.SeparatorRepo
-	pool       ports.XUIPool
-	cleaner    InboundCleaner
-	tasks      ports.SyncTaskRepo
-	groups     ports.GroupRepo
-	users      ports.UserRepo
-	resyncer   MemberResyncer
+	routeCleaner func(context.Context, int64) error
+	nodes        ports.NodeRepo
+	separators   ports.SeparatorRepo
+	pool         ports.XUIPool
+	cleaner      InboundCleaner
+	tasks        ports.SyncTaskRepo
+	groups       ports.GroupRepo
+	users        ports.UserRepo
+	resyncer     MemberResyncer
 	// bg routes handler-spawned background work (member provisioning after a node
 	// recreate; sync-existing-users after a node add) through the app's tracked
 	// dispatcher so App.Shutdown drains it under a cancellable context. Late-bound
@@ -76,6 +78,8 @@ type Service struct {
 	// decorator on a re-wire.
 	repoWrapped bool
 }
+
+func (s *Service) SetRouteCleaner(clean func(context.Context, int64) error) { s.routeCleaner = clean }
 
 // SetMemberResyncer late-binds the shared-client member resyncer (user.Service).
 func (s *Service) SetMemberResyncer(r MemberResyncer) { s.resyncer = r }
@@ -517,6 +521,11 @@ func (s *Service) RecreateInboundOnServer(ctx context.Context, nodeID int64) err
 	// inbound already exists but whose clients didn't push (e.g. the panel was briefly
 	// broken so the provision queue gave up) is a safe "push clients now".
 	if inb, gerr := c.GetInbound(ctx, n.InboundID); gerr != nil || inb == nil {
+		if s.routeCleaner != nil {
+			if err := s.routeCleaner(ctx, n.ID); err != nil {
+				return err
+			}
+		}
 		if !inboundcfg.HasLocalConfig(n) {
 			return fmt.Errorf("%w: node %d has no captured inbound config to recreate", domain.ErrValidation, nodeID)
 		}
@@ -658,7 +667,11 @@ func (s *Service) Reorder(ctx context.Context, updates []ports.NodeSortUpdate) e
 }
 
 func (s *Service) UpdateMetadata(ctx context.Context, n *domain.Node) error {
-	if _, err := s.nodes.GetByID(ctx, n.ID); err != nil {
+	previous, err := s.nodes.GetByID(ctx, n.ID)
+	if err != nil {
+		return err
+	}
+	if err := domain.ReconcileRelayIDs(previous.Relays, n.Relays); err != nil {
 		return err
 	}
 	// Column-scoped: a full-row Update here would roll back the poll-owned
@@ -671,6 +684,11 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 	n, err := s.nodes.GetByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	if s.routeCleaner != nil && (spec.Port != n.DesiredPort || !strings.EqualFold(spec.Protocol, n.DesiredProtocol)) {
+		if err := s.routeCleaner(ctx, n.ID); err != nil {
+			return err
+		}
 	}
 	// v3.5 write-through (local-first): PSP owns the inbound config, so persist
 	// the new config into the local snapshot before pushing. Render reflects it
@@ -694,6 +712,79 @@ func (s *Service) UpdateInboundConfig(ctx context.Context, id int64, spec ports.
 		s.markConfigPending(ctx, n)
 	}
 	return nil
+}
+
+// NormalizeRealityFingerprintsForPanel idempotently converges existing desired
+// snapshots whenever a trusted observation reports Xray 26.9.8+. New writes are
+// normalized by the HTTP boundary; repeatedly calling this method closes boot,
+// native-report, in-panel upgrade, and partial-failure gaps without putting a
+// hidden override back in subscription rendering.
+func (s *Service) NormalizeRealityFingerprintsForPanel(ctx context.Context, panelID int64, xrayVersion string) (int, error) {
+	if !xraycompat.RequiresMLKEMFirst(xrayVersion) {
+		return 0, nil
+	}
+	writer, ok := s.nodes.(ports.RealityFingerprintCASRepo)
+	if !ok {
+		return 0, fmt.Errorf("node repository does not support REALITY fingerprint convergence")
+	}
+	nodes, err := s.nodes.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	var errs []error
+	for _, n := range nodes {
+		if n == nil || n.PanelID != panelID || !inboundcfg.HasStoredConfig(n) {
+			continue
+		}
+		normalized, didChange, err := xraycompat.NormalizeRealityFingerprint(n.StreamSettings, xrayVersion)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("node %d: %w", n.ID, err))
+			continue
+		}
+		if !didChange {
+			continue
+		}
+		applied, err := writer.CompareAndSwapRealityStream(ctx, panelID, n.ID, n.StreamSettings, normalized)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("node %d: %w", n.ID, err))
+			continue
+		}
+		if !applied {
+			// Another writer changed the snapshot after List. The next version
+			// observation re-evaluates its current stream instead of restoring
+			// fields from this stale copy.
+			continue
+		}
+		changed++
+		if err := s.pushNormalizedRealityInbound(ctx, n.ID); err != nil {
+			errs = append(errs, fmt.Errorf("node %d: %w", n.ID, err))
+		}
+	}
+	return changed, errors.Join(errs...)
+}
+
+func (s *Service) pushNormalizedRealityInbound(ctx context.Context, nodeID int64) error {
+	n, err := s.nodes.GetByID(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	spec, err := inboundcfg.SpecFromNode(n)
+	if err != nil {
+		return err
+	}
+	c, err := s.pool.Get(n.PanelID)
+	if err == nil {
+		err = c.UpdateInbound(ctx, n.InboundID, spec)
+	}
+	if err != nil {
+		return s.enqueueNodeTask(ctx, domain.SyncTaskNodeUpdate, n, "normalize REALITY fingerprint", spec)
+	}
+	if async, ok := c.(ports.AsynchronousApplier); ok && async.ApplyIsAsynchronous() {
+		return nil // Native applied receipt confirms the pending snapshot.
+	}
+	_, err = s.nodes.ConfirmAppliedConfig(ctx, n.ID, n.PanelID, n.ConfigIntent())
+	return err
 }
 
 // markConfigPending flips the snapshot's sync-state column to "pending" so the
@@ -793,6 +884,11 @@ func (s *Service) DetachAndSync(ctx context.Context, id int64) error {
 	}
 	if n.IsSeparator() {
 		return s.nodes.Delete(ctx, id)
+	}
+	if s.routeCleaner != nil {
+		if err := s.routeCleaner(ctx, id); err != nil {
+			return err
+		}
 	}
 	if err := s.cleaner.UnclaimAllForInbound(ctx, n.PanelID, n.InboundID); err != nil {
 		return fmt.Errorf("unclaim owned clients: %w", err)
@@ -900,6 +996,11 @@ func (s *Service) runNodeTask(ctx context.Context, task *domain.SyncTask) error 
 	}
 	switch task.Type {
 	case domain.SyncTaskNodeDelete:
+		if s.routeCleaner != nil {
+			if err := s.routeCleaner(ctx, n.ID); err != nil {
+				return err
+			}
+		}
 		// If the inbound is already gone upstream (operator deleted it directly
 		// in 3X-UI — the common orphan case), the clients went with it: skip the
 		// guard and per-client deletes (which would each fail "record not found"
