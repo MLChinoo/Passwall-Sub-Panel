@@ -14,7 +14,7 @@ import (
 )
 
 func TestGroupPreviewUsesSharedNamesWithinRuleSetScope(t *testing.T) {
-	for _, scenario := range []string{"single", "both", "repeat", "node", "disabled_relay", "drift", "literal", "template_collision"} {
+	for _, scenario := range []string{"single", "both", "repeat", "node", "hidden_direct", "disabled_relay", "drift", "literal", "template_collision"} {
 		t.Run(scenario, func(t *testing.T) {
 			s, node, user, rule := collidingNameFixture(t)
 			user.GroupID = 1
@@ -26,6 +26,8 @@ func TestGroupPreviewUsesSharedNamesWithinRuleSetScope(t *testing.T) {
 				rule.ProxyGroupMembers["Second"] = rule.ProxyGroupMembers["国外媒体"]
 			case "node":
 				rule.ProxyGroupMembers["国外媒体"] = []domain.ProxyGroupMember{{Kind: "node", NodeID: node.ID}}
+			case "hidden_direct":
+				node.HideDirect = true
 			case "disabled_relay":
 				node.Relays[0].Enabled = false
 			case "drift":
@@ -54,7 +56,7 @@ func TestGroupPreviewUsesSharedNamesWithinRuleSetScope(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "template_collision" {
-				if !reflect.DeepEqual(preview.Groups[0].Members, []string{"same"}) || !reflect.DeepEqual(config.Groups[0].Members, []string{"same [7:route-B]"}) {
+				if !reflect.DeepEqual(preview.Groups[0].Members, []string{"same"}) || !reflect.DeepEqual(config.Groups[0].Members, []string{"same [VLESS 路由]"}) {
 					t.Fatalf("preview must ignore external names; subscription must avoid them: %+v vs %+v", preview.Groups, config.Groups)
 				}
 			} else if len(preview.Groups) != len(config.Groups) {
@@ -66,7 +68,7 @@ func TestGroupPreviewUsesSharedNamesWithinRuleSetScope(t *testing.T) {
 					}
 				}
 			}
-			if scenario == "single" && !reflect.DeepEqual(preview.Groups[0].Members, []string{"same"}) {
+			if (scenario == "single" || scenario == "hidden_direct") && !reflect.DeepEqual(preview.Groups[0].Members, []string{"same"}) {
 				t.Fatalf("unexpected suffix: %+v", preview)
 			}
 			after, _ := json.Marshal([]any{node, rule, user})
@@ -292,7 +294,7 @@ func TestGroupPreviewIgnoresLinesReferencedOnlyByOtherRuleSets(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := namedVLESSProxies(t, output, domain.ClientMihomo)
-	if len(names) != 2 || names["same [7:relay]"] == nil || names["same [7:route-B]"] == nil {
+	if len(names) != 2 || names["same [中转]"] == nil || names["same [VLESS 路由]"] == nil {
 		t.Fatalf("subscription lost other rule-set dependencies: %+v", names)
 	}
 }
